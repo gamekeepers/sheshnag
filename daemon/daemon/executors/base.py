@@ -13,7 +13,7 @@ plugged into the Worker via dependency injection.
 Week 2+ extensions:
     - `batch_execute()` for runtimes that support native batching
     - `get_model_info()` for capability discovery
-    - `shutdown()` for cleanup
+    - `close()` for cleanup
 """
 
 from __future__ import annotations

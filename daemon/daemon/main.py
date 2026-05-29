@@ -11,6 +11,9 @@ Usage:
     # With environment variables
     DAEMON_BACKEND_URL=http://api.example.com python -m daemon.main
 
+    # With authentication
+    python -m daemon.main --api-key my-secret-key
+
 Configuration precedence (highest → lowest):
     1. CLI arguments
     2. Environment variables
@@ -29,6 +32,7 @@ from daemon.client import BackendClient
 from daemon.config import DaemonConfig
 from daemon.executors.vllm import VLLMExecutor
 from daemon.log import get_logger, setup_logging
+from daemon.models import WorkerInfo
 from daemon.worker import Worker
 
 
@@ -43,6 +47,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  python -m daemon.main --config config.yaml\n"
             "  python -m daemon.main --backend-url http://localhost:8000\n"
             "  python -m daemon.main --worker-id my-gpu-01 --vllm-url http://localhost:8100\n"
+            "  python -m daemon.main --api-key my-secret-key --gpu-name 'RTX 4090'\n"
         ),
     )
 
@@ -75,7 +80,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--worker-id",
         type=str,
         default=None,
-        help="Unique worker ID (default: auto-generated)",
+        help="Unique worker ID (default: auto-generated with hostname)",
     )
 
     parser.add_argument(
@@ -100,39 +105,85 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Directory for job artifacts (default: ~/.gpu-daemon/jobs)",
     )
 
+    # ── Authentication (Spec §17) ────────────────────────────────
+
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="API key for worker authentication (Bearer token)",
+    )
+
+    # ── Registration metadata (Spec §8) ──────────────────────────
+
+    parser.add_argument(
+        "--gpu-name",
+        type=str,
+        default=None,
+        help="GPU model name for registration (e.g., 'RTX 4090')",
+    )
+
+    parser.add_argument(
+        "--vram-gb",
+        type=float,
+        default=None,
+        help="GPU VRAM in GB for registration (e.g., 24.0)",
+    )
+
+    parser.add_argument(
+        "--models",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Model names available on this worker (space-separated)",
+    )
+
+    parser.add_argument(
+        "--runtime",
+        type=str,
+        default=None,
+        help="Inference runtime type (default: vllm)",
+    )
+
+    # ── Executor tuning ──────────────────────────────────────────
+
+    parser.add_argument(
+        "--vllm-timeout",
+        type=float,
+        default=None,
+        help="Per-prompt vLLM inference timeout in seconds (default: 300.0)",
+    )
+
     return parser
 
 
-def _load_config(args: argparse.Namespace) -> DaemonConfig:
+def _build_cli_overrides(args: argparse.Namespace) -> dict:
     """
-    Build config by merging YAML + env + CLI with correct precedence.
+    Extract CLI arguments into a dict for config override.
 
-    CLI arguments override everything. This lets operators deploy with
-    a shared config file but override per-worker settings via flags.
+    Only includes arguments that were explicitly set (not None).
+    This dict is passed to DaemonConfig.load(cli_overrides=...)
+    so all precedence logic lives in one place.
     """
-    # Load base config from YAML + env
-    config = DaemonConfig.load(config_path=args.config)
+    # Map CLI arg names → config field names
+    mapping = {
+        "backend_url": args.backend_url,
+        "vllm_url": args.vllm_url,
+        "worker_id": args.worker_id,
+        "poll_interval": args.poll_interval,
+        "log_level": args.log_level,
+        "work_dir": args.work_dir,
+        "api_key": args.api_key,
+        "gpu_name": args.gpu_name,
+        "vram_gb": args.vram_gb,
+        "models": args.models,
+        "runtime": args.runtime,
+        "vllm_timeout": args.vllm_timeout,
+    }
 
-    # Layer 3: CLI overrides (highest priority)
-    cli_overrides = {}
-    if args.backend_url is not None:
-        cli_overrides["backend_url"] = args.backend_url
-    if args.vllm_url is not None:
-        cli_overrides["vllm_url"] = args.vllm_url
-    if args.worker_id is not None:
-        cli_overrides["worker_id"] = args.worker_id
-    if args.poll_interval is not None:
-        cli_overrides["poll_interval"] = args.poll_interval
-    if args.log_level is not None:
-        cli_overrides["log_level"] = args.log_level
-    if args.work_dir is not None:
-        cli_overrides["work_dir"] = args.work_dir
-
-    if cli_overrides:
-        # Create new config with overrides applied
-        config = config.model_copy(update=cli_overrides)
-
-    return config
+    # Filter out None values — DaemonConfig.load() also does this,
+    # but pre-filtering keeps the dict clean for debugging.
+    return {k: v for k, v in mapping.items() if v is not None}
 
 
 async def _run(config: DaemonConfig) -> None:
@@ -141,16 +192,23 @@ async def _run(config: DaemonConfig) -> None:
 
     Component creation follows Dependency Injection:
         Config → Client + Executor → Worker
-    This keeps everything testable and loosely coupled.
+
+    Startup sequence:
+        1. Create components
+        2. Register worker with control plane (spec §8)
+        3. Start the poll-execute loop
     """
     # ── Create components ────────────────────────────────────────
     client = BackendClient(
         base_url=config.backend_url,
         worker_id=config.worker_id,
+        api_key=config.api_key,
     )
 
     executor = VLLMExecutor(
         base_url=config.vllm_url,
+        timeout=config.vllm_timeout,
+        supported_models=config.models if config.models else None,
     )
 
     worker = Worker(
@@ -158,6 +216,26 @@ async def _run(config: DaemonConfig) -> None:
         client=client,
         executor=executor,
     )
+
+    # ── Register with control plane (Spec §8) ────────────────────
+    worker_info = WorkerInfo(
+        worker_id=config.worker_id,
+        gpu_name=config.gpu_name,
+        vram_gb=config.vram_gb,
+        models=config.models,
+        runtime=config.runtime,
+        status="online",
+    )
+
+    try:
+        await client.register_worker(worker_info)
+    except Exception as exc:
+        # Registration failure is not fatal — the worker can still
+        # attempt to poll. The backend may already know this worker
+        # or may accept unregistered workers in dev mode.
+        logger.warning(
+            f"Worker registration failed (continuing anyway): {exc}"
+        )
 
     # ── Run ──────────────────────────────────────────────────────
     try:
@@ -171,29 +249,45 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    # Load config
-    config = _load_config(args)
+    # Build CLI overrides dict
+    cli_overrides = _build_cli_overrides(args)
+
+    # Load config with consolidated precedence: YAML → env → CLI
+    config = DaemonConfig.load(
+        config_path=args.config,
+        cli_overrides=cli_overrides,
+    )
 
     # Setup logging (must happen before any log calls)
     setup_logging(config.log_level)
     logger = get_logger(__name__)
 
     # Banner
+    auth_status = "✓ configured" if config.api_key else "✗ not configured"
+    models_str = ", ".join(config.models) if config.models else "(none)"
+
     logger.info(f"{'='*60}")
     logger.info(f"  GPU Worker Daemon v{__version__}")
-    logger.info(f"  Worker ID:    {config.worker_id}")
-    logger.info(f"  Backend URL:  {config.backend_url}")
-    logger.info(f"  vLLM URL:     {config.vllm_url}")
+    logger.info(f"  Worker ID:     {config.worker_id}")
+    logger.info(f"  Backend URL:   {config.backend_url}")
+    logger.info(f"  vLLM URL:      {config.vllm_url}")
     logger.info(f"  Poll interval: {config.poll_interval}s")
-    logger.info(f"  Work dir:     {config.work_dir}")
+    logger.info(f"  Work dir:      {config.work_dir}")
+    logger.info(f"  Auth:          {auth_status}")
+    logger.info(f"  GPU:           {config.gpu_name} ({config.vram_gb}GB)")
+    logger.info(f"  Models:        {models_str}")
+    logger.info(f"  Runtime:       {config.runtime}")
+    logger.info(f"  vLLM timeout:  {config.vllm_timeout}s")
     logger.info(f"{'='*60}")
 
     # Run the async event loop
+    # Signal handlers in worker.py handle SIGINT/SIGTERM gracefully,
+    # so we only need a minimal KeyboardInterrupt catch here as a
+    # fallback for edge cases (e.g., interrupt before loop starts).
     try:
         asyncio.run(_run(config))
     except KeyboardInterrupt:
-        logger.info("Daemon interrupted by user")
-        sys.exit(0)
+        pass  # Signal handler already logged the shutdown
 
 
 if __name__ == "__main__":

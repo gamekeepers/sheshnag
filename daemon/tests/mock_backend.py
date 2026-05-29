@@ -32,7 +32,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 # ── Configuration ────────────────────────────────────────────
@@ -46,6 +46,7 @@ app = FastAPI(title="Mock Control Plane", version="0.1.0")
 
 _jobs: dict = {}
 _outputs: dict = {}
+_workers: dict = {}
 
 
 def _seed_job() -> None:
@@ -73,7 +74,48 @@ def _seed_job() -> None:
     print(f"   Prompts: {sum(1 for _ in open(input_dest))}")
 
 
+# ── Auth Middleware (Optional — warn if missing) ────────────
+
+
+@app.middleware("http")
+async def check_auth_header(request: Request, call_next):
+    """
+    Optional auth check — warns if Authorization header is missing.
+
+    Does NOT block requests (this is a test server), but logs a
+    warning so you can verify the daemon is sending auth headers.
+    """
+    if "authorization" not in request.headers:
+        if request.url.path not in ("/docs", "/openapi.json", "/"):
+            print(f"⚠️  No Authorization header on {request.method} {request.url.path}")
+    else:
+        auth = request.headers["authorization"]
+        print(f"🔑 Auth header present on {request.method} {request.url.path}: {auth[:20]}...")
+
+    return await call_next(request)
+
+
 # ── Worker APIs ──────────────────────────────────────────────
+
+
+@app.post("/workers/register")
+async def register_worker(body: dict):
+    """
+    Register a worker with the control plane.
+
+    Stores worker metadata (GPU info, models, runtime) so the
+    scheduler knows what this worker can handle (spec §8).
+    """
+    worker_id = body.get("worker_id", "unknown")
+    _workers[worker_id] = body
+    print(
+        f"\n✅ Worker registered: {worker_id}"
+        f" (GPU: {body.get('gpu_name', '?')},"
+        f" VRAM: {body.get('vram_gb', '?')}GB,"
+        f" Models: {body.get('models', [])},"
+        f" Runtime: {body.get('runtime', '?')})"
+    )
+    return JSONResponse(content={"status": "registered", "worker_id": worker_id})
 
 
 @app.post("/workers/poll")
@@ -94,7 +136,7 @@ async def poll_job(body: dict):
                     "job": {
                         "job_id": job["job_id"],
                         "model": job["model"],
-                        "status": "assigned",
+                        "status": "running",
                         "max_tokens": job["max_tokens"],
                         "temperature": job["temperature"],
                     }
@@ -164,6 +206,28 @@ async def upload_results(
         print(f"   (Could not parse output: {e})")
 
     print(f"{'='*60}\n")
+
+    return JSONResponse(content={"status": "ok"})
+
+
+@app.post("/jobs/{job_id}/fail")
+async def report_failure(job_id: str, body: dict):
+    """
+    Worker reports a job failure.
+
+    Updates the job status to "failed" and stores the error message
+    so the backend can decide whether to requeue or notify the user.
+    """
+    if job_id not in _jobs:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+
+    error_msg = body.get("error", "unknown")
+    worker_id = body.get("worker_id", "unknown")
+    _jobs[job_id]["status"] = "failed"
+    _jobs[job_id]["error"] = error_msg
+
+    print(f"\n❌ Job {job_id} FAILED (worker: {worker_id})")
+    print(f"   Error: {error_msg[:200]}")
 
     return JSONResponse(content={"status": "ok"})
 

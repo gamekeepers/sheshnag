@@ -13,6 +13,8 @@ Architecture note:
 
 from __future__ import annotations
 
+from typing import Optional, Set
+
 import httpx
 
 from daemon.executors.base import BaseExecutor
@@ -20,9 +22,6 @@ from daemon.log import get_logger
 from daemon.models import CompletionResult, PromptRequest
 
 logger = get_logger(__name__)
-
-# Generous timeout for inference — large prompts can take a while
-_DEFAULT_TIMEOUT = 300.0  # 5 minutes
 
 
 class VLLMExecutor(BaseExecutor):
@@ -33,21 +32,38 @@ class VLLMExecutor(BaseExecutor):
     This makes it safe to use across concurrent jobs (when we add that).
 
     Args:
-        base_url: Base URL of the vLLM server (e.g., http://localhost:8100).
-        timeout:  Per-request timeout in seconds.
+        base_url:          Base URL of the vLLM server (e.g., http://localhost:8100).
+        timeout:           Per-request timeout in seconds (configurable via DaemonConfig.vllm_timeout).
+        supported_models:  Optional list of models this worker supports. If provided,
+                           health_check() will verify these models are loaded in vLLM.
     """
 
-    def __init__(self, base_url: str, timeout: float = _DEFAULT_TIMEOUT) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        timeout: float = 300.0,
+        supported_models: Optional[list[str]] = None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._supported_models: Set[str] = set(supported_models) if supported_models else set()
         self._client: httpx.AsyncClient | None = None
 
     def _get_client(self) -> httpx.AsyncClient:
-        """Lazy-initialize the HTTP client."""
+        """
+        Lazy-initialize the HTTP client with connection pooling.
+
+        Connection pooling is important for a daemon that sends
+        many sequential requests to the same vLLM server.
+        """
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=httpx.Timeout(self._timeout),
+                limits=httpx.Limits(
+                    max_connections=10,
+                    max_keepalive_connections=5,
+                ),
             )
         return self._client
 
@@ -114,24 +130,53 @@ class VLLMExecutor(BaseExecutor):
 
     async def health_check(self) -> bool:
         """
-        Check if vLLM is reachable by hitting the /health endpoint.
+        Check if vLLM is reachable and expected models are loaded.
 
-        vLLM's OpenAI-compatible server exposes /health for liveness checks.
-        Falls back to /v1/models if /health is not available.
+        Two-phase check:
+            1. Hit /health (or /v1/models as fallback) for liveness.
+            2. If supported_models is configured, verify those models
+               appear in /v1/models response body — not just that the
+               endpoint returns 200.
         """
         client = self._get_client()
 
+        # Phase 1: Basic liveness check
+        is_alive = False
         for endpoint in ("/health", "/v1/models"):
             try:
                 resp = await client.get(endpoint, timeout=10.0)
                 if resp.status_code == 200:
                     logger.debug(f"vLLM health check passed via {endpoint}")
-                    return True
+                    is_alive = True
+                    break
             except Exception:
                 continue
 
-        logger.warning(f"vLLM health check failed at {self._base_url}")
-        return False
+        if not is_alive:
+            logger.warning(f"vLLM health check failed at {self._base_url}")
+            return False
+
+        # Phase 2: Verify expected models are loaded (if configured)
+        if self._supported_models:
+            try:
+                resp = await client.get("/v1/models", timeout=10.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    loaded_models = {m["id"] for m in data.get("data", [])}
+                    missing = self._supported_models - loaded_models
+                    if missing:
+                        logger.warning(
+                            f"Expected models not loaded in vLLM: {missing}. "
+                            f"Loaded: {loaded_models}"
+                        )
+                        return False
+                    logger.debug(f"All expected models confirmed loaded: {self._supported_models}")
+            except Exception as exc:
+                logger.warning(f"Could not verify loaded models: {exc}")
+                # Don't fail health check if we can't verify models
+                # but the server is alive — it might just be loading
+
+        return True
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

@@ -15,6 +15,7 @@ Design decisions:
     - Job artifacts are stored in per-job directories under work_dir
     - Errors in individual prompts don't fail the whole job
     - Worker never raises from the main loop (log + continue)
+    - Poll jitter prevents thundering herd when many workers poll
 
 Dependencies are injected via constructor — this is key for testing
 and for the Open/Closed Principle (swap executor without touching Worker).
@@ -24,10 +25,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import signal
-import sys
 from pathlib import Path
 from typing import List
+
+import httpx
 
 from daemon.client import BackendClient
 from daemon.config import DaemonConfig
@@ -96,12 +99,24 @@ class Worker:
             except asyncio.CancelledError:
                 logger.info("Main loop cancelled")
                 break
+            except (httpx.HTTPError, OSError, ValueError, json.JSONDecodeError) as exc:
+                # Catch only recoverable errors — let fatal exceptions
+                # (MemoryError, SystemExit, KeyboardInterrupt) propagate
+                # so the process can terminate properly.
+                logger.error(f"Recoverable error in main loop: {exc}", exc_info=True)
             except Exception as exc:
-                # Never crash the main loop — log and retry
-                logger.error(f"Unhandled error in main loop: {exc}", exc_info=True)
+                # Catch remaining non-fatal exceptions with a warning
+                # that this catch-all should ideally be narrowed further.
+                logger.error(
+                    f"Unexpected error in main loop (consider narrowing this catch): {exc}",
+                    exc_info=True,
+                )
 
             if self._running:
-                await asyncio.sleep(self._config.poll_interval)
+                # Add ±20% jitter to prevent thundering herd when
+                # many workers poll the same backend simultaneously.
+                jitter = self._config.poll_interval * random.uniform(0.8, 1.2)
+                await asyncio.sleep(jitter)
 
         logger.info("Worker main loop exited")
 
@@ -142,6 +157,9 @@ class Worker:
                 f"Job {job.job_id} failed with error: {exc}",
                 exc_info=True,
             )
+            # Report failure to backend so it can requeue the job
+            # (spec §11: worker reports failure)
+            await self._client.report_failure(job.job_id, str(exc))
         finally:
             self._current_job_id = None
 
@@ -166,7 +184,12 @@ class Worker:
         logger.info(f"[{job.job_id}] Parsed {total} prompts from input")
 
         if total == 0:
-            logger.warning(f"[{job.job_id}] Input file is empty — skipping")
+            # Don't silently return — the job would stay in "running"
+            # state forever. Report failure so the backend can handle it.
+            logger.warning(f"[{job.job_id}] Input file is empty — reporting failure")
+            await self._client.report_failure(
+                job.job_id, "Input file is empty — no prompts to process"
+            )
             return
 
         # ── Step 3: Execute each prompt ──────────────────────────

@@ -12,7 +12,7 @@ Nested/complex models can be introduced as the protocol evolves.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -22,18 +22,49 @@ from pydantic import BaseModel, Field
 
 class JobStatus(str, Enum):
     """
-    Job lifecycle states.
+    Job lifecycle states as defined in the spec.
 
-    The daemon only cares about transitions it can trigger:
-        assigned → running → completed | failed
-    Other states (queued) are managed by the backend.
+    State machine:  queued → running → completed | failed
+
+    The daemon triggers:
+        running → completed  (on success)
+        running → failed     (on error)
+    The backend manages:
+        queued → running     (on assignment via poll)
     """
 
     QUEUED = "queued"
-    ASSIGNED = "assigned"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+# ── Worker Registration (Spec §8) ───────────────────────────────
+
+
+class WorkerInfo(BaseModel):
+    """
+    Worker registration payload sent to the control plane.
+
+    Per spec §8, a worker must register with metadata before polling.
+    This model captures the worker's identity, hardware capabilities,
+    and available models so the scheduler can make informed assignments.
+
+    Attributes:
+        worker_id: Unique identifier for this worker instance.
+        gpu_name:  Human-readable GPU model (e.g., "RTX 4090").
+        vram_gb:   GPU VRAM in gigabytes.
+        models:    List of model names available on this worker.
+        runtime:   Inference runtime type (e.g., "vllm").
+        status:    Current worker status ("online", "offline", "busy").
+    """
+
+    worker_id: str
+    gpu_name: str = "unknown"
+    vram_gb: float = 0.0
+    models: List[str] = Field(default_factory=list)
+    runtime: str = "vllm"
+    status: str = "online"
 
 
 # ── Job Model ────────────────────────────────────────────────────
@@ -45,11 +76,20 @@ class Job(BaseModel):
 
     This is the daemon's view of a job — it contains only the fields
     the daemon needs to execute the job, not the full backend model.
+
+    Attributes:
+        job_id:      Unique job identifier.
+        model:       Model name to use for inference.
+        input_file:  Name of the input JSONL file (spec §9).
+        status:      Current job status (trusted from backend).
+        max_tokens:  Default max tokens for prompts in this job.
+        temperature: Default temperature for prompts in this job.
     """
 
     job_id: str
     model: str = ""
-    status: JobStatus = JobStatus.ASSIGNED
+    input_file: Optional[str] = None
+    status: JobStatus = JobStatus.QUEUED
     max_tokens: int = 512
     temperature: float = 0.7
 
@@ -110,12 +150,15 @@ class CompletionResult(BaseModel):
         return self.error is None and self.response is not None
 
     @property
-    def usage(self) -> Dict[str, int]:
+    def usage(self) -> Dict[str, Union[int, float]]:
         """
         Extract token usage from the response.
 
         Returns empty dict if usage data is not available.
         Useful for billing/tracking in future weeks.
+
+        Note: Some providers return float values for certain usage
+        fields, so we accept both int and float.
         """
         if self.response and "usage" in self.response:
             return self.response["usage"]
