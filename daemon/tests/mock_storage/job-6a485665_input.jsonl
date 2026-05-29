@@ -1,0 +1,5 @@
+{"custom_id":"req-001","method":"POST","url":"/v1/chat/completions","body":{"model":"mistralai/Mistral-7B-Instruct-v0.2","messages":[{"role":"user","content":"What is the capital of France?"}],"max_tokens":100}}
+{"custom_id":"req-002","method":"POST","url":"/v1/chat/completions","body":{"model":"mistralai/Mistral-7B-Instruct-v0.2","messages":[{"role":"user","content":"Explain quantum computing in one sentence."}],"max_tokens":150}}
+{"custom_id":"req-003","method":"POST","url":"/v1/chat/completions","body":{"model":"mistralai/Mistral-7B-Instruct-v0.2","messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"Write a haiku about programming."}],"max_tokens":100}}
+{"custom_id":"req-004","method":"POST","url":"/v1/chat/completions","body":{"model":"mistralai/Mistral-7B-Instruct-v0.2","messages":[{"role":"user","content":"What is 2+2?"}],"max_tokens":50}}
+{"custom_id":"req-005","method":"POST","url":"/v1/chat/completions","body":{"model":"mistralai/Mistral-7B-Instruct-v0.2","messages":[{"role":"user","content":"List three benefits of open source software."}],"max_tokens":200}}

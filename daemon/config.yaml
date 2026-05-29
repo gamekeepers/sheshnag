@@ -1,0 +1,28 @@
+# ─────────────────────────────────────────────────────────────
+# GPU Worker Daemon — Configuration
+# ─────────────────────────────────────────────────────────────
+# Copy this file and adjust values for your environment.
+# All values shown here are defaults.
+#
+# Override any value via environment variables:
+#   DAEMON_BACKEND_URL=http://remote-server:8000
+#   DAEMON_WORKER_ID=my-gpu-01
+# ─────────────────────────────────────────────────────────────
+
+# Unique identifier for this worker (auto-generated if omitted)
+# worker_id: "my-gpu-worker-01"
+
+# Control plane backend URL
+backend_url: "http://localhost:8000"
+
+# Local vLLM server URL (OpenAI-compatible API)
+vllm_url: "http://localhost:8100"
+
+# How often to poll for new jobs (seconds)
+poll_interval: 5
+
+# Logging level: DEBUG, INFO, WARNING, ERROR
+log_level: "INFO"
+
+# Local directory for job artifacts (inputs, outputs)
+# work_dir: "~/.gpu-daemon/jobs"
