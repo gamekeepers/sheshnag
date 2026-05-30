@@ -1,30 +1,30 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from database import get_db
-from models import Job, JobAssignment
+from models import Batch, BatchAssignment, File as FileModel, unix_now
 from pydantic import BaseModel
 from typing import Optional
-from datetime import datetime, timezone
+import shutil, os
 
 router = APIRouter()
 
 VALID_TRANSITIONS = {
-    "queued":    ["running"],
-    "running":   ["completed", "failed"],
-    "completed": [],            
-    "failed":    [],             
+    "validating":  ["in_progress"],
+    "in_progress": ["completed", "failed"],
+    "completed":   [],
+    "failed":      [],
 }
 
 
 def validate_transition(current: str, target: str):
-    """Raise 409 if the transition is not allowed."""
     allowed = VALID_TRANSITIONS.get(current, [])
     if target not in allowed:
         raise HTTPException(
             status_code=409,
             detail=f"Cannot transition from '{current}' to '{target}'. "
-                   f"Allowed transitions: {allowed or 'none (terminal state)'}",
+                   f"Allowed: {allowed or 'none (terminal state)'}",
         )
+
 
 class PollRequest(BaseModel):
     worker_id: str
@@ -35,34 +35,36 @@ class FailureReport(BaseModel):
     worker_id: str
     error: Optional[str] = None
 
+
 @router.post("/poll")
 def poll_job(req: PollRequest, db: Session = Depends(get_db)):
-    job = (
-        db.query(Job)
-        .filter(Job.status == "queued")
-        .order_by(Job.created_at)
+    batch = (
+        db.query(Batch)
+        .filter(Batch.status == "validating")
+        .order_by(Batch.created_at)
         .first()
     )
 
-    if not job:
+    if not batch:
         return {"job": None}
 
-    validate_transition(job.status, "running")
-    job.status = "running"
+    validate_transition(batch.status, "in_progress")
+    batch.status = "in_progress"
 
-    assignment = JobAssignment(
-        job_id=job.id,
+    assignment = BatchAssignment(
+        batch_id=batch.id,
         worker_id=req.worker_id,
-        assigned_at=datetime.now(timezone.utc),
+        assigned_at=unix_now(),
     )
     db.add(assignment)
     db.commit()
-    db.refresh(job)
+    db.refresh(batch)
 
     return {
         "job": {
-            "job_id":     job.id,
-            "input_path": job.input_path,
+            "job_id":        batch.id,
+            "input_file_id": batch.input_file_id,
+            "input_path":    f"/v1/files/{batch.input_file_id}/content",
         }
     }
 
@@ -73,42 +75,59 @@ def upload_results(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    import shutil, os
+    batch = db.query(Batch).filter(Batch.id == job_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
 
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    validate_transition(batch.status, "completed")
 
-    validate_transition(job.status, "completed")
+    output_file = FileModel(
+        filename=f"{batch.id}_output.jsonl",
+        purpose="batch_output",
+    )
+    db.add(output_file)
+    db.flush()
 
-    OUTPUT_DIR = "outputs"
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    output_path = f"{OUTPUT_DIR}/{job_id}_outputs.jsonl"
-    with open(output_path, "wb") as f:
+    FILES_DIR = "files"
+    os.makedirs(FILES_DIR, exist_ok=True)
+    filepath = f"{FILES_DIR}/{output_file.id}.jsonl"
+    with open(filepath, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    job.output_path = output_path
-    job.status = "completed"
-    db.commit()
-    db.refresh(job)
+    output_file.filepath = filepath
+    output_file.bytes = os.path.getsize(filepath)
 
-    return {"status": "completed", "job_id": job.id, "output_path": output_path}
+    batch.output_file_id = output_file.id
+    batch.status = "completed"
+    batch.completed_at = unix_now()
+    batch.request_counts_completed = batch.request_counts_total
+
+    db.commit()
+    db.refresh(batch)
+
+    return {
+        "status":         "completed",
+        "batch_id":       batch.id,
+        "output_file_id": output_file.id,
+    }
 
 
 @router.post("/report-failure")
 def report_failure(req: FailureReport, db: Session = Depends(get_db)):
-    job = db.query(Job).filter(Job.id == req.job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    batch = db.query(Batch).filter(Batch.id == req.job_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
 
-    validate_transition(job.status, "failed")
-    job.status = "failed"
+    validate_transition(batch.status, "failed")
+    batch.status = "failed"
+    batch.completed_at = unix_now()
+    batch.request_counts_failed = batch.request_counts_total
+
     db.commit()
-    db.refresh(job)
+    db.refresh(batch)
 
     return {
-        "status":    "failed",
-        "job_id":    job.id,
-        "error":     req.error,
+        "status":   "failed",
+        "batch_id": batch.id,
+        "error":    req.error,
     }

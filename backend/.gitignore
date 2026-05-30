@@ -14,9 +14,11 @@ venv/
 # Uploaded/generated files
 uploads/
 outputs/
+files/
 
 # Test files
-test_prompts.jsonl
+test_*.jsonl
+test_*.py
 
 # IDE
 .vscode/
