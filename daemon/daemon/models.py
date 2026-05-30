@@ -78,15 +78,20 @@ class Job(BaseModel):
     the daemon needs to execute the job, not the full backend model.
 
     Attributes:
-        job_id:      Unique job identifier.
-        model:       Model name to use for inference.
-        input_file:  Name of the input JSONL file (spec §9).
-        status:      Current job status (trusted from backend).
-        max_tokens:  Default max tokens for prompts in this job.
-        temperature: Default temperature for prompts in this job.
+        job_id:        Unique job identifier.
+        input_file_id: ID of the uploaded input file (OpenAI batch format).
+        input_path:    Backend-provided URL path to download the input file
+                       (e.g., "/v1/files/{file_id}/content").
+        model:         Model name to use for inference.
+        input_file:    (Legacy) Name of the input JSONL file.
+        status:        Current job status (trusted from backend).
+        max_tokens:    Default max tokens for prompts in this job.
+        temperature:   Default temperature for prompts in this job.
     """
 
     job_id: str
+    input_file_id: Optional[str] = None
+    input_path: Optional[str] = None
     model: str = ""
     input_file: Optional[str] = None
     status: JobStatus = JobStatus.QUEUED
