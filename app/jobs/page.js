@@ -16,12 +16,20 @@ function FalconLogo({ size = 28 }) {
   );
 }
 
+const DEMO_JOBS = [
+  { id: 1, filename: 'prompts_batch1.jsonl', status: 'completed', created_at: '24 May 2026, 08:00 AM', total: 120, done: 120 },
+  { id: 2, filename: 'qa_test_run.jsonl', status: 'running', created_at: '24 May 2026, 09:30 AM', total: 80, done: 45 },
+  { id: 3, filename: 'large_batch.jsonl', status: 'queued', created_at: '24 May 2026, 10:15 AM', total: 500, done: 0 },
+  { id: 4, filename: 'marketing_prompts.jsonl', status: 'completed', created_at: '24 May 2026, 11:00 AM', total: 60, done: 60 },
+  { id: 5, filename: 'broken_input.jsonl', status: 'failed', created_at: '24 May 2026, 11:45 AM', total: 30, done: 0 },
+];
+
 function StatusBadge({ status }) {
   const styles = {
-    completed: 'bg-green-900 text-green-300',
-    running: 'bg-blue-900 text-blue-300',
-    queued: 'bg-yellow-900 text-yellow-300',
-    failed: 'bg-red-900 text-red-300',
+    completed: 'bg-green-900 text-green-400',
+    running: 'bg-blue-900 text-blue-400',
+    queued: 'bg-yellow-900 text-yellow-400',
+    failed: 'bg-red-900 text-red-400',
   };
   return (
     <span className={`text-xs px-2 py-0.5 rounded-full ${styles[status] || 'bg-gray-800 text-gray-300'}`}>
@@ -31,19 +39,18 @@ function StatusBadge({ status }) {
 }
 
 export default function JobsPage() {
-  const [jobs, setJobs] = useState([]);
-  const [selectedJob, setSelectedJob] = useState(null);
+  const [jobs, setJobs] = useState(DEMO_JOBS);
+  const [selectedJob, setSelectedJob] = useState(DEMO_JOBS[0]);
 
   useEffect(() => {
     const stored = JSON.parse(localStorage.getItem('falcon_jobs') || '[]');
-    setJobs(stored);
+    if (stored.length > 0) setJobs([...DEMO_JOBS, ...stored]);
   }, []);
 
-  function clearJobs() {
-    localStorage.removeItem('falcon_jobs');
-    setJobs([]);
-    setSelectedJob(null);
-  }
+  const total = jobs.length;
+  const completed = jobs.filter(j => j.status === 'completed').length;
+  const running = jobs.filter(j => j.status === 'running').length;
+  const failed = jobs.filter(j => j.status === 'failed').length;
 
   return (
     <div className="flex h-screen bg-[#0a0a0a] text-gray-300 font-sans">
@@ -54,15 +61,9 @@ export default function JobsPage() {
           <Link href="/"><FalconLogo size={24} /></Link>
         </div>
         <p className="px-4 text-[10px] text-[#555] uppercase tracking-widest mb-2">Manage</p>
-        <Link href="/" className="mx-2 px-3 py-2 rounded-md text-sm text-[#aaa] hover:bg-[#1e1e1e] hover:text-white">
-          🏠 Home
-        </Link>
-        <div className="mx-2 px-3 py-2 rounded-md text-sm text-white bg-[#1e1e1e]">
-          📋 Jobs
-        </div>
-        <Link href="/upload" className="mx-2 px-3 py-2 rounded-md text-sm text-[#aaa] hover:bg-[#1e1e1e] hover:text-white">
-          📁 Upload
-        </Link>
+        <Link href="/" className="mx-2 px-3 py-2 rounded-md text-sm text-[#aaa] hover:bg-[#1e1e1e] hover:text-white">🏠 Home</Link>
+        <div className="mx-2 px-3 py-2 rounded-md text-sm text-white bg-[#1e1e1e]">📋 Jobs</div>
+        <Link href="/upload" className="mx-2 px-3 py-2 rounded-md text-sm text-[#aaa] hover:bg-[#1e1e1e] hover:text-white">📁 Upload</Link>
       </div>
 
       {/* Main */}
@@ -71,21 +72,28 @@ export default function JobsPage() {
         {/* Topbar */}
         <div className="flex items-center justify-between px-6 py-3 border-b border-[#2a2a2a]">
           <h1 className="text-white font-medium text-base">Jobs</h1>
-          <div className="flex gap-2">
-            {jobs.length > 0 && (
-              <button
-                onClick={clearJobs}
-                className="px-3 py-1.5 text-xs border border-[#3a3a3a] rounded-md hover:bg-[#1e1e1e] text-[#666]"
-              >
-                Clear all
-              </button>
-            )}
-            <Link
-              href="/upload"
-              className="flex items-center gap-1 px-3 py-1.5 text-sm border border-[#3a3a3a] rounded-md hover:bg-[#1e1e1e] text-white"
-            >
-              + Create
-            </Link>
+          <Link href="/upload" className="flex items-center gap-1 px-3 py-1.5 text-sm border border-[#3a3a3a] rounded-md hover:bg-[#1e1e1e] text-white">
+            + Create
+          </Link>
+        </div>
+
+        {/* Stats Cards */}
+        <div className="grid grid-cols-4 gap-3 px-6 py-4 border-b border-[#1e1e1e]">
+          <div className="bg-[#111] border border-[#2a2a2a] rounded-lg p-4">
+            <p className="text-[#555] text-xs uppercase tracking-wider mb-2">Total jobs</p>
+            <p className="text-white text-2xl font-medium">{total}</p>
+          </div>
+          <div className="bg-[#111] border border-[#2a2a2a] rounded-lg p-4">
+            <p className="text-[#555] text-xs uppercase tracking-wider mb-2">Completed</p>
+            <p className="text-green-400 text-2xl font-medium">{completed}</p>
+          </div>
+          <div className="bg-[#111] border border-[#2a2a2a] rounded-lg p-4">
+            <p className="text-[#555] text-xs uppercase tracking-wider mb-2">Running</p>
+            <p className="text-blue-400 text-2xl font-medium">{running}</p>
+          </div>
+          <div className="bg-[#111] border border-[#2a2a2a] rounded-lg p-4">
+            <p className="text-[#555] text-xs uppercase tracking-wider mb-2">Failed</p>
+            <p className="text-red-400 text-2xl font-medium">{failed}</p>
           </div>
         </div>
 
@@ -94,50 +102,69 @@ export default function JobsPage() {
 
           {/* Jobs List */}
           <div className="w-[45%] border-r border-[#2a2a2a] overflow-y-auto">
-            {jobs.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-center px-6">
-                <p className="text-white text-sm font-medium mb-1">No batches found</p>
-                <p className="text-[#666] text-xs mb-4">Submit a JSONL file to get started.</p>
-                <Link href="/upload" className="flex items-center gap-1 px-3 py-1.5 text-sm border border-[#3a3a3a] rounded-md hover:bg-[#1e1e1e] text-white">
-                  + Create
-                </Link>
+            <div className="flex items-center px-4 py-2 border-b border-[#1e1e1e] text-[#444] text-xs uppercase tracking-widest">
+              <span className="w-14">ID</span>
+              <span className="flex-1">File</span>
+              <span className="w-24 text-center">Status</span>
+            </div>
+            {jobs.map((job) => (
+              <div
+                key={job.id}
+                onClick={() => setSelectedJob(job)}
+                className={`flex items-center px-4 py-3 border-b border-[#1a1a1a] cursor-pointer hover:bg-[#141414] transition-colors ${selectedJob?.id === job.id ? 'bg-[#1a1a1a]' : ''}`}
+              >
+                <span className="w-14 text-[#555] text-xs font-mono">#{job.id}</span>
+                <span className="flex-1 text-sm text-white truncate pr-2">{job.filename}</span>
+                <span className="w-24 flex justify-center"><StatusBadge status={job.status} /></span>
               </div>
-            ) : (
-              <>
-                <div className="flex items-center px-4 py-2 border-b border-[#1e1e1e] text-[#444] text-xs uppercase tracking-widest">
-                  <span className="w-16">ID</span>
-                  <span className="flex-1">File</span>
-                  <span className="w-24 text-center">Status</span>
-                </div>
-                {jobs.map((job) => (
-                  <div
-                    key={job.id}
-                    onClick={() => setSelectedJob(job)}
-                    className={`flex items-center px-4 py-3 border-b border-[#1a1a1a] cursor-pointer hover:bg-[#141414] transition-colors ${selectedJob?.id === job.id ? 'bg-[#1a1a1a]' : ''}`}
-                  >
-                    <span className="w-16 text-[#555] text-xs font-mono">#{job.id}</span>
-                    <span className="flex-1 text-sm text-white truncate">{job.filename}</span>
-                    <span className="w-24 flex justify-center">
-                      <StatusBadge status={job.status} />
-                    </span>
-                  </div>
-                ))}
-              </>
-            )}
+            ))}
           </div>
 
           {/* Detail Panel */}
           <div className="flex-1 overflow-y-auto">
             {selectedJob ? (
               <div className="p-8">
-                <div className="flex items-center justify-between mb-8">
+                <div className="flex items-center justify-between mb-6">
                   <div>
                     <p className="text-[#555] text-xs mb-1">Job ID</p>
                     <p className="text-white font-medium text-lg font-mono">#{selectedJob.id}</p>
                   </div>
                   <StatusBadge status={selectedJob.status} />
                 </div>
-                <div className="space-y-4">
+
+                {/* Progress bar for running */}
+                {selectedJob.status === 'running' && (
+                  <div className="mb-6">
+                    <div className="flex justify-between text-xs text-[#555] mb-2">
+                      <span>Progress</span>
+                      <span>{selectedJob.done}/{selectedJob.total} prompts</span>
+                    </div>
+                    <div className="w-full bg-[#1e1e1e] rounded-full h-1.5">
+                      <div
+                        className="bg-blue-500 h-1.5 rounded-full"
+                        style={{ width: `${(selectedJob.done / selectedJob.total) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Stats */}
+                <div className="grid grid-cols-3 gap-3 mb-6">
+                  <div className="border border-[#1e1e1e] rounded-lg p-3 text-center">
+                    <p className="text-white text-lg font-medium">{selectedJob.total}</p>
+                    <p className="text-[#555] text-xs mt-0.5">Total</p>
+                  </div>
+                  <div className="border border-[#1e1e1e] rounded-lg p-3 text-center">
+                    <p className="text-green-400 text-lg font-medium">{selectedJob.done}</p>
+                    <p className="text-[#555] text-xs mt-0.5">Done</p>
+                  </div>
+                  <div className="border border-[#1e1e1e] rounded-lg p-3 text-center">
+                    <p className="text-yellow-400 text-lg font-medium">{selectedJob.total - selectedJob.done}</p>
+                    <p className="text-[#555] text-xs mt-0.5">Remaining</p>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
                   <div className="border border-[#1e1e1e] rounded-lg p-4">
                     <p className="text-[#555] text-xs mb-1">Filename</p>
                     <p className="text-white text-sm">{selectedJob.filename}</p>
@@ -151,15 +178,23 @@ export default function JobsPage() {
                     <p className="text-white text-sm capitalize">{selectedJob.status}</p>
                   </div>
                 </div>
+
                 {selectedJob.status === 'completed' && (
-                  <button className="mt-8 w-full flex items-center justify-center gap-2 bg-white text-black py-2.5 rounded-lg text-sm font-medium hover:bg-gray-100">
+                  <button className="mt-6 w-full flex items-center justify-center gap-2 bg-white text-black py-2.5 rounded-lg text-sm font-medium hover:bg-gray-100">
                     📥 Download outputs.jsonl
                   </button>
+                )}
+
+                {selectedJob.status === 'failed' && (
+                  <div className="mt-6 border border-red-900 rounded-lg p-4">
+                    <p className="text-red-400 text-xs font-medium mb-1">Job failed</p>
+                    <p className="text-[#666] text-xs">The input file may have been malformed. Please check your JSONL format and try again.</p>
+                  </div>
                 )}
               </div>
             ) : (
               <div className="flex items-center justify-center h-full">
-                <p className="text-[#444] text-sm">Select a batch to view details.</p>
+                <p className="text-[#444] text-sm">Select a job to view details.</p>
               </div>
             )}
           </div>
