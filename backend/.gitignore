@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# Environment
+.env
+
+# Database
+*.db
+
+# Uploaded/generated files
+uploads/
+outputs/
+files/
+
+# Test files
+test_*.jsonl
+test_*.py
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
