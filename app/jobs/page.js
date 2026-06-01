@@ -44,7 +44,10 @@ export default function JobsPage() {
 
   useEffect(() => {
     const stored = JSON.parse(localStorage.getItem('falcon_jobs') || '[]');
-    if (stored.length > 0) setJobs([...DEMO_JOBS, ...stored]);
+    if (stored.length > 0) {
+  const merged = [...DEMO_JOBS, ...stored.map((j, i) => ({ ...j, id: DEMO_JOBS.length + i + 1 }))];
+  setJobs(merged);
+}
   }, []);
 
   const total = jobs.length;
@@ -144,7 +147,7 @@ export default function JobsPage() {
                         className="bg-blue-500 h-1.5 rounded-full"
                         style={{ width: `${(selectedJob.done / selectedJob.total) * 100}%` }}
                       />
-                    </div>
+                    </div>      
                   </div>
                 )}
 
