@@ -30,6 +30,7 @@ function StatusBadge({ status }) {
     running: 'bg-blue-900 text-blue-400',
     queued: 'bg-yellow-900 text-yellow-400',
     failed: 'bg-red-900 text-red-400',
+    validating: 'bg-yellow-900 text-yellow-400',
   };
   return (
     <span className={`text-xs px-2 py-0.5 rounded-full ${styles[status] || 'bg-gray-800 text-gray-300'}`}>
@@ -42,13 +43,32 @@ export default function JobsPage() {
   const [jobs, setJobs] = useState(DEMO_JOBS);
   const [selectedJob, setSelectedJob] = useState(DEMO_JOBS[0]);
 
-  useEffect(() => {
-    const stored = JSON.parse(localStorage.getItem('falcon_jobs') || '[]');
-    if (stored.length > 0) {
-  const merged = [...DEMO_JOBS, ...stored.map((j, i) => ({ ...j, id: DEMO_JOBS.length + i + 1 }))];
-  setJobs(merged);
-}
-  }, []);
+useEffect(() => {
+  async function fetchJobs() {
+    try {
+      const res = await fetch('https://description-forecast-tunes-arguments.trycloudflare.com/v1/batches');
+      const data = await res.json();
+      console.log('Jobs from backend:', data);
+      const jobList = data.data || [];
+const fileMap = JSON.parse(localStorage.getItem('falcon_file_map') || '{}');
+if (jobList.length > 0) {
+  const mapped = jobList.map((job) => ({
+    id: job.id,
+    filename: fileMap[job.input_file_id] || job.input_file_id || 'unknown.jsonl',
+          status: job.status,
+          created_at: job.created_at ? new Date(job.created_at * 1000).toLocaleString('en-IN') : 'N/A',
+          total: job.request_counts?.total || 0,
+          done: job.request_counts?.completed || 0,
+        }));
+        setJobs(mapped);
+        setSelectedJob(mapped[0]);
+      }
+    } catch (err) {
+      console.error('Failed to fetch jobs:', err);
+    }
+  }
+  fetchJobs();
+}, []);
 
   const total = jobs.length;
   const completed = jobs.filter(j => j.status === 'completed').length;

@@ -27,25 +27,64 @@ export default function UploadPage() {
     setFile(e.target.files[0]);
   }
 
-  function handleSubmit() {
+async function handleSubmit() {
     if (!file) {
       setStatus('Please select a file first.');
       return;
     }
 
-    const existing = JSON.parse(localStorage.getItem('falcon_jobs') || '[]');
-    const newJob = {
-      id: existing.length + 1,
-      filename: file.name,
-      status: 'queued',
-      created_at: new Date().toLocaleString('en-IN', {
-        day: '2-digit', month: 'short', year: 'numeric',
-        hour: '2-digit', minute: '2-digit'
-      }),
-    };
+    setStatus('Uploading file...');
 
-    localStorage.setItem('falcon_jobs', JSON.stringify([...existing, newJob]));
-    router.push('/jobs');
+    try {
+      // Step 1 — Upload the file
+      const fileData = new FormData();
+      fileData.append('file', file);
+
+      const fileRes = await fetch('https://description-forecast-tunes-arguments.trycloudflare.com/v1/files', {
+        method: 'POST',
+        body: fileData,
+      });
+
+      if (!fileRes.ok) {
+        setStatus('File upload failed.');
+        return;
+      }
+
+      const fileJson = await fileRes.json();
+console.log('File uploaded:', fileJson);
+// Save filename mapping to localStorage
+const fileMap = JSON.parse(localStorage.getItem('falcon_file_map') || '{}');
+fileMap[fileJson.id] = file.name;
+localStorage.setItem('falcon_file_map', JSON.stringify(fileMap));
+
+      setStatus('Creating batch job...');
+
+      // Step 2 — Create the batch job
+      const batchRes = await fetch('https://description-forecast-tunes-arguments.trycloudflare.com/v1/batches', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input_file_id: fileJson.id,
+          endpoint: '/v1/chat/completions',
+          completion_window: '24h',
+        }),
+      });
+
+      if (!batchRes.ok) {
+        setStatus('Batch creation failed.');
+        return;
+      }
+
+      const batchJson = await batchRes.json();
+      console.log('Batch created:', batchJson);
+
+      setStatus('Job submitted!');
+      router.push('/jobs');
+
+    } catch (err) {
+      console.error(err);
+      setStatus('Could not reach server.');
+    }
   }
 
   return (
