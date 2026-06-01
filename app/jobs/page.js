@@ -162,7 +162,7 @@ export default function JobsPage() {
                     <p className="text-[#555] text-xs mt-0.5">Done</p>
                   </div>
                   <div className="border border-[#1e1e1e] rounded-lg p-3 text-center">
-                    <p className="text-yellow-400 text-lg font-medium">{selectedJob.total - selectedJob.done}</p>
+                    <p className="text-yellow-400 text-lg font-medium">{Number(selectedJob?.total || 0) - Number(selectedJob?.done || 0)}</p>
                     <p className="text-[#555] text-xs mt-0.5">Remaining</p>
                   </div>
                 </div>
