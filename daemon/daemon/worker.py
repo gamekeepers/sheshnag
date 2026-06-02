@@ -176,7 +176,7 @@ class Worker:
 
         # ── Step 1: Download input ───────────────────────────────
         logger.info(f"[{job.job_id}] Downloading input file...")
-        await self._client.download_input(job.job_id, input_path)
+        await self._client.download_input(job.job_id, job.input_path, input_path)
 
         # ── Step 2: Parse prompts ────────────────────────────────
         prompts = self._parse_input(input_path, job)

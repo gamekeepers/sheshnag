@@ -8,12 +8,12 @@ makes it trivial to:
     - Swap HTTP transport (e.g., gRPC in future)
     - Add auth headers, retries, etc. in one place
 
-API contract assumptions (agreed with @nirav3690):
-    POST /workers/register      → registers worker with metadata
-    POST /workers/poll           → returns assigned job or 204
-    GET  /jobs/{job_id}/input    → downloads input JSONL
+API contract (updated to match @akshay's OpenAI batch spec refactor):
+    POST /workers/register      → NOT YET on backend (TODO: ask Akshay)
+    POST /workers/poll           → returns assigned batch or {"job": null}
+    GET  /v1/files/{id}/content  → downloads input JSONL (path from poll)
     POST /workers/upload-results → multipart upload of output JSONL
-    POST /jobs/{job_id}/fail     → reports job failure
+    POST /workers/report-failure → reports job failure
 """
 
 from __future__ import annotations
@@ -96,6 +96,9 @@ class BackendClient:
         return self._client
 
     # ── Worker Registration (Spec §8) ────────────────────────────
+    # TODO: Ask Akshay to add POST /workers/register to the backend.
+    #       Until then, registration is a no-op — the daemon logs
+    #       the worker info locally and proceeds to polling.
 
     async def register_worker(self, worker_info: WorkerInfo) -> None:
         """
@@ -105,27 +108,33 @@ class BackendClient:
         models, runtime) before it begins polling for jobs. This lets
         the scheduler know what this worker can handle.
 
+        NOTE: Endpoint not yet implemented on backend. Currently a
+        no-op that logs worker info. Will be enabled once Akshay adds
+        POST /workers/register to the backend API.
+
         Args:
             worker_info: Worker registration payload.
-
-        Raises:
-            httpx.HTTPError: On network or server errors.
         """
-        client = self._get_client()
+        # ── Commented out until backend supports /workers/register ──
+        # client = self._get_client()
+        #
+        # response = await client.post(
+        #     "/workers/register",
+        #     json=worker_info.model_dump(),
+        # )
+        # response.raise_for_status()
 
         logger.info(
-            f"Registering worker '{worker_info.worker_id}' "
-            f"(GPU: {worker_info.gpu_name}, "
-            f"VRAM: {worker_info.vram_gb}GB, "
-            f"models: {worker_info.models})"
+            f"Worker registration skipped (endpoint not yet on backend). "
+            f"Worker info: id={worker_info.worker_id}, "
+            f"GPU={worker_info.gpu_name}, "
+            f"VRAM={worker_info.vram_gb}GB, "
+            f"models={worker_info.models}"
         )
-
-        response = await client.post(
-            "/workers/register",
-            json=worker_info.model_dump(),
+        logger.warning(
+            "TODO: Enable registration once POST /workers/register is "
+            "available on the backend"
         )
-        response.raise_for_status()
-        logger.info(f"Worker registered successfully ✓")
 
     # ── Job Polling ──────────────────────────────────────────────
 
@@ -164,18 +173,29 @@ class BackendClient:
             return None
 
         job = Job(**job_data)
-        logger.info(f"Received job assignment: {job.job_id} (model: {job.model})")
+        logger.info(
+            f"Received job assignment: {job.job_id} "
+            f"(input_file_id: {job.input_file_id})"
+        )
         return job
 
     # ── Input Download ───────────────────────────────────────────
 
-    async def download_input(self, job_id: str, dest_path: str | Path) -> Path:
+    async def download_input(
+        self, job_id: str, input_path: str, dest_path: str | Path
+    ) -> Path:
         """
         Download the input JSONL file for a job.
 
+        Uses the input_path provided by the poll response (e.g.,
+        "/v1/files/{file_id}/content") rather than constructing the
+        URL ourselves. This decouples the daemon from the backend's
+        file storage layout.
+
         Args:
-            job_id:    The job's unique identifier.
-            dest_path: Local path where the file should be saved.
+            job_id:     The job's unique identifier (for logging).
+            input_path: Server-provided URL path to the input file.
+            dest_path:  Local path where the file should be saved.
 
         Returns:
             Path to the downloaded file.
@@ -191,7 +211,7 @@ class BackendClient:
         # Stream the download for large files
         async with client.stream(
             "GET",
-            f"/jobs/{job_id}/input",
+            input_path,
             follow_redirects=True,
         ) as response:
             response.raise_for_status()
@@ -259,8 +279,9 @@ class BackendClient:
 
         try:
             response = await client.post(
-                f"/jobs/{job_id}/fail",
+                "/workers/report-failure",
                 json={
+                    "job_id": job_id,
                     "worker_id": self._worker_id,
                     "error": error[:2000],  # Prevent oversized payloads
                 },
