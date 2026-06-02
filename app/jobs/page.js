@@ -46,7 +46,7 @@ export default function JobsPage() {
 useEffect(() => {
   async function fetchJobs() {
     try {
-      const res = await fetch('https://description-forecast-tunes-arguments.trycloudflare.com/v1/batches');
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/v1/batches`);
       const data = await res.json();
       console.log('Jobs from backend:', data);
       const jobList = data.data || [];

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpu-daemon"
+version = "0.1.0"
+description = "GPU Worker Daemon — polls for batch inference jobs and executes them via vLLM"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27.0",
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "python-multipart>=0.0.9",
+]
+
+[project.scripts]
+gpu-daemon = "daemon.main:main"
+
+[tool.setuptools.packages.find]
+include = ["daemon*"]

@@ -40,7 +40,7 @@ async function handleSubmit() {
       const fileData = new FormData();
       fileData.append('file', file);
 
-      const fileRes = await fetch('https://description-forecast-tunes-arguments.trycloudflare.com/v1/files', {
+      const fileRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/v1/files`, {
         method: 'POST',
         body: fileData,
       });
@@ -60,7 +60,7 @@ localStorage.setItem('falcon_file_map', JSON.stringify(fileMap));
       setStatus('Creating batch job...');
 
       // Step 2 — Create the batch job
-      const batchRes = await fetch('https://description-forecast-tunes-arguments.trycloudflare.com/v1/batches', {
+      const batchRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/v1/batches`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

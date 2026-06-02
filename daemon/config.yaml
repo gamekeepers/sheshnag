@@ -1,0 +1,62 @@
+# ─────────────────────────────────────────────────────────────
+# GPU Worker Daemon — Configuration
+# ─────────────────────────────────────────────────────────────
+# Copy this file and adjust values for your environment.
+# All values shown here are defaults.
+#
+# Override any value via environment variables:
+#   DAEMON_BACKEND_URL=http://remote-server:8000
+#   DAEMON_WORKER_ID=my-gpu-01
+# ─────────────────────────────────────────────────────────────
+
+# Unique identifier for this worker (auto-generated if omitted)
+# worker_id: "my-gpu-worker-01"
+
+# Control plane backend URL
+backend_url: "http://localhost:8000"
+
+# Local vLLM server URL (OpenAI-compatible API)
+vllm_url: "http://localhost:8100"
+
+# How often to poll for new jobs (seconds)
+poll_interval: 5
+
+# Logging level: DEBUG, INFO, WARNING, ERROR
+log_level: "INFO"
+
+# Local directory for job artifacts (inputs, outputs)
+# work_dir: "~/.gpu-daemon/jobs"
+
+# ─────────────────────────────────────────────────────────────
+# Authentication (Spec §17)
+# ─────────────────────────────────────────────────────────────
+
+# Worker authentication
+# api_key: "your-api-key-here"
+
+# ─────────────────────────────────────────────────────────────
+# Registration Metadata (Spec §8)
+# ─────────────────────────────────────────────────────────────
+# This information is sent to the control plane when the
+# worker connects so the scheduler knows what it can handle.
+
+# GPU model name
+# gpu_name: "RTX 4090"
+
+# GPU VRAM in gigabytes
+# vram_gb: 24.0
+
+# Models available on this worker
+# models:
+#   - "mistralai/Mistral-7B-Instruct-v0.2"
+#   - "meta-llama/Llama-3-8b-instruct"
+
+# Inference runtime type
+# runtime: "vllm"
+
+# ─────────────────────────────────────────────────────────────
+# Advanced Tuning
+# ─────────────────────────────────────────────────────────────
+
+# vLLM inference timeout per prompt (seconds)
+# vllm_timeout: 300.0
