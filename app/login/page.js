@@ -4,15 +4,14 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
-function FalconLogo({ size = 28 }) {
+function MoonknightLogo({ size = 28 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: size / 4 }}>
-      <svg width={size} height={size} viewBox="0 0 36 36" fill="none">
-        <line x1="4" y1="28" x2="20" y2="8" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"/>
-        <line x1="12" y1="28" x2="28" y2="8" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" opacity="0.5"/>
-        <line x1="20" y1="28" x2="32" y2="12" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" opacity="0.25"/>
+      <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
+        <circle cx="16" cy="16" r="12" fill="#fff" />
+        <circle cx="20" cy="13" r="10" fill="#0a0a0a" />
       </svg>
-      <span style={{ color: '#fff', fontSize: size * 0.55, fontWeight: 500, letterSpacing: '0.15em' }}>FALCON</span>
+      <span style={{ color: '#fff', fontSize: size * 0.45, fontWeight: 500, letterSpacing: '0.12em' }}>MOONKNIGHT</span>
     </div>
   );
 }
@@ -41,7 +40,7 @@ export default function LoginPage() {
 
       {/* Top bar */}
       <div className="px-7 py-5">
-        <Link href="/"><FalconLogo size={26} /></Link>
+        <Link href="/"><MoonknightLogo size={26} /></Link>
       </div>
 
       {/* Body */}
@@ -131,6 +130,13 @@ export default function LoginPage() {
           <p className="text-center text-sm">
             <Link href="/forgot-password" className="text-[#2d7dd6]">Forgot password?</Link>
           </p>
+
+          <div className="mt-6 p-3 border border-[#2a2a2a] rounded-xl text-center bg-[#111]">
+            <p className="text-[#555] text-xs mb-1">Are you a GPU provider?</p>
+            <Link href="/provider/login" className="text-[#4ade80] text-xs hover:underline">
+              ⚡ Go to Provider Portal →
+            </Link>
+          </div>
 
         </div>
       </div>
