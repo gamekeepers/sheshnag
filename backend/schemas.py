@@ -53,7 +53,70 @@ class BatchOut(BaseModel):
         )
 
 
+class BatchSummary(BaseModel):
+    """Provider view — no input_file_id or prompt content."""
+    id: str
+    object: str = "batch"
+    endpoint: str
+    status: str
+    created_at: int
+    completed_at: Optional[int] = None
+    request_counts: RequestCounts = RequestCounts()
+
+    @classmethod
+    def from_batch(cls, batch):
+        return cls(
+            id=batch.id,
+            endpoint=batch.endpoint,
+            status=batch.status,
+            created_at=batch.created_at,
+            completed_at=batch.completed_at,
+            request_counts=RequestCounts(
+                total=batch.request_counts_total or 0,
+                completed=batch.request_counts_completed or 0,
+                failed=batch.request_counts_failed or 0,
+            ),
+        )
+
+
 class BatchCreate(BaseModel):
     input_file_id: str
     endpoint: str
     completion_window: str = "24h"
+
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+    full_name: str
+    role: str = "user"
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+
+class UserOut(BaseModel):
+    id: str
+    email: str
+    full_name: str
+    role: str
+    api_key: Optional[str] = None
+    is_active: bool
+    must_change_password: bool
+    created_at: int
+
+    class Config:
+        from_attributes = True
+
+
+class TokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    must_change_password: bool = False

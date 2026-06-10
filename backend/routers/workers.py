@@ -4,6 +4,7 @@ from database import get_db
 from models import Batch, BatchAssignment, File as FileModel, unix_now
 from pydantic import BaseModel
 from typing import Optional
+from auth import require_role
 import shutil, os
 
 router = APIRouter()
@@ -37,7 +38,11 @@ class FailureReport(BaseModel):
 
 
 @router.post("/poll")
-def poll_job(req: PollRequest, db: Session = Depends(get_db)):
+def poll_job(
+    req: PollRequest,
+    user=Depends(require_role("provider", "admin")),
+    db: Session = Depends(get_db),
+):
     batch = (
         db.query(Batch)
         .filter(Batch.status == "validating")
@@ -73,6 +78,7 @@ def poll_job(req: PollRequest, db: Session = Depends(get_db)):
 def upload_results(
     job_id: str = Form(...),
     file: UploadFile = File(...),
+    user=Depends(require_role("provider", "admin")),
     db: Session = Depends(get_db),
 ):
     batch = db.query(Batch).filter(Batch.id == job_id).first()
@@ -82,6 +88,7 @@ def upload_results(
     validate_transition(batch.status, "completed")
 
     output_file = FileModel(
+        user_id=batch.user_id,
         filename=f"{batch.id}_output.jsonl",
         purpose="batch_output",
     )
@@ -113,7 +120,11 @@ def upload_results(
 
 
 @router.post("/report-failure")
-def report_failure(req: FailureReport, db: Session = Depends(get_db)):
+def report_failure(
+    req: FailureReport,
+    user=Depends(require_role("provider", "admin")),
+    db: Session = Depends(get_db),
+):
     batch = db.query(Batch).filter(Batch.id == req.job_id).first()
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found")

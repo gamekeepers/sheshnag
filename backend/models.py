@@ -1,7 +1,11 @@
 from database import Base
-from sqlalchemy import Column, String, Integer
+from sqlalchemy import Column, String, Integer, Boolean
 from datetime import datetime, timezone
 import uuid
+
+
+def generate_user_id():
+    return f"user-{uuid.uuid4().hex[:24]}"
 
 
 def generate_file_id():
@@ -16,10 +20,25 @@ def unix_now():
     return int(datetime.now(timezone.utc).timestamp())
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id                   = Column(String, primary_key=True, default=generate_user_id)
+    email                = Column(String, unique=True, nullable=False)
+    password_hash        = Column(String, nullable=False)
+    full_name            = Column(String, nullable=False)
+    role                 = Column(String, nullable=False)
+    api_key              = Column(String, unique=True, nullable=True)
+    is_active            = Column(Boolean, default=True)
+    must_change_password = Column(Boolean, default=False)
+    created_at           = Column(Integer, default=unix_now)
+
+
 class File(Base):
     __tablename__ = "files"
 
     id         = Column(String, primary_key=True, default=generate_file_id)
+    user_id    = Column(String, nullable=True)
     filename   = Column(String, nullable=False)
     purpose    = Column(String, default="batch")
     bytes      = Column(Integer, default=0)
@@ -31,6 +50,7 @@ class Batch(Base):
     __tablename__ = "batches"
 
     id                       = Column(String, primary_key=True, default=generate_batch_id)
+    user_id                  = Column(String, nullable=True)
     endpoint                 = Column(String, nullable=False)
     input_file_id            = Column(String, nullable=False)
     completion_window        = Column(String, default="24h")
