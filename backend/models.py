@@ -1,5 +1,5 @@
 from database import Base
-from sqlalchemy import Column, String, Integer, Boolean
+from sqlalchemy import Column, String, Integer, Boolean, Float
 from datetime import datetime, timezone
 import uuid
 
@@ -52,6 +52,7 @@ class Batch(Base):
     id                       = Column(String, primary_key=True, default=generate_batch_id)
     user_id                  = Column(String, nullable=True)
     endpoint                 = Column(String, nullable=False)
+    model                    = Column(String, nullable=True)
     input_file_id            = Column(String, nullable=False)
     completion_window        = Column(String, default="24h")
     status                   = Column(String, default="validating")
@@ -70,3 +71,15 @@ class BatchAssignment(Base):
     batch_id    = Column(String, primary_key=True)
     worker_id   = Column(String, nullable=False)
     assigned_at = Column(Integer, default=unix_now)
+
+
+class ProviderCapability(Base):
+    __tablename__ = "provider_capabilities"
+
+    worker_id         = Column(String, primary_key=True)
+    provider_id       = Column(String, nullable=False)
+    vram_total_gb     = Column(Float, default=0)
+    vram_available_gb = Column(Float, default=0)
+    loaded_models     = Column(String, default="[]")
+    status            = Column(String, default="online")
+    last_heartbeat    = Column(Integer, default=unix_now)

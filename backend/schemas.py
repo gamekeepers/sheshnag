@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 
 class FileOut(BaseModel):
@@ -24,6 +24,7 @@ class BatchOut(BaseModel):
     id: str
     object: str = "batch"
     endpoint: str
+    model: Optional[str] = None
     input_file_id: str
     completion_window: str
     status: str
@@ -38,6 +39,7 @@ class BatchOut(BaseModel):
         return cls(
             id=batch.id,
             endpoint=batch.endpoint,
+            model=batch.model,
             input_file_id=batch.input_file_id,
             completion_window=batch.completion_window,
             status=batch.status,
@@ -58,6 +60,7 @@ class BatchSummary(BaseModel):
     id: str
     object: str = "batch"
     endpoint: str
+    model: Optional[str] = None
     status: str
     created_at: int
     completed_at: Optional[int] = None
@@ -68,6 +71,7 @@ class BatchSummary(BaseModel):
         return cls(
             id=batch.id,
             endpoint=batch.endpoint,
+            model=batch.model,
             status=batch.status,
             created_at=batch.created_at,
             completed_at=batch.completed_at,
@@ -120,3 +124,10 @@ class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
     must_change_password: bool = False
+
+
+class HeartbeatRequest(BaseModel):
+    worker_id: str
+    vram_total_gb: float
+    vram_available_gb: float = 0
+    loaded_models: List[str] = []

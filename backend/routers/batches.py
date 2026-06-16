@@ -4,6 +4,8 @@ from database import get_db
 from models import Batch, File as FileModel
 from schemas import BatchCreate, BatchOut, BatchSummary
 from auth import get_current_user, require_role
+from provider_picker import is_model_supported
+import json
 
 router = APIRouter()
 
@@ -21,15 +23,29 @@ def create_batch(
     if user.role == "user" and input_file.user_id != user.id:
         raise HTTPException(status_code=403, detail="You don't own this file")
 
+    model_name = None
     total_requests = 0
     with open(input_file.filepath, "r") as f:
         for line in f:
             if line.strip():
                 total_requests += 1
+                if model_name is None:
+                    try:
+                        first_req = json.loads(line)
+                        model_name = first_req.get("body", {}).get("model")
+                    except json.JSONDecodeError:
+                        pass
+
+    if model_name and not is_model_supported(model_name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{model_name}' is not supported. Check /v1/models for available models.",
+        )
 
     batch = Batch(
         user_id=user.id,
         endpoint=req.endpoint,
+        model=model_name,
         input_file_id=req.input_file_id,
         completion_window=req.completion_window,
         status="validating",

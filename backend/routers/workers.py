@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from database import get_db
-from models import Batch, BatchAssignment, File as FileModel, unix_now
+from models import Batch, BatchAssignment, File as FileModel, ProviderCapability, unix_now
+from schemas import HeartbeatRequest
 from pydantic import BaseModel
 from typing import Optional
 from auth import require_role
-import shutil, os
+from provider_picker import picker
+import shutil, os, json
 
 router = APIRouter()
 
@@ -37,18 +39,62 @@ class FailureReport(BaseModel):
     error: Optional[str] = None
 
 
+@router.post("/heartbeat")
+def heartbeat(
+    req: HeartbeatRequest,
+    user=Depends(require_role("provider", "admin")),
+    db: Session = Depends(get_db),
+):
+    caps = db.query(ProviderCapability).filter(
+        ProviderCapability.worker_id == req.worker_id,
+    ).first()
+
+    if caps:
+        caps.vram_total_gb = req.vram_total_gb
+        caps.vram_available_gb = req.vram_available_gb
+        caps.loaded_models = json.dumps(req.loaded_models)
+        caps.status = "online"
+        caps.last_heartbeat = unix_now()
+    else:
+        caps = ProviderCapability(
+            worker_id=req.worker_id,
+            provider_id=user.id,
+            vram_total_gb=req.vram_total_gb,
+            vram_available_gb=req.vram_available_gb,
+            loaded_models=json.dumps(req.loaded_models),
+            status="online",
+            last_heartbeat=unix_now(),
+        )
+        db.add(caps)
+
+    db.commit()
+    return {"status": "ok"}
+
+
 @router.post("/poll")
 def poll_job(
     req: PollRequest,
     user=Depends(require_role("provider", "admin")),
     db: Session = Depends(get_db),
 ):
-    batch = (
+    caps = db.query(ProviderCapability).filter(
+        ProviderCapability.worker_id == req.worker_id,
+    ).first()
+
+    available_batches = (
         db.query(Batch)
         .filter(Batch.status == "validating")
         .order_by(Batch.created_at)
-        .first()
+        .all()
     )
+
+    if not available_batches:
+        return {"job": None}
+
+    if caps:
+        batch = picker.find_best_batch(caps, available_batches)
+    else:
+        batch = available_batches[0] if available_batches else None
 
     if not batch:
         return {"job": None}
@@ -70,6 +116,7 @@ def poll_job(
             "job_id":        batch.id,
             "input_file_id": batch.input_file_id,
             "input_path":    f"/v1/files/{batch.input_file_id}/content",
+            "model":         batch.model,
         }
     }
 
