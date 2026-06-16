@@ -45,7 +45,9 @@ export default function JobsPage() {
 useEffect(() => {
   async function fetchJobs() {
     try {
-      const res = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/batches');
+      const res = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/batches', {
+        headers: { 'ngrok-skip-browser-warning': 'true' },
+      });
       const data = await res.json();
       console.log('Jobs from backend:', data);
       const jobList = data.data || [];

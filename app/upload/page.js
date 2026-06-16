@@ -41,6 +41,7 @@ async function handleSubmit() {
 
       const fileRes = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/files', {
         method: 'POST',
+        headers: { 'ngrok-skip-browser-warning': 'true' },
         body: fileData,
       });
 
@@ -61,7 +62,7 @@ localStorage.setItem('moonknight_file_map', JSON.stringify(fileMap));
       // Step 2 — Create the batch job
       const batchRes = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/batches', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
         body: JSON.stringify({
           input_file_id: fileJson.id,
           endpoint: '/v1/chat/completions',
