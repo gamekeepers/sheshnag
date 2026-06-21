@@ -16,13 +16,7 @@ function FalconLogo({ size = 28 }) {
   );
 }
 
-const DEMO_JOBS = [
-  { id: 1, filename: 'prompts_batch1.jsonl', status: 'completed', created_at: '24 May 2026, 08:00 AM', total: 120, done: 120 },
-  { id: 2, filename: 'qa_test_run.jsonl', status: 'running', created_at: '24 May 2026, 09:30 AM', total: 80, done: 45 },
-  { id: 3, filename: 'large_batch.jsonl', status: 'queued', created_at: '24 May 2026, 10:15 AM', total: 500, done: 0 },
-  { id: 4, filename: 'marketing_prompts.jsonl', status: 'completed', created_at: '24 May 2026, 11:00 AM', total: 60, done: 60 },
-  { id: 5, filename: 'broken_input.jsonl', status: 'failed', created_at: '24 May 2026, 11:45 AM', total: 30, done: 0 },
-];
+
 
 function StatusBadge({ status }) {
   const styles = {
@@ -40,16 +34,36 @@ function StatusBadge({ status }) {
 }
 
 export default function JobsPage() {
-  const [jobs, setJobs] = useState(DEMO_JOBS);
-  const [selectedJob, setSelectedJob] = useState(DEMO_JOBS[0]);
+  const [jobs, setJobs] = useState([]);
+  const [selectedJob, setSelectedJob] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [userName, setUserName] = useState('');
+
+  useEffect(() => {
+    const userRaw = localStorage.getItem('mk_user');
+    if (userRaw) {
+      try { setUserName(JSON.parse(userRaw).full_name || JSON.parse(userRaw).email || ''); } catch {}
+    }
+  }, []);
 
 useEffect(() => {
   async function fetchJobs() {
+    setLoading(true);
     try {
+<<<<<<< Updated upstream
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/v1/batches`);
+=======
+      const token = localStorage.getItem('mk_token') || '';
+      const res = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/batches', {
+        headers: {
+          'ngrok-skip-browser-warning': 'true',
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+>>>>>>> Stashed changes
       const data = await res.json();
-      console.log('Jobs from backend:', data);
       const jobList = data.data || [];
+<<<<<<< Updated upstream
 const fileMap = JSON.parse(localStorage.getItem('falcon_file_map') || '{}');
 if (jobList.length > 0) {
   const mapped = jobList.map((job) => ({
@@ -63,8 +77,23 @@ if (jobList.length > 0) {
         setJobs(mapped);
         setSelectedJob(mapped[0]);
       }
+=======
+      const fileMap = JSON.parse(localStorage.getItem('moonknight_file_map') || '{}');
+      const mapped = jobList.map((job) => ({
+        id: job.id,
+        filename: fileMap[job.input_file_id] || job.input_file_id || 'unknown.jsonl',
+        status: job.status,
+        created_at: job.created_at ? new Date(job.created_at * 1000).toLocaleString('en-IN') : 'N/A',
+        total: job.request_counts?.total || 0,
+        done: job.request_counts?.completed || 0,
+      }));
+      setJobs(mapped);
+      setSelectedJob(mapped[0] || null);
+>>>>>>> Stashed changes
     } catch (err) {
       console.error('Failed to fetch jobs:', err);
+    } finally {
+      setLoading(false);
     }
   }
   fetchJobs();
@@ -95,9 +124,24 @@ if (jobList.length > 0) {
         {/* Topbar */}
         <div className="flex items-center justify-between px-6 py-3 border-b border-[#2a2a2a]">
           <h1 className="text-white font-medium text-base">Jobs</h1>
-          <Link href="/upload" className="flex items-center gap-1 px-3 py-1.5 text-sm border border-[#3a3a3a] rounded-md hover:bg-[#1e1e1e] text-white">
-            + Create
-          </Link>
+          <div className="flex items-center gap-3">
+            {userName && (
+              <div className="flex items-center gap-2">
+                <div style={{
+                  width: '28px', height: '28px', borderRadius: '50%',
+                  backgroundColor: '#1e3a5f', border: '1px solid #2d5a8a',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '12px', fontWeight: 600, color: '#60a5fa',
+                }}>
+                  {userName.charAt(0).toUpperCase()}
+                </div>
+                <span className="text-sm text-[#aaa]">{userName}</span>
+              </div>
+            )}
+            <Link href="/upload" className="flex items-center gap-1 px-3 py-1.5 text-sm border border-[#3a3a3a] rounded-md hover:bg-[#1e1e1e] text-white">
+              + New Job
+            </Link>
+          </div>
         </div>
 
         {/* Stats Cards */}
@@ -130,17 +174,34 @@ if (jobList.length > 0) {
               <span className="flex-1">File</span>
               <span className="w-24 text-center">Status</span>
             </div>
-            {jobs.map((job) => (
-              <div
-                key={job.id}
-                onClick={() => setSelectedJob(job)}
-                className={`flex items-center px-4 py-3 border-b border-[#1a1a1a] cursor-pointer hover:bg-[#141414] transition-colors ${selectedJob?.id === job.id ? 'bg-[#1a1a1a]' : ''}`}
-              >
-                <span className="w-14 text-[#555] text-xs font-mono">#{job.id}</span>
-                <span className="flex-1 text-sm text-white truncate pr-2">{job.filename}</span>
-                <span className="w-24 flex justify-center"><StatusBadge status={job.status} /></span>
+
+            {loading ? (
+              <div className="flex flex-col items-center justify-center py-20 text-[#444]">
+                <div style={{ width: '28px', height: '28px', border: '2px solid #333', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                <p className="text-xs mt-3">Loading your jobs...</p>
               </div>
-            ))}
+            ) : jobs.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 text-center px-6">
+                <div className="text-4xl mb-4">📭</div>
+                <p className="text-white text-sm font-medium mb-1">No jobs yet</p>
+                <p className="text-[#555] text-xs mb-5">Upload a JSONL file to submit your first batch job</p>
+                <Link href="/upload" className="px-4 py-2 bg-white text-black text-xs rounded-full font-medium hover:bg-gray-100">
+                  + Upload your first job
+                </Link>
+              </div>
+            ) : (
+              jobs.map((job) => (
+                <div
+                  key={job.id}
+                  onClick={() => setSelectedJob(job)}
+                  className={`flex items-center px-4 py-3 border-b border-[#1a1a1a] cursor-pointer hover:bg-[#141414] transition-colors ${selectedJob?.id === job.id ? 'bg-[#1a1a1a]' : ''}`}
+                >
+                  <span className="w-14 text-[#555] text-xs font-mono">#{String(job.id).slice(-4)}</span>
+                  <span className="flex-1 text-sm text-white truncate pr-2">{job.filename}</span>
+                  <span className="w-24 flex justify-center"><StatusBadge status={job.status} /></span>
+                </div>
+              ))
+            )}
           </div>
 
           {/* Detail Panel */}

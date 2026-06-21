@@ -40,8 +40,18 @@ async function handleSubmit() {
       const fileData = new FormData();
       fileData.append('file', file);
 
+<<<<<<< Updated upstream
       const fileRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/v1/files`, {
         method: 'POST',
+=======
+      const token = localStorage.getItem('mk_token') || '';
+      const fileRes = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/files', {
+        method: 'POST',
+        headers: {
+          'ngrok-skip-browser-warning': 'true',
+          'Authorization': `Bearer ${token}`,
+        },
+>>>>>>> Stashed changes
         body: fileData,
       });
 
@@ -51,7 +61,6 @@ async function handleSubmit() {
       }
 
       const fileJson = await fileRes.json();
-console.log('File uploaded:', fileJson);
 // Save filename mapping to localStorage
 const fileMap = JSON.parse(localStorage.getItem('falcon_file_map') || '{}');
 fileMap[fileJson.id] = file.name;
@@ -62,7 +71,15 @@ localStorage.setItem('falcon_file_map', JSON.stringify(fileMap));
       // Step 2 — Create the batch job
       const batchRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/v1/batches`, {
         method: 'POST',
+<<<<<<< Updated upstream
         headers: { 'Content-Type': 'application/json' },
+=======
+        headers: {
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': 'true',
+          'Authorization': `Bearer ${token}`,
+        },
+>>>>>>> Stashed changes
         body: JSON.stringify({
           input_file_id: fileJson.id,
           endpoint: '/v1/chat/completions',
@@ -76,13 +93,11 @@ localStorage.setItem('falcon_file_map', JSON.stringify(fileMap));
       }
 
       const batchJson = await batchRes.json();
-      console.log('Batch created:', batchJson);
 
       setStatus('Job submitted!');
       router.push('/jobs');
 
-    } catch (err) {
-      console.error(err);
+    } catch {
       setStatus('Could not reach server.');
     }
   }

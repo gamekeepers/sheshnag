@@ -1,4 +1,12 @@
+<<<<<<< Updated upstream
 import Link from 'next/link';
+=======
+'use client';
+import ParticleField from './components/ParticleField';
+import CursorEffect from './components/CursorEffect';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+>>>>>>> Stashed changes
 
 function FalconLogo({ size = 32 }) {
   return (
@@ -14,6 +22,7 @@ function FalconLogo({ size = 32 }) {
 }
 
 export default function Home() {
+<<<<<<< Updated upstream
   return (
     <div className="bg-[#0a0a0a] min-h-screen flex flex-col font-sans">
 
@@ -31,6 +40,213 @@ export default function Home() {
       <div className="flex flex-col items-center justify-center text-center px-8 pt-24 pb-16">
         <div className="flex items-center gap-2 px-4 py-1.5 border border-[#2a2a2a] rounded-full text-[#666] text-xs mb-8 tracking-wide">
           ⚡ AI Batch Processing Platform
+=======
+  const router = useRouter();
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [userName, setUserName] = useState('');
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => {
+    const token = localStorage.getItem('mk_token');
+    const userRaw = localStorage.getItem('mk_user');
+    setIsLoggedIn(!!token);
+    if (userRaw) {
+      try {
+        const u = JSON.parse(userRaw);
+        setUserName(u.full_name || u.email || '');
+      } catch {}
+    }
+  }, []);
+
+  const handleLogout = () => {
+    localStorage.removeItem('mk_token');
+    localStorage.removeItem('mk_user');
+    localStorage.removeItem('moonknight_file_map');
+    setIsLoggedIn(false);
+    setUserName('');
+    setMenuOpen(false);
+  };
+
+return (
+    <div style={{
+      minHeight: '100vh',
+      backgroundColor: '#06070f',
+      color: '#fff',
+      fontFamily: "'Geist', 'Inter', sans-serif",
+      position: 'relative',
+      overflow: 'hidden',
+    }}>
+
+      <ParticleField />
+      <CursorEffect />
+
+      {/* ── NAVBAR ── */}
+      <nav style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '20px 40px',
+        borderBottom: '1px solid rgba(255,255,255,0.08)',
+        position: 'relative',
+        zIndex: 40,
+      }}>
+        {/* Logo */}
+        <div style={{ cursor: 'pointer' }} onClick={() => router.push('/')}>
+          <MoonknightLogo size={28} />
+        </div>
+
+        {/* Right side */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {!isLoggedIn ? (
+            <>
+              <button
+                onClick={() => router.push('/login')}
+                style={{
+                  padding: '10px 22px',
+                  borderRadius: '10px',
+                  border: '1px solid rgba(255,255,255,0.25)',
+                  background: 'transparent',
+                  color: '#fff',
+                  cursor: 'pointer',
+                  fontSize: '15px',
+                  fontWeight: 500,
+                  transition: 'background 0.2s',
+                }}
+                onMouseEnter={e => e.target.style.background = 'rgba(255,255,255,0.08)'}
+                onMouseLeave={e => e.target.style.background = 'transparent'}
+              >
+                Log in
+              </button>
+              <button
+                onClick={() => router.push('/signup')}
+                style={{
+                  padding: '10px 22px',
+                  borderRadius: '10px',
+                  border: '1px solid rgba(255,255,255,0.25)',
+                  background: 'transparent',
+                  color: '#fff',
+                  cursor: 'pointer',
+                  fontSize: '15px',
+                  fontWeight: 500,
+                  transition: 'background 0.2s',
+                }}
+                onMouseEnter={e => e.target.style.background = 'rgba(255,255,255,0.08)'}
+                onMouseLeave={e => e.target.style.background = 'transparent'}
+              >
+                Sign up
+              </button>
+            </>
+          ) : (
+            <>
+              {/* User avatar + name */}
+              {userName && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{
+                    width: '34px', height: '34px', borderRadius: '50%',
+                    backgroundColor: '#1e3a5f', border: '1px solid #2d5a8a',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: '13px', fontWeight: 600, color: '#60a5fa',
+                  }}>
+                    {userName.charAt(0).toUpperCase()}
+                  </div>
+                  <span style={{ fontSize: '14px', color: '#aaa', maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {userName}
+                  </span>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Hamburger menu */}
+          <button
+            onClick={() => setMenuOpen(!menuOpen)}
+            style={{
+              width: '42px',
+              height: '42px',
+              borderRadius: '10px',
+              border: '1px solid rgba(255,255,255,0.25)',
+              background: 'transparent',
+              color: '#fff',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexDirection: 'column',
+              gap: '5px',
+              padding: '0',
+            }}
+          >
+            <span style={{ display: 'block', width: '18px', height: '1.5px', background: '#fff' }} />
+            <span style={{ display: 'block', width: '18px', height: '1.5px', background: '#fff' }} />
+            <span style={{ display: 'block', width: '18px', height: '1.5px', background: '#fff' }} />
+          </button>
+        </div>
+
+        {/* Dropdown menu */}
+        {menuOpen && (
+          <div style={{
+            position: 'absolute',
+            top: '72px',
+            right: '40px',
+            background: '#1a1a1a',
+            border: '1px solid rgba(255,255,255,0.12)',
+            borderRadius: '12px',
+            padding: '8px',
+            minWidth: '180px',
+            zIndex: 100,
+            boxShadow: '0 16px 40px rgba(0,0,0,0.6)',
+          }}>
+            {isLoggedIn ? (
+              <>
+                <MenuItem label="My Jobs" onClick={() => { router.push('/jobs'); setMenuOpen(false); }} />
+                <MenuItem label="Upload Batch" onClick={() => { router.push('/upload'); setMenuOpen(false); }} />
+                <div style={{ height: '1px', background: 'rgba(255,255,255,0.08)', margin: '6px 0' }} />
+                <MenuItem label="Log out" onClick={handleLogout} danger />
+              </>
+            ) : (
+              <>
+                <MenuItem label="Log in" onClick={() => { router.push('/login'); setMenuOpen(false); }} />
+                <MenuItem label="Sign up" onClick={() => { router.push('/signup'); setMenuOpen(false); }} />
+              </>
+            )}
+          </div>
+        )}
+      </nav>
+
+     {/* HERO */}
+      <main style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: 'calc(100vh - 160px)',
+        textAlign: 'center',
+        padding: '60px 20px',
+        position: 'relative',
+        zIndex: 10,
+      }}>
+
+        {/* Badge */}
+        <div style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '8px',
+          border: '1px solid rgba(255,255,255,0.15)',
+          borderRadius: '999px',
+          padding: '8px 18px',
+          marginBottom: '40px',
+          fontSize: '14px',
+          color: 'rgba(255,255,255,0.65)',
+          letterSpacing: '0.03em',
+        }}>
+          <span style={{
+            width: '7px', height: '7px', borderRadius: '50%',
+            background: '#22c55e',
+            boxShadow: '0 0 8px #22c55e',
+            display: 'inline-block',
+          }} />
+          AI Batch Processing Platform
+>>>>>>> Stashed changes
         </div>
 
         <h1 className="text-6xl font-medium text-white leading-tight mb-6 tracking-tight max-w-3xl">

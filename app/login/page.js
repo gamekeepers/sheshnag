@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+<<<<<<< Updated upstream
 
 function FalconLogo({ size = 28 }) {
   return (
@@ -16,6 +17,10 @@ function FalconLogo({ size = 28 }) {
     </div>
   );
 }
+=======
+import ParticleField from '../components/ParticleField';
+import CursorEffect from '../components/CursorEffect';
+>>>>>>> Stashed changes
 
 export default function LoginPage() {
   const [mode, setMode] = useState('user');
@@ -24,124 +29,167 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const router = useRouter();
 
-  function handleSubmit() {
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit() {
     if (!email || !password) {
       setError('Please fill in all fields.');
       return;
     }
     if (mode === 'admin') {
       router.push('/admin');
-    } else {
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data?.detail || 'Invalid email or password.');
+        return;
+      }
+      localStorage.setItem('mk_token', data.access_token);
+      try {
+        const meRes = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/auth/me', {
+          headers: { 'Authorization': `Bearer ${data.access_token}`, 'ngrok-skip-browser-warning': 'true' },
+        });
+        const me = await meRes.json();
+        localStorage.setItem('mk_user', JSON.stringify({
+          email: me.email || email,
+          full_name: me.full_name || email,
+          role: me.role || 'user',
+        }));
+      } catch {
+        localStorage.setItem('mk_user', JSON.stringify({ email, full_name: email }));
+      }
       router.push('/jobs');
+    } catch {
+      setError('Cannot reach server. Please try again.');
+    } finally {
+      setLoading(false);
     }
   }
 
   return (
-    <div className="bg-[#0a0a0a] min-h-screen flex flex-col font-sans">
+    <div style={{ background: '#050505', minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', fontFamily: 'sans-serif' }}>
+      <ParticleField />
+      <CursorEffect />
 
+<<<<<<< Updated upstream
       {/* Top bar */}
       <div className="px-7 py-5">
         <Link href="/"><FalconLogo size={26} /></Link>
+=======
+      <div style={{ position: 'relative', zIndex: 3, padding: '20px 28px' }}>
+        <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none' }}>
+          <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
+            <circle cx="16" cy="16" r="12" fill="#fff" />
+            <circle cx="20" cy="13" r="10" fill="#03030a" />
+          </svg>
+          <span style={{ color: '#fff', fontSize: '14px', fontWeight: 500, letterSpacing: '0.12em' }}>MOONKNIGHT</span>
+        </Link>
+>>>>>>> Stashed changes
       </div>
 
-      {/* Body */}
-      <div className="flex-1 flex items-center justify-center px-6">
-        <div className="w-full max-w-sm">
+      <div style={{ position: 'relative', zIndex: 3, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
+        <div style={{ width: '100%', maxWidth: '340px' }}>
 
-          {/* Toggle */}
-          <div className="flex bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg p-1 mb-6">
+          <div style={{ display: 'flex', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '3px', marginBottom: '20px' }}>
             <button
               onClick={() => { setMode('user'); setError(''); }}
-              className={`flex-1 py-1.5 text-xs rounded-md transition-all ${mode === 'user' ? 'bg-[#2a2a2a] text-white' : 'text-[#666]'}`}
+              style={{
+                flex: 1, padding: '7px', fontSize: '12px', borderRadius: '6px', border: 'none', cursor: 'pointer',
+                background: mode === 'user' ? 'rgba(255,255,255,0.12)' : 'transparent',
+                color: mode === 'user' ? '#fff' : 'rgba(255,255,255,0.4)',
+              }}
             >
               User
             </button>
             <button
               onClick={() => { setMode('admin'); setError(''); }}
-              className={`flex-1 py-1.5 text-xs rounded-md transition-all ${mode === 'admin' ? 'bg-[#2a2a2a] text-white' : 'text-[#666]'}`}
+              style={{
+                flex: 1, padding: '7px', fontSize: '12px', borderRadius: '6px', border: 'none', cursor: 'pointer',
+                background: mode === 'admin' ? 'rgba(255,255,255,0.12)' : 'transparent',
+                color: mode === 'admin' ? '#fff' : 'rgba(255,255,255,0.4)',
+              }}
             >
               Admin
             </button>
           </div>
 
-          {/* Heading */}
-          <h1 className="text-white text-2xl font-medium text-center mb-6">
+          <h1 style={{ color: '#fff', fontSize: '21px', fontWeight: 500, textAlign: 'center', marginBottom: '24px' }}>
             {mode === 'admin' ? 'Admin login' : 'Welcome back'}
           </h1>
 
-          {/* Admin badge */}
           {mode === 'admin' && (
-            <div className="flex items-center justify-center gap-2 bg-[#1a1a1a] border border-[#3a3a3a] rounded-lg px-4 py-2 text-xs text-[#888] mb-4">
-              🔐 Admin access only
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '8px', padding: '8px 14px', fontSize: '12px', color: 'rgba(255,255,255,0.6)', marginBottom: '16px' }}>
+              Admin access only
             </div>
           )}
 
-          {/* Email */}
-          <div className="relative mb-4">
-            <label className="absolute -top-2 left-3 bg-[#0a0a0a] px-1 text-[11px] text-[#2d7dd6]">
-              Email address
-            </label>
+          <div style={{ marginBottom: '14px' }}>
+            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.55)', marginBottom: '6px', display: 'block' }}>Email address</span>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full bg-transparent border border-[#2d7dd6] rounded-full px-4 py-3 text-white text-sm outline-none focus:border-[#4d9cf8]"
+              style={{
+                width: '100%', background: 'transparent', border: '1px solid rgba(255,255,255,0.25)',
+                borderRadius: '24px', padding: '12px 16px', color: '#fff', fontSize: '14px', outline: 'none',
+                WebkitTextFillColor: '#fff', caretColor: '#fff',
+              }}
             />
           </div>
 
-          {/* Password */}
-          <div className="relative mb-4">
-            <label className="absolute -top-2 left-3 bg-[#0a0a0a] px-1 text-[11px] text-[#2d7dd6]">
-              Password
-            </label>
+          <div style={{ marginBottom: '14px' }}>
+            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.55)', marginBottom: '6px', display: 'block' }}>Password</span>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-transparent border border-[#2d7dd6] rounded-full px-4 py-3 text-white text-sm outline-none focus:border-[#4d9cf8]"
+              style={{
+                width: '100%', background: 'transparent', border: '1px solid rgba(255,255,255,0.25)',
+                borderRadius: '24px', padding: '12px 16px', color: '#fff', fontSize: '14px', outline: 'none',
+                WebkitTextFillColor: '#fff', caretColor: '#fff',
+              }}
             />
           </div>
 
-          {/* Error */}
-          {error && <p className="text-red-400 text-xs mb-3">{error}</p>}
+          {error && <p style={{ color: '#f87171', fontSize: '12px', marginBottom: '12px' }}>{error}</p>}
 
-          {/* Submit */}
           <button
             onClick={handleSubmit}
-            className="w-full bg-white text-black py-3 rounded-full text-sm font-medium hover:bg-gray-100 mt-1"
+            disabled={loading}
+            style={{
+              width: '100%', padding: '12px', background: 'transparent', border: '1px solid rgba(255,255,255,0.25)',
+              color: loading ? 'rgba(255,255,255,0.4)' : '#fff', borderRadius: '24px', fontSize: '14px', fontWeight: 500, cursor: loading ? 'default' : 'pointer', marginTop: '6px',
+            }}
           >
-            {mode === 'admin' ? 'Login as Admin' : 'Continue'}
+            {loading ? 'Logging in...' : mode === 'admin' ? 'Login as Admin' : 'Continue'}
           </button>
 
-          {/* Switch to signup */}
           {mode === 'user' && (
-            <p className="text-center text-[#666] text-sm mt-4">
+            <p style={{ textAlign: 'center', fontSize: '13px', color: 'rgba(255,255,255,0.45)', marginTop: '18px' }}>
               Don't have an account?{' '}
-              <Link href="/signup" className="text-[#2d7dd6]">Sign up</Link>
+              <Link href="/signup" style={{ color: '#9bb8e8' }}>Sign up</Link>
             </p>
           )}
 
-          {/* Divider */}
-          <div className="flex items-center gap-3 my-5">
-            <hr className="flex-1 border-none border-t border-[#2a2a2a] h-px bg-[#2a2a2a]" />
-            <span className="text-[#444] text-xs">OR</span>
-            <hr className="flex-1 border-none border-t border-[#2a2a2a] h-px bg-[#2a2a2a]" />
-          </div>
 
+<<<<<<< Updated upstream
           <p className="text-center text-sm">
             <Link href="/forgot-password" className="text-[#2d7dd6]">Forgot password?</Link>
           </p>
+=======
+>>>>>>> Stashed changes
 
         </div>
       </div>
-
-      {/* Footer */}
-      <div className="text-center py-4 border-t border-[#1a1a1a]">
-        <Link href="#" className="text-[#444] text-xs underline mx-2">Terms of Use</Link>
-        <span className="text-[#444] text-xs">|</span>
-        <Link href="#" className="text-[#444] text-xs underline mx-2">Privacy Policy</Link>
-      </div>
-
     </div>
   );
 }

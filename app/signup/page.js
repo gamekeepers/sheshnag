@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+<<<<<<< Updated upstream
 
 function FalconLogo({ size = 28 }) {
   return (
@@ -16,6 +17,10 @@ function FalconLogo({ size = 28 }) {
     </div>
   );
 }
+=======
+import ParticleField from '../components/ParticleField';
+import CursorEffect from '../components/CursorEffect';
+>>>>>>> Stashed changes
 
 export default function SignupPage() {
   const [firstName, setFirstName] = useState('');
@@ -24,9 +29,10 @@ export default function SignupPage() {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const router = useRouter();
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (!firstName || !lastName || !email || !password || !confirm) {
       setError('Please fill in all fields.');
       return;
@@ -35,131 +41,154 @@ export default function SignupPage() {
       setError('Passwords do not match.');
       return;
     }
-    router.push('/jobs');
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+        body: JSON.stringify({
+          email,
+          password,
+          full_name: `${firstName} ${lastName}`,
+          role: 'user',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data?.detail || 'Signup failed. Please try again.');
+        return;
+      }
+      const loginRes = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+        body: JSON.stringify({ email, password }),
+      });
+      const loginData = await loginRes.json();
+      if (loginRes.ok && loginData.access_token) {
+        localStorage.setItem('mk_token', loginData.access_token);
+        localStorage.setItem('mk_user', JSON.stringify({
+          email,
+          full_name: `${firstName} ${lastName}`,
+          role: 'user',
+        }));
+        router.push('/jobs');
+      } else {
+        router.push('/login');
+      }
+    } catch {
+      setError('Cannot reach server. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
-    <div className="bg-[#0a0a0a] min-h-screen flex flex-col font-sans">
+    <div style={{ background: '#050505', minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', fontFamily: 'sans-serif' }}>
+      <ParticleField />
+      <CursorEffect />
 
       {/* Top bar */}
+<<<<<<< Updated upstream
       <div className="px-7 py-5">
         <Link href="/"><FalconLogo size={26} /></Link>
+=======
+      <div style={{ position: 'relative', zIndex: 3, padding: '20px 28px' }}>
+        <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none' }}>
+          <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
+            <circle cx="16" cy="16" r="12" fill="#fff" />
+            <circle cx="20" cy="13" r="10" fill="#050505" />
+          </svg>
+          <span style={{ color: '#fff', fontSize: '14px', fontWeight: 500, letterSpacing: '0.12em' }}>MOONKNIGHT</span>
+        </Link>
+>>>>>>> Stashed changes
       </div>
 
       {/* Body */}
-      <div className="flex-1 flex items-center justify-center px-6 py-8">
-        <div className="w-full max-w-sm">
+      <div style={{ position: 'relative', zIndex: 3, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
+        <div style={{ width: '100%', maxWidth: '360px' }}>
 
-          <h1 className="text-white text-2xl font-medium text-center mb-6">
+          <h1 style={{ color: '#fff', fontSize: '22px', fontWeight: 500, textAlign: 'center', marginBottom: '28px' }}>
             Create an account
           </h1>
 
           {/* First + Last name */}
-          <div className="flex gap-3 mb-4">
-            <div className="relative flex-1">
-              <label className="absolute -top-2 left-3 bg-[#0a0a0a] px-1 text-[11px] text-[#2d7dd6]">
-                First name
-              </label>
+          <div style={{ display: 'flex', gap: '12px', marginBottom: '20px' }}>
+            <div style={{ flex: 1 }}>
+              <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.55)', marginBottom: '6px', display: 'block' }}>First name</span>
               <input
                 type="text"
                 value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
-                className="w-full bg-transparent border border-[#2d7dd6] rounded-full px-4 py-3 text-white text-sm outline-none focus:border-[#4d9cf8]"
+                onChange={e => setFirstName(e.target.value)}
+                style={{ width: '100%', background: 'transparent', border: '1px solid rgba(255,255,255,0.25)', borderRadius: '24px', padding: '11px 16px', color: '#fff', fontSize: '14px', outline: 'none', boxSizing: 'border-box' }}
               />
             </div>
-            <div className="relative flex-1">
-              <label className="absolute -top-2 left-3 bg-[#0a0a0a] px-1 text-[11px] text-[#2d7dd6]">
-                Last name
-              </label>
+            <div style={{ flex: 1 }}>
+              <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.55)', marginBottom: '6px', display: 'block' }}>Last name</span>
               <input
                 type="text"
                 value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
-                className="w-full bg-transparent border border-[#2d7dd6] rounded-full px-4 py-3 text-white text-sm outline-none focus:border-[#4d9cf8]"
+                onChange={e => setLastName(e.target.value)}
+                style={{ width: '100%', background: 'transparent', border: '1px solid rgba(255,255,255,0.25)', borderRadius: '24px', padding: '11px 16px', color: '#fff', fontSize: '14px', outline: 'none', boxSizing: 'border-box' }}
               />
             </div>
           </div>
 
           {/* Email */}
-          <div className="relative mb-4">
-            <label className="absolute -top-2 left-3 bg-[#0a0a0a] px-1 text-[11px] text-[#2d7dd6]">
-              Email address
-            </label>
+          <div style={{ marginBottom: '14px' }}>
+            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.55)', marginBottom: '6px', display: 'block' }}>Email address</span>
             <input
               type="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full bg-transparent border border-[#2d7dd6] rounded-full px-4 py-3 text-white text-sm outline-none focus:border-[#4d9cf8]"
+              onChange={e => setEmail(e.target.value)}
+              style={{ width: '100%', background: 'transparent', border: '1px solid rgba(255,255,255,0.25)', borderRadius: '24px', padding: '12px 16px', color: '#fff', fontSize: '14px', outline: 'none', boxSizing: 'border-box' }}
             />
           </div>
 
           {/* Password */}
-          <div className="relative mb-4">
-            <label className="absolute -top-2 left-3 bg-[#0a0a0a] px-1 text-[11px] text-[#2d7dd6]">
-              Password
-            </label>
+          <div style={{ marginBottom: '14px' }}>
+            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.55)', marginBottom: '6px', display: 'block' }}>Password</span>
             <input
               type="password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-transparent border border-[#2d7dd6] rounded-full px-4 py-3 text-white text-sm outline-none focus:border-[#4d9cf8]"
+              onChange={e => setPassword(e.target.value)}
+              style={{ width: '100%', background: 'transparent', border: '1px solid rgba(255,255,255,0.25)', borderRadius: '24px', padding: '12px 16px', color: '#fff', fontSize: '14px', outline: 'none', boxSizing: 'border-box' }}
             />
           </div>
 
           {/* Confirm password */}
-          <div className="relative mb-4">
-            <label className="absolute -top-2 left-3 bg-[#0a0a0a] px-1 text-[11px] text-[#2d7dd6]">
-              Confirm password
-            </label>
+          <div style={{ marginBottom: '14px' }}>
+            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.55)', marginBottom: '6px', display: 'block' }}>Confirm password</span>
             <input
               type="password"
               value={confirm}
-              onChange={(e) => setConfirm(e.target.value)}
-              className="w-full bg-transparent border border-[#2d7dd6] rounded-full px-4 py-3 text-white text-sm outline-none focus:border-[#4d9cf8]"
+              onChange={e => setConfirm(e.target.value)}
+              style={{ width: '100%', background: 'transparent', border: '1px solid rgba(255,255,255,0.25)', borderRadius: '24px', padding: '12px 16px', color: '#fff', fontSize: '14px', outline: 'none', boxSizing: 'border-box' }}
             />
           </div>
 
-          {/* Error */}
-          {error && <p className="text-red-400 text-xs mb-3">{error}</p>}
+          {error && <p style={{ color: '#f87171', fontSize: '12px', marginBottom: '12px' }}>{error}</p>}
 
-          {/* Submit */}
           <button
             onClick={handleSubmit}
-            className="w-full bg-white text-black py-3 rounded-full text-sm font-medium hover:bg-gray-100 mt-1"
+            disabled={loading}
+            style={{
+              width: '100%', padding: '12px', background: 'transparent',
+              border: '1px solid rgba(255,255,255,0.25)', color: loading ? 'rgba(255,255,255,0.4)' : '#fff',
+              borderRadius: '24px', fontSize: '14px', fontWeight: 500,
+              cursor: loading ? 'default' : 'pointer', marginTop: '6px',
+            }}
           >
-            Create account
+            {loading ? 'Creating account...' : 'Create account'}
           </button>
 
-          {/* Switch to login */}
-          <p className="text-center text-[#666] text-sm mt-4">
+          <p style={{ textAlign: 'center', fontSize: '13px', color: 'rgba(255,255,255,0.45)', marginTop: '18px' }}>
             Already have an account?{' '}
-            <Link href="/login" className="text-[#2d7dd6]">Log in</Link>
-          </p>
-
-          {/* Divider */}
-          <div className="flex items-center gap-3 my-5">
-            <hr className="flex-1 border-none h-px bg-[#2a2a2a]" />
-            <span className="text-[#444] text-xs">OR</span>
-            <hr className="flex-1 border-none h-px bg-[#2a2a2a]" />
-          </div>
-
-          <p className="text-center text-[#444] text-xs leading-relaxed">
-            By creating an account you agree to our{' '}
-            <Link href="#" className="underline">Terms of Use</Link>{' '}
-            and{' '}
-            <Link href="#" className="underline">Privacy Policy</Link>
+            <Link href="/login" style={{ color: '#9bb8e8' }}>Log in</Link>
           </p>
 
         </div>
       </div>
-
-      {/* Footer */}
-      <div className="text-center py-4 border-t border-[#1a1a1a]">
-        <Link href="#" className="text-[#444] text-xs underline mx-2">Terms of Use</Link>
-        <span className="text-[#444] text-xs">|</span>
-        <Link href="#" className="text-[#444] text-xs underline mx-2">Privacy Policy</Link>
-      </div>
-
     </div>
   );
 }

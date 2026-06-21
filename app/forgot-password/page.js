@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import ParticleField from '../components/ParticleField';
 
 function FalconLogo({ size = 28 }) {
   return (
@@ -56,16 +57,28 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <div className="bg-[#0a0a0a] min-h-screen flex flex-col font-sans">
+    <div style={{ background: '#050505', minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', fontFamily: 'sans-serif' }}>
+      <ParticleField />
 
       {/* Top bar */}
+<<<<<<< Updated upstream
       <div className="px-7 py-5">
         <Link href="/"><FalconLogo size={26} /></Link>
+=======
+      <div style={{ position: 'relative', zIndex: 3, padding: '20px 28px' }}>
+        <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none' }}>
+          <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
+            <circle cx="16" cy="16" r="12" fill="#fff" />
+            <circle cx="20" cy="13" r="10" fill="#050505" />
+          </svg>
+          <span style={{ color: '#fff', fontSize: '14px', fontWeight: 500, letterSpacing: '0.12em' }}>MOONKNIGHT</span>
+        </Link>
+>>>>>>> Stashed changes
       </div>
 
       {/* Body */}
-      <div className="flex-1 flex items-center justify-center px-6">
-        <div className="w-full max-w-sm">
+      <div style={{ position: 'relative', zIndex: 3, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
+        <div style={{ width: '100%', maxWidth: '340px' }}>
 
           {/* Step 1 — Enter email */}
           {step === 1 && (
