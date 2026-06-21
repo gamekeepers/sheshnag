@@ -3,24 +3,8 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-<<<<<<< Updated upstream
-
-function FalconLogo({ size = 28 }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: size / 4 }}>
-      <svg width={size} height={size} viewBox="0 0 36 36" fill="none">
-        <line x1="4" y1="28" x2="20" y2="8" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"/>
-        <line x1="12" y1="28" x2="28" y2="8" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" opacity="0.5"/>
-        <line x1="20" y1="28" x2="32" y2="12" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" opacity="0.25"/>
-      </svg>
-      <span style={{ color: '#fff', fontSize: size * 0.55, fontWeight: 500, letterSpacing: '0.15em' }}>FALCON</span>
-    </div>
-  );
-}
-=======
 import ParticleField from '../components/ParticleField';
 import CursorEffect from '../components/CursorEffect';
->>>>>>> Stashed changes
 
 export default function SignupPage() {
   const [firstName, setFirstName] = useState('');
@@ -89,10 +73,6 @@ export default function SignupPage() {
       <CursorEffect />
 
       {/* Top bar */}
-<<<<<<< Updated upstream
-      <div className="px-7 py-5">
-        <Link href="/"><FalconLogo size={26} /></Link>
-=======
       <div style={{ position: 'relative', zIndex: 3, padding: '20px 28px' }}>
         <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none' }}>
           <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
@@ -101,7 +81,6 @@ export default function SignupPage() {
           </svg>
           <span style={{ color: '#fff', fontSize: '14px', fontWeight: 500, letterSpacing: '0.12em' }}>MOONKNIGHT</span>
         </Link>
->>>>>>> Stashed changes
       </div>
 
       {/* Body */}

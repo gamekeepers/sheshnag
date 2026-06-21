@@ -4,15 +4,14 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
-function FalconLogo({ size = 28 }) {
+function MoonknightLogo({ size = 28 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: size / 4 }}>
-      <svg width={size} height={size} viewBox="0 0 36 36" fill="none">
-        <line x1="4" y1="28" x2="20" y2="8" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"/>
-        <line x1="12" y1="28" x2="28" y2="8" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" opacity="0.5"/>
-        <line x1="20" y1="28" x2="32" y2="12" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" opacity="0.25"/>
+      <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
+        <circle cx="16" cy="16" r="12" fill="#fff" />
+        <circle cx="20" cy="13" r="10" fill="#0a0a0a" />
       </svg>
-      <span style={{ color: '#fff', fontSize: size * 0.55, fontWeight: 500, letterSpacing: '0.15em' }}>FALCON</span>
+      <span style={{ color: '#fff', fontSize: size * 0.45, fontWeight: 500, letterSpacing: '0.12em' }}>MOONKNIGHT</span>
     </div>
   );
 }
@@ -40,10 +39,6 @@ async function handleSubmit() {
       const fileData = new FormData();
       fileData.append('file', file);
 
-<<<<<<< Updated upstream
-      const fileRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/v1/files`, {
-        method: 'POST',
-=======
       const token = localStorage.getItem('mk_token') || '';
       const fileRes = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/files', {
         method: 'POST',
@@ -51,7 +46,6 @@ async function handleSubmit() {
           'ngrok-skip-browser-warning': 'true',
           'Authorization': `Bearer ${token}`,
         },
->>>>>>> Stashed changes
         body: fileData,
       });
 
@@ -62,24 +56,20 @@ async function handleSubmit() {
 
       const fileJson = await fileRes.json();
 // Save filename mapping to localStorage
-const fileMap = JSON.parse(localStorage.getItem('falcon_file_map') || '{}');
+const fileMap = JSON.parse(localStorage.getItem('moonknight_file_map') || '{}');
 fileMap[fileJson.id] = file.name;
-localStorage.setItem('falcon_file_map', JSON.stringify(fileMap));
+localStorage.setItem('moonknight_file_map', JSON.stringify(fileMap));
 
       setStatus('Creating batch job...');
 
       // Step 2 — Create the batch job
-      const batchRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/v1/batches`, {
+      const batchRes = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/batches', {
         method: 'POST',
-<<<<<<< Updated upstream
-        headers: { 'Content-Type': 'application/json' },
-=======
         headers: {
           'Content-Type': 'application/json',
           'ngrok-skip-browser-warning': 'true',
           'Authorization': `Bearer ${token}`,
         },
->>>>>>> Stashed changes
         body: JSON.stringify({
           input_file_id: fileJson.id,
           endpoint: '/v1/chat/completions',
@@ -108,7 +98,7 @@ localStorage.setItem('falcon_file_map', JSON.stringify(fileMap));
       {/* Sidebar */}
       <div className="w-48 bg-[#111] border-r border-[#2a2a2a] flex flex-col py-4 flex-shrink-0">
         <div className="px-4 pb-4 mb-3 border-b border-[#2a2a2a]">
-          <Link href="/"><FalconLogo size={24} /></Link>
+          <Link href="/"><MoonknightLogo size={24} /></Link>
         </div>
         <p className="px-4 text-[10px] text-[#555] uppercase tracking-widest mb-2">Manage</p>
         <Link href="/" className="mx-2 px-3 py-2 rounded-md text-sm text-[#aaa] hover:bg-[#1e1e1e] hover:text-white">
