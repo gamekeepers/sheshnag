@@ -2,5 +2,5 @@ fastapi
 uvicorn
 sqlalchemy
 python-multipart
-python-jose[cryptography]
-passlib[bcrypt]
+python-jose[cryptography]   # import: from jose import jwt
+passlib[bcrypt]              # import: from passlib.context import CryptContext
