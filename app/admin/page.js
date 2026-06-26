@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 
-const BACKEND = 'https://hungry-whacking-reflex.ngrok-free.dev';
+const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
 function MoonknightLogo({ size = 28 }) {
   return (
@@ -115,13 +115,32 @@ export default function AdminPage() {
   const [backendStatus, setBackendStatus] = useState('checking'); // 'live' | 'offline' | 'checking'
   const [isLoading, setIsLoading]   = useState(true);
   const [lastRefresh, setLastRefresh] = useState(null);
+  const [adminUser, setAdminUser] = useState({ name: 'Admin', role: 'Platform admin' });
+
+  async function loadAdminProfile() {
+    try {
+      const token = localStorage.getItem('mk_token');
+      if (!token) return;
+      const res = await fetch(`${BACKEND}/v1/auth/me`, {
+        headers: { 'Authorization': `Bearer ${token}`, 'ngrok-skip-browser-warning': 'true' }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAdminUser({ name: data.full_name || data.email || 'Admin', role: data.role || 'Platform admin' });
+      }
+    } catch {}
+  }
 
   /* ── Fetch real jobs from backend ── */
   async function loadJobs() {
     setIsLoading(true);
     try {
+      const token = localStorage.getItem('mk_token') || '';
       const res = await fetch(`${BACKEND}/v1/batches`, {
-        headers: { 'ngrok-skip-browser-warning': 'true' },
+        headers: {
+          'ngrok-skip-browser-warning': 'true',
+          'Authorization': `Bearer ${token}`
+        },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -139,7 +158,7 @@ export default function AdminPage() {
     }
   }
 
-  useEffect(() => { loadJobs(); }, []);
+  useEffect(() => { loadJobs(); loadAdminProfile(); }, []);
 
   /* ── Filtered jobs ── */
   const filteredJobs = jobFilter === 'all' ? jobs : jobs.filter(j => j.status === jobFilter);
@@ -199,10 +218,10 @@ export default function AdminPage() {
             <div style={{
               width: '28px', height: '28px', borderRadius: '50%', backgroundColor: '#2d3a5a',
               display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', color: '#fff', fontWeight: 600,
-            }}>A</div>
+            }}>{adminUser.name.charAt(0).toUpperCase()}</div>
             <div>
-              <p style={{ fontSize: '12px', color: '#fff', margin: 0 }}>Admin</p>
-              <p style={{ fontSize: '10px', color: '#444', margin: 0 }}>Platform admin</p>
+              <p style={{ fontSize: '12px', color: '#fff', margin: 0, textTransform: 'capitalize', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '120px' }}>{adminUser.name}</p>
+              <p style={{ fontSize: '10px', color: '#444', margin: 0, textTransform: 'capitalize' }}>{adminUser.role}</p>
             </div>
           </div>
         </div>

@@ -4,6 +4,8 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
+const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
 function MoonknightLogo({ size = 28 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: size / 4 }}>
@@ -40,7 +42,7 @@ async function handleSubmit() {
       fileData.append('file', file);
 
       const token = localStorage.getItem('mk_token') || '';
-      const fileRes = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/files', {
+      const fileRes = await fetch(`${BACKEND}/v1/files`, {
         method: 'POST',
         headers: {
           'ngrok-skip-browser-warning': 'true',
@@ -63,7 +65,7 @@ localStorage.setItem('moonknight_file_map', JSON.stringify(fileMap));
       setStatus('Creating batch job...');
 
       // Step 2 — Create the batch job
-      const batchRes = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/batches', {
+      const batchRes = await fetch(`${BACKEND}/v1/batches`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

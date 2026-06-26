@@ -6,6 +6,8 @@ import { useRouter } from 'next/navigation';
 import ParticleField from '../components/ParticleField';
 import CursorEffect from '../components/CursorEffect';
 
+const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
 export default function LoginPage() {
   const [mode, setMode] = useState('user');
   const [email, setEmail] = useState('');
@@ -27,7 +29,7 @@ export default function LoginPage() {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/auth/login', {
+      const res = await fetch(`${BACKEND}/v1/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
         body: JSON.stringify({ email, password }),
@@ -39,7 +41,7 @@ export default function LoginPage() {
       }
       localStorage.setItem('mk_token', data.access_token);
       try {
-        const meRes = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/auth/me', {
+        const meRes = await fetch(`${BACKEND}/v1/auth/me`, {
           headers: { 'Authorization': `Bearer ${data.access_token}`, 'ngrok-skip-browser-warning': 'true' },
         });
         const me = await meRes.json();

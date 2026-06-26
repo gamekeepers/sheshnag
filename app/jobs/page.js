@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 
+const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
 function MoonknightLogo({ size = 28 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: size / 4 }}>
@@ -50,7 +52,7 @@ useEffect(() => {
     setLoading(true);
     try {
       const token = localStorage.getItem('mk_token') || '';
-      const res = await fetch('https://hungry-whacking-reflex.ngrok-free.dev/v1/batches', {
+      const res = await fetch(`${BACKEND}/v1/batches`, {
         headers: {
           'ngrok-skip-browser-warning': 'true',
           'Authorization': `Bearer ${token}`,
