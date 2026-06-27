@@ -36,11 +36,12 @@ def create_batch(
                     except json.JSONDecodeError:
                         pass
 
-    if model_name and not is_model_supported(model_name):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Model '{model_name}' is not supported. Check /v1/models for available models.",
-        )
+    # Take all jobs for now
+    # if model_name and not is_model_supported(model_name):
+    #     raise HTTPException(
+    #         status_code=400,
+    #         detail=f"Model '{model_name}' is not supported. Check /v1/models for available models.",
+    #     )
 
     batch = Batch(
         user_id=user.id,
