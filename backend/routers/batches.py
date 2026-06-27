@@ -1,17 +1,34 @@
+import asyncio
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+
 from database import get_db
 from models import Batch, File as FileModel
 from schemas import BatchCreate, BatchOut, BatchSummary
 from auth import get_current_user, require_role
 from provider_picker import is_model_supported
-import json
+from services.batch_validator import validate_batch_file
+from services.sse_manager import sse_manager
 
 router = APIRouter()
 
 
+async def _validate_and_notify(batch_id: str, filepath: str) -> None:
+    """Run JSONL validation in a background thread, then push an SSE event."""
+    result = await asyncio.to_thread(validate_batch_file, batch_id, filepath)
+    status = "validated" if result else "failed"
+    await sse_manager.publish(
+        batch_id,
+        "validation_complete",
+        {"batch_id": batch_id, "status": status},
+    )
+
+
 @router.post("/batches")
-def create_batch(
+async def create_batch(
     req: BatchCreate,
     user=Depends(require_role("user", "admin")),
     db: Session = Depends(get_db),
@@ -23,38 +40,60 @@ def create_batch(
     if user.role == "user" and input_file.user_id != user.id:
         raise HTTPException(status_code=403, detail="You don't own this file")
 
-    model_name = None
-    total_requests = 0
-    with open(input_file.filepath, "r") as f:
-        for line in f:
-            if line.strip():
-                total_requests += 1
-                if model_name is None:
-                    try:
-                        first_req = json.loads(line)
-                        model_name = first_req.get("body", {}).get("model")
-                    except json.JSONDecodeError:
-                        pass
-
-    if model_name and not is_model_supported(model_name):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Model '{model_name}' is not supported. Check /v1/models for available models.",
-        )
-
     batch = Batch(
         user_id=user.id,
         endpoint=req.endpoint,
-        model=model_name,
         input_file_id=req.input_file_id,
         completion_window=req.completion_window,
         status="validating",
-        request_counts_total=total_requests,
+        request_counts_total=0,  # set by background validator
     )
     db.add(batch)
     db.commit()
     db.refresh(batch)
+
+    # Fire-and-forget: validate JSONL in a background thread
+    asyncio.create_task(_validate_and_notify(batch.id, input_file.filepath))
+
     return BatchOut.from_batch(batch)
+
+
+@router.get("/batches/{batch_id}/events")
+async def batch_events(
+    batch_id: str,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """SSE stream for batch status changes."""
+    batch = db.query(Batch).filter(Batch.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    queue = sse_manager.subscribe(batch_id)
+
+    async def event_generator():
+        try:
+            while True:
+                data = await queue.get()
+                yield data
+                # Stop yielding after a terminal validation event
+                payload = json.loads(data.split("data: ")[1].split("\n")[0])
+                if payload.get("status") in ("validated", "failed"):
+                    break
+        except asyncio.CancelledError:
+            pass
+        finally:
+            sse_manager.unsubscribe(batch_id, queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/batches/{batch_id}")

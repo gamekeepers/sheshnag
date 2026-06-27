@@ -1,9 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
+/* Terminal statuses — leaf states in backend VALID_TRANSITIONS (empty allowed list) */
+const TERMINAL_STATUSES = ['completed', 'failed'];
 
 function MoonknightLogo({ size = 28 }) {
   return (
@@ -23,13 +26,15 @@ function StatusBadge({ status }) {
   const styles = {
     completed: 'bg-green-900 text-green-400',
     running: 'bg-blue-900 text-blue-400',
+    in_progress: 'bg-blue-900 text-blue-400',
     queued: 'bg-yellow-900 text-yellow-400',
+    validated: 'bg-green-900 text-green-400',
     failed: 'bg-red-900 text-red-400',
-    validating: 'bg-yellow-900 text-yellow-400',
+    validating: 'bg-yellow-900 text-yellow-400 animate-pulse',
   };
   return (
     <span className={`text-xs px-2 py-0.5 rounded-full ${styles[status] || 'bg-gray-800 text-gray-300'}`}>
-      {status}
+      {status.replace('_', ' ')}
     </span>
   );
 }
@@ -47,39 +52,133 @@ export default function JobsPage() {
     }
   }, []);
 
-useEffect(() => {
-  async function fetchJobs() {
-    setLoading(true);
+  /* ---- refs for the polling loop ---- */
+  const pollTimerRef = useRef(null);        // holds the setTimeout handle
+  const initialFetchDone = useRef(false);   // guard against loading flicker
+
+  /* ---- fetch helper (returns raw backend data) ---- */
+  const fetchJobs = useCallback(async () => {
     try {
+      const controller = new AbortController();
       const token = localStorage.getItem('mk_token') || '';
       const res = await fetch(`${BACKEND}/v1/batches`, {
         headers: {
           'ngrok-skip-browser-warning': 'true',
           'Authorization': `Bearer ${token}`,
         },
+        signal: controller.signal,
       });
       const data = await res.json();
-      const jobList = data.data || [];
+      const raw = data.data || [];
+
       const fileMap = JSON.parse(localStorage.getItem('moonknight_file_map') || '{}');
-      const mapped = jobList.map((job) => ({
+      const mapped = raw.map((job) => ({
         id: job.id,
         filename: fileMap[job.input_file_id] || job.input_file_id || 'unknown.jsonl',
         status: job.status,
+        error_details: job.error_details || null,
         created_at: job.created_at ? new Date(job.created_at * 1000).toLocaleString('en-IN') : 'N/A',
         total: job.request_counts?.total || 0,
         done: job.request_counts?.completed || 0,
       }));
-      setJobs(mapped);
-      setSelectedJob(mapped[0] || null);
+
+      /* merge by id so React doesn't diff the entire array on every poll */
+      setJobs(prev => {
+        const map = new Map();
+        prev.forEach(j => map.set(j.id, j));
+        mapped.forEach(j => map.set(j.id, j));       // overwrite or insert
+        // remove jobs that no longer exist
+        const aliveIds = new Set(mapped.map(j => j.id));
+        map.forEach((v, k) => { if (!aliveIds.has(k)) map.delete(k); });
+        return [...map.values()];
+      });
+
+      /* preserve user's selection — only fall back to first job when nothing matches */
+      setSelectedJob(old => mapped.find(j => j.id === old?.id) ?? (mapped[0] || null));
+
+      /* silence the loading spinner after the first successful fetch */
+      if (!initialFetchDone.current) {
+        initialFetchDone.current = true;
+        setLoading(false);
+      }
+
+      return mapped;
     } catch (err) {
-      console.error('Failed to fetch jobs:', err);
-    } finally {
-      setLoading(false);
+      if (err.name !== 'AbortError') {
+        console.error('Failed to fetch jobs:', err);
+      }
+      /* ensure spinner goes away on hard failure during initial load */
+      if (!initialFetchDone.current) {
+        initialFetchDone.current = true;
+        setLoading(false);
+      }
+      return null;
     }
-  }
-  fetchJobs();
-}, []);
- 
+  }, []);
+
+  /* ---- polling loop (recursive setTimeout, stops when all terminal) ---- */
+  const ACTIVE_INTERVAL = 7000;
+
+  useEffect(() => {
+    let stopped = false;
+
+    const poll = async () => {
+      const result = await fetchJobs();
+
+      if (stopped) return;
+
+      /* stop when all jobs are terminal */
+      const hasActive = result && result.some(j => !TERMINAL_STATUSES.includes(j.status));
+      if (!hasActive) return;
+
+      pollTimerRef.current = setTimeout(poll, ACTIVE_INTERVAL);
+    };
+
+    poll();
+
+    return () => {
+      stopped = true;
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    };
+  }, [fetchJobs]);
+
+  /* ---- SSE subscription for batches still validating ---- */
+  const validatingIdsRef = useRef(new Set());
+
+  useEffect(() => {
+    const currentIds = new Set(jobs.filter(j => j.status === 'validating').map(j => j.id));
+    const prevIds = validatingIdsRef.current;
+
+    // Only recreate SSE connections when the set of validating job IDs changes
+    const idsChanged = currentIds.size !== prevIds.size ||
+      [...currentIds].some(id => !prevIds.has(id));
+
+    if (!idsChanged) return;
+
+    validatingIdsRef.current = currentIds;
+    const eventSources = [];
+
+    for (const job of jobs) {
+      if (job.status !== 'validating') continue;
+
+      try {
+        const es = new EventSource(`${BACKEND}/v1/batches/${job.id}/events`);
+        es.addEventListener('validation_complete', () => {
+          fetchJobs();
+          es.close();
+        });
+        es.addEventListener('error', () => {
+          es.close();
+        });
+        eventSources.push(es);
+      } catch (err) {
+        console.warn('SSE not available for batch', job.id, err);
+      }
+    }
+
+    return () => { eventSources.forEach((es) => es.close()); };
+  }, [jobs, fetchJobs]);
+
   const total = jobs.length;
   const completed = jobs.filter(j => j.status === 'completed').length;
   const running = jobs.filter(j => j.status === 'running').length;
@@ -209,7 +308,7 @@ useEffect(() => {
                         className="bg-blue-500 h-1.5 rounded-full"
                         style={{ width: `${(selectedJob.done / selectedJob.total) * 100}%` }}
                       />
-                    </div>      
+                    </div>
                   </div>
                 )}
 
@@ -252,8 +351,43 @@ useEffect(() => {
 
                 {selectedJob.status === 'failed' && (
                   <div className="mt-6 border border-red-900 rounded-lg p-4">
-                    <p className="text-red-400 text-xs font-medium mb-1">Job failed</p>
-                    <p className="text-[#666] text-xs">The input file may have been malformed. Please check your JSONL format and try again.</p>
+                    <p className="text-red-400 text-xs font-medium mb-2">Job failed</p>
+                    {selectedJob.error_details ? (() => {
+                      try {
+                        const details = JSON.parse(selectedJob.error_details);
+                        if (details.data && details.data.length) {
+                          return (
+                            <div className="max-h-48 overflow-y-auto space-y-1">
+                              {details.data.map((err, i) => {
+                                // Handle new structured format (code + message) or legacy format (errors array)
+                                const content = err.code
+                                  ? <>
+                                      <code className="text-yellow-300">{err.code}</code>{' '}
+                                      {err.message}
+                                    </>
+                                  : err.errors.join('; ');
+                                return (
+                                  <div key={i} className="text-[#999] text-xs font-mono">
+                                    <span className="text-red-300">Line {err.line}:</span>{' '}
+                                    {content}
+                                  </div>
+                                );
+                              })}
+                              {details.total_errors > details.data.length && (
+                                <p className="text-[#555] text-xs mt-2">
+                                  …and {details.total_errors - details.data.length} more error(s)
+                                </p>
+                              )}
+                            </div>
+                          );
+                        }
+                      } catch {
+                        /* fall through to raw display */
+                      }
+                      return <p className="text-[#666] text-xs font-mono">{selectedJob.error_details}</p>;
+                    })() : (
+                      <p className="text-[#666] text-xs">The input file may have been malformed. Please check your JSONL format and try again.</p>
+                    )}
                   </div>
                 )}
               </div>
