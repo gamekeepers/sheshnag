@@ -25,42 +25,47 @@ const NAV_ITEMS = [
   { id: 'logs',      label: 'Logs',       icon: '📄' },
 ];
 
-/* ── Demo fallback data ── */
-const DEMO_JOBS = [
-  { id: 'job_a91f', user: 'achyut@mk.ai', prompts: 5000, status: 'completed', provider: 'Nirav Shah', started: '2h ago' },
-  { id: 'job_b34c', user: 'user_2@mk.ai', prompts: 2400, status: 'running',   provider: 'Nirav Shah', started: '18m ago' },
-  { id: 'job_c77e', user: 'user_5@mk.ai', prompts: 800,  status: 'running',   provider: 'Vatsal K.',  started: '6m ago' },
-  { id: 'job_d12a', user: 'user_9@mk.ai', prompts: 3100, status: 'queued',    provider: '—',          started: 'Just now' },
-  { id: 'job_e55b', user: 'riya@mk.ai',   prompts: 620,  status: 'failed',    provider: 'Vatsal K.',  started: '1h ago' },
-  { id: 'job_f20c', user: 'karan@mk.ai',  prompts: 1200, status: 'completed', provider: 'Nirav Shah', started: '3h ago' },
-];
+/* ── Demo fallback data (commented out — wire to backend APIs) ── */
+/* TODO: Need backend endpoints: GET /v1/users, GET /providers, GET /logs */
+// const DEMO_JOBS = [
+//   { id: 'job_a91f', user: 'achyut@mk.ai', prompts: 5000, status: 'completed', provider: 'Nirav Shah', started: '2h ago' },
+//   { id: 'job_b34c', user: 'user_2@mk.ai', prompts: 2400, status: 'running',   provider: 'Nirav Shah', started: '18m ago' },
+//   { id: 'job_c77e', user: 'user_5@mk.ai', prompts: 800,  status: 'running',   provider: 'Vatsal K.',  started: '6m ago' },
+//   { id: 'job_d12a', user: 'user_9@mk.ai', prompts: 3100, status: 'queued',    provider: '—',          started: 'Just now' },
+//   { id: 'job_e55b', user: 'riya@mk.ai',   prompts: 620,  status: 'failed',    provider: 'Vatsal K.',  started: '1h ago' },
+//   { id: 'job_f20c', user: 'karan@mk.ai',   prompts: 1200, status: 'completed', provider: 'Nirav Shah', started: '3h ago' },
+// ];
 
-const DEMO_USERS = [
-  { id: 'u001', name: 'Achyut Pathak', email: 'achyut@mk.ai',  jobs: 12, joined: '23 May 2026', status: 'active' },
-  { id: 'u002', name: 'User Two',      email: 'user_2@mk.ai',  jobs: 4,  joined: '24 May 2026', status: 'active' },
-  { id: 'u003', name: 'User Five',     email: 'user_5@mk.ai',  jobs: 2,  joined: '24 May 2026', status: 'active' },
-  { id: 'u004', name: 'Riya Sharma',   email: 'riya@mk.ai',    jobs: 7,  joined: '22 May 2026', status: 'suspended' },
-  { id: 'u005', name: 'Karan Mehta',   email: 'karan@mk.ai',   jobs: 3,  joined: '25 May 2026', status: 'active' },
-  { id: 'u006', name: 'User Nine',     email: 'user_9@mk.ai',  jobs: 1,  joined: '25 May 2026', status: 'active' },
-];
+// const DEMO_USERS = [
+//   { id: 'u001', name: 'Achyut Pathak', email: 'achyut@mk.ai',  jobs: 12, joined: '23 May 2026', status: 'active' },
+//   { id: 'u002', name: 'User Two',      email: 'user_2@mk.ai',  jobs: 4,  joined: '24 May 2026', status: 'active' },
+//   { id: 'u003', name: 'User Five',     email: 'user_5@mk.ai',  jobs: 2,  joined: '24 May 2026', status: 'active' },
+//   { id: 'u004', name: 'Riya Sharma',   email: 'riya@mk.ai',    jobs: 7,  joined: '22 May 2026', status: 'suspended' },
+//   { id: 'u005', name: 'Karan Mehta',   email: 'karan@mk.ai',   jobs: 3,  joined: '25 May 2026', status: 'active' },
+//   { id: 'u006', name: 'User Nine',     email: 'user_9@mk.ai',  jobs: 1,  joined: '25 May 2026', status: 'active' },
+// ];
 
-const DEMO_PROVIDERS = [
-  { id: 'p001', name: 'Nirav Shah', gpu: 'A100 80GB', model: 'Llama 3.1 70B', concurrency: 8, jobs: 3, uptime: '99.2%', status: 'online'  },
-  { id: 'p002', name: 'Vatsal K.', gpu: 'RTX 4090',  model: 'Mistral 7B',    concurrency: 4, jobs: 1, uptime: '97.8%', status: 'online'  },
-  { id: 'p003', name: 'Ankush R.', gpu: 'A100 40GB', model: 'Llama 3.1 8B',  concurrency: 6, jobs: 0, uptime: '—',     status: 'offline' },
-  { id: 'p004', name: 'Priya Dev', gpu: 'H100 80GB', model: 'Gemma 2 27B',   concurrency: 8, jobs: 0, uptime: '—',     status: 'pending' },
-];
+// const DEMO_PROVIDERS = [
+//   { id: 'p001', name: 'Nirav Shah', gpu: 'A100 80GB', model: 'Llama 3.1 70B', concurrency: 8, jobs: 3, uptime: '99.2%', status: 'online'  },
+//   { id: 'p002', name: 'Vatsal K.', gpu: 'RTX 4090',  model: 'Mistral 7B',    concurrency: 4, jobs: 1, uptime: '97.8%', status: 'online'  },
+//   { id: 'p003', name: 'Ankush R.', gpu: 'A100 40GB', model: 'Llama 3.1 8B',  concurrency: 6, jobs: 0, uptime: '—',     status: 'offline' },
+//   { id: 'p004', name: 'Priya Dev', gpu: 'H100 80GB', model: 'Gemma 2 27B',   concurrency: 8, jobs: 0, uptime: '—',     status: 'pending' },
+// ];
 
-const DEMO_LOGS = [
-  { time: '23:18:42', level: 'info',  msg: 'Job job_b34c picked up by provider Nirav Shah' },
-  { time: '23:17:01', level: 'info',  msg: 'New job submitted: job_d12a by user_9@mk.ai (3100 prompts)' },
-  { time: '23:15:50', level: 'error', msg: 'Job job_e55b failed — malformed JSONL input' },
-  { time: '23:10:22', level: 'info',  msg: 'Job job_a91f completed — 5000/5000 prompts done' },
-  { time: '23:05:11', level: 'warn',  msg: 'Provider Ankush R. went offline — 0 active jobs' },
-  { time: '22:58:03', level: 'info',  msg: 'Provider Nirav Shah registered and approved' },
-  { time: '22:50:14', level: 'info',  msg: 'New user signup: karan@mk.ai' },
-  { time: '22:44:39', level: 'warn',  msg: 'Queue depth reached 5 — consider adding more providers' },
-];
+// const DEMO_LOGS = [
+//   { time: '23:18:42', level: 'info',  msg: 'Job job_b34c picked up by provider Nirav Shah' },
+//   { time: '23:17:01', level: 'info',  msg: 'New job submitted: job_d12a by user_9@mk.ai (3100 prompts)' },
+//   { time: '23:15:50', level: 'error', msg: 'Job job_e55b failed — malformed JSONL input' },
+//   { time: '23:10:22', level: 'info',  msg: 'Job job_a91f completed — 5000/5000 prompts done' },
+//   { time: '23:05:11', level: 'warn',  msg: 'Provider Ankush R. went offline — 0 active jobs' },
+//   { time: '22:58:03', level: 'info',  msg: 'Provider Nirav Shah registered and approved' },
+//   { time: '22:50:14', level: 'info',  msg: 'New user signup: karan@mk.ai' },
+//   { time: '22:44:39', level: 'warn',  msg: 'Queue depth reached 5 — consider adding more providers' },
+// ];
+const DEMO_JOBS = [];
+const DEMO_USERS = [];
+const DEMO_PROVIDERS = [];
+const DEMO_LOGS = [];
 
 /* ── Status styling ── */
 const JOB_STATUS_COLORS = {

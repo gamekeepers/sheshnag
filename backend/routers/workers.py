@@ -12,7 +12,8 @@ import shutil, os, json
 router = APIRouter()
 
 VALID_TRANSITIONS = {
-    "validating":  ["in_progress"],
+    "validating":  ["validated", "failed"],
+    "validated":   ["in_progress"],
     "in_progress": ["completed", "failed"],
     "completed":   [],
     "failed":      [],
@@ -83,7 +84,7 @@ def poll_job(
 
     available_batches = (
         db.query(Batch)
-        .filter(Batch.status == "validating")
+        .filter(Batch.status == "validated")
         .order_by(Batch.created_at)
         .all()
     )

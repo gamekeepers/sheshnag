@@ -59,10 +59,13 @@ class Batch(Base):
     output_file_id           = Column(String, nullable=True)
     error_file_id            = Column(String, nullable=True)
     created_at               = Column(Integer, default=unix_now)
+    expires_at               = Column(Integer, nullable=True)
+    requested_at             = Column(Integer, nullable=True)
     completed_at             = Column(Integer, nullable=True)
     request_counts_total     = Column(Integer, default=0)
     request_counts_completed = Column(Integer, default=0)
     request_counts_failed    = Column(Integer, default=0)
+    error_details            = Column(String, nullable=True)
 
 
 class BatchAssignment(Base):
