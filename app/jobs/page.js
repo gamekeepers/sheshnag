@@ -52,29 +52,27 @@ export default function JobsPage() {
     }
   }, []);
 
+  /* ---- refs for the polling loop ---- */
+  const pollTimerRef = useRef(null);        // holds the setTimeout handle
+  const initialFetchDone = useRef(false);   // guard against loading flicker
 
-  /* ---- poll ref so the effect can clear it later ---- */
-  const pollRef = useRef(null);
-  const abortRef = useRef(null);
-
-  /* ---- fetch helper (stable reference for interval / SSE callback) ---- */
-  const fetchJobs = useCallback(async (signal) => {
-    setLoading(true);
-    let raw = null;
+  /* ---- fetch helper (returns raw backend data) ---- */
+  const fetchJobs = useCallback(async () => {
     try {
+      const controller = new AbortController();
       const token = localStorage.getItem('mk_token') || '';
       const res = await fetch(`${BACKEND}/v1/batches`, {
         headers: {
           'ngrok-skip-browser-warning': 'true',
           'Authorization': `Bearer ${token}`,
         },
-        signal,
+        signal: controller.signal,
       });
       const data = await res.json();
-      raw = data.data || [];
-      const jobList = raw;
+      const raw = data.data || [];
+
       const fileMap = JSON.parse(localStorage.getItem('moonknight_file_map') || '{}');
-      const mapped = jobList.map((job) => ({
+      const mapped = raw.map((job) => ({
         id: job.id,
         filename: fileMap[job.input_file_id] || job.input_file_id || 'unknown.jsonl',
         status: job.status,
@@ -83,36 +81,64 @@ export default function JobsPage() {
         total: job.request_counts?.total || 0,
         done: job.request_counts?.completed || 0,
       }));
-      setJobs(mapped);
-      setSelectedJob(mapped[0] || null);
+
+      /* merge by id so React doesn't diff the entire array on every poll */
+      setJobs(prev => {
+        const map = new Map();
+        prev.forEach(j => map.set(j.id, j));
+        mapped.forEach(j => map.set(j.id, j));       // overwrite or insert
+        // remove jobs that no longer exist
+        const aliveIds = new Set(mapped.map(j => j.id));
+        map.forEach((v, k) => { if (!aliveIds.has(k)) map.delete(k); });
+        return [...map.values()];
+      });
+
+      /* preserve user's selection — only fall back to first job when nothing matches */
+      setSelectedJob(old => mapped.find(j => j.id === old?.id) ?? (mapped[0] || null));
+
+      /* silence the loading spinner after the first successful fetch */
+      if (!initialFetchDone.current) {
+        initialFetchDone.current = true;
+        setLoading(false);
+      }
+
+      return mapped;
     } catch (err) {
       if (err.name !== 'AbortError') {
         console.error('Failed to fetch jobs:', err);
       }
-    } finally {
-      setLoading(false);
+      /* ensure spinner goes away on hard failure during initial load */
+      if (!initialFetchDone.current) {
+        initialFetchDone.current = true;
+        setLoading(false);
+      }
+      return null;
     }
-    return raw;
   }, []);
 
-  /* ---- auto-refresh: poll every 15 s (stops when all jobs terminal) ---- */
-  useEffect(() => {
-    abortRef.current = new AbortController();
+  /* ---- polling loop (recursive setTimeout, stops when all terminal) ---- */
+  const ACTIVE_INTERVAL = 7000;
 
-    const checkAndFetch = async () => {
-      if (abortRef.current.signal.aborted) return;
-      const raw = await fetchJobs(abortRef.current.signal);
-      if (raw && raw.every(j => TERMINAL_STATUSES.includes(j.status))) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
+  useEffect(() => {
+    let stopped = false;
+
+    const poll = async () => {
+      const result = await fetchJobs();
+
+      if (stopped) return;
+
+      /* stop when all jobs are terminal */
+      const hasActive = result && result.some(j => !TERMINAL_STATUSES.includes(j.status));
+      if (!hasActive) return;
+
+      pollTimerRef.current = setTimeout(poll, ACTIVE_INTERVAL);
     };
 
-    checkAndFetch();
-    pollRef.current = setInterval(checkAndFetch, 15000);
+    poll();
+
     return () => {
-      abortRef.current.abort();
-      if (pollRef.current) clearInterval(pollRef.current);
+      stopped = true;
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
     };
   }, [fetchJobs]);
 
@@ -138,7 +164,10 @@ export default function JobsPage() {
       try {
         const es = new EventSource(`${BACKEND}/v1/batches/${job.id}/events`);
         es.addEventListener('validation_complete', () => {
-          fetchJobs(abortRef.current?.signal);
+          fetchJobs();
+          es.close();
+        });
+        es.addEventListener('error', () => {
           es.close();
         });
         eventSources.push(es);
