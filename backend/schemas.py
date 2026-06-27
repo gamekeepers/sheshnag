@@ -48,10 +48,10 @@ class BatchOut(BaseModel):
             status=batch.status,
             output_file_id=batch.output_file_id,
             error_file_id=batch.error_file_id,
-            error_details=getattr(batch, "error_details", None),
+            error_details=batch.error_details,
             created_at=batch.created_at,
-            expires_at=getattr(batch, "expires_at", None),
-            requested_at=getattr(batch, "requested_at", None),
+            expires_at=batch.expires_at,
+            requested_at=batch.requested_at,
             completed_at=batch.completed_at,
             request_counts=RequestCounts(
                 total=batch.request_counts_total or 0,

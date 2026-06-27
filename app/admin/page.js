@@ -25,48 +25,6 @@ const NAV_ITEMS = [
   { id: 'logs',      label: 'Logs',       icon: '📄' },
 ];
 
-/* ── Demo fallback data (commented out — wire to backend APIs) ── */
-/* TODO: Need backend endpoints: GET /v1/users, GET /providers, GET /logs */
-// const DEMO_JOBS = [
-//   { id: 'job_a91f', user: 'achyut@mk.ai', prompts: 5000, status: 'completed', provider: 'Nirav Shah', started: '2h ago' },
-//   { id: 'job_b34c', user: 'user_2@mk.ai', prompts: 2400, status: 'running',   provider: 'Nirav Shah', started: '18m ago' },
-//   { id: 'job_c77e', user: 'user_5@mk.ai', prompts: 800,  status: 'running',   provider: 'Vatsal K.',  started: '6m ago' },
-//   { id: 'job_d12a', user: 'user_9@mk.ai', prompts: 3100, status: 'queued',    provider: '—',          started: 'Just now' },
-//   { id: 'job_e55b', user: 'riya@mk.ai',   prompts: 620,  status: 'failed',    provider: 'Vatsal K.',  started: '1h ago' },
-//   { id: 'job_f20c', user: 'karan@mk.ai',   prompts: 1200, status: 'completed', provider: 'Nirav Shah', started: '3h ago' },
-// ];
-
-// const DEMO_USERS = [
-//   { id: 'u001', name: 'Achyut Pathak', email: 'achyut@mk.ai',  jobs: 12, joined: '23 May 2026', status: 'active' },
-//   { id: 'u002', name: 'User Two',      email: 'user_2@mk.ai',  jobs: 4,  joined: '24 May 2026', status: 'active' },
-//   { id: 'u003', name: 'User Five',     email: 'user_5@mk.ai',  jobs: 2,  joined: '24 May 2026', status: 'active' },
-//   { id: 'u004', name: 'Riya Sharma',   email: 'riya@mk.ai',    jobs: 7,  joined: '22 May 2026', status: 'suspended' },
-//   { id: 'u005', name: 'Karan Mehta',   email: 'karan@mk.ai',   jobs: 3,  joined: '25 May 2026', status: 'active' },
-//   { id: 'u006', name: 'User Nine',     email: 'user_9@mk.ai',  jobs: 1,  joined: '25 May 2026', status: 'active' },
-// ];
-
-// const DEMO_PROVIDERS = [
-//   { id: 'p001', name: 'Nirav Shah', gpu: 'A100 80GB', model: 'Llama 3.1 70B', concurrency: 8, jobs: 3, uptime: '99.2%', status: 'online'  },
-//   { id: 'p002', name: 'Vatsal K.', gpu: 'RTX 4090',  model: 'Mistral 7B',    concurrency: 4, jobs: 1, uptime: '97.8%', status: 'online'  },
-//   { id: 'p003', name: 'Ankush R.', gpu: 'A100 40GB', model: 'Llama 3.1 8B',  concurrency: 6, jobs: 0, uptime: '—',     status: 'offline' },
-//   { id: 'p004', name: 'Priya Dev', gpu: 'H100 80GB', model: 'Gemma 2 27B',   concurrency: 8, jobs: 0, uptime: '—',     status: 'pending' },
-// ];
-
-// const DEMO_LOGS = [
-//   { time: '23:18:42', level: 'info',  msg: 'Job job_b34c picked up by provider Nirav Shah' },
-//   { time: '23:17:01', level: 'info',  msg: 'New job submitted: job_d12a by user_9@mk.ai (3100 prompts)' },
-//   { time: '23:15:50', level: 'error', msg: 'Job job_e55b failed — malformed JSONL input' },
-//   { time: '23:10:22', level: 'info',  msg: 'Job job_a91f completed — 5000/5000 prompts done' },
-//   { time: '23:05:11', level: 'warn',  msg: 'Provider Ankush R. went offline — 0 active jobs' },
-//   { time: '22:58:03', level: 'info',  msg: 'Provider Nirav Shah registered and approved' },
-//   { time: '22:50:14', level: 'info',  msg: 'New user signup: karan@mk.ai' },
-//   { time: '22:44:39', level: 'warn',  msg: 'Queue depth reached 5 — consider adding more providers' },
-// ];
-const DEMO_JOBS = [];
-const DEMO_USERS = [];
-const DEMO_PROVIDERS = [];
-const DEMO_LOGS = [];
-
 /* ── Status styling ── */
 const JOB_STATUS_COLORS = {
   completed: { bg: '#1a3a1a', border: '#2d5a2d', text: '#4ade80' },
@@ -173,8 +131,6 @@ export default function AdminPage() {
   const activeJobs      = jobs.filter(j => ['running', 'in_progress'].includes(j.status)).length;
   const completedJobs   = jobs.filter(j => j.status === 'completed').length;
   const failedJobs      = jobs.filter(j => ['failed', 'expired', 'cancelled'].includes(j.status)).length;
-  const onlineProviders = DEMO_PROVIDERS.filter(p => p.status === 'online').length;
-  const totalUsers      = DEMO_USERS.length;
 
   return (
     <div style={{ display: 'flex', height: '100vh', backgroundColor: '#0a0a0a', color: '#ccc', fontFamily: "'Inter', sans-serif", overflow: 'hidden' }}>
@@ -280,20 +236,21 @@ export default function AdminPage() {
           {/* ── OVERVIEW ── */}
           {activeNav === 'overview' && (
             <>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '20px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '20px' }}>
                 <StatCard label="Total jobs"      value={totalJobs}      icon="📋" />
                 <StatCard label="Active"          value={activeJobs}     icon="⚙️"  valueColor="#60a5fa" sub="running now" />
                 <StatCard label="Completed"       value={completedJobs}  icon="✅"  valueColor="#4ade80" />
-                <StatCard label="Providers online" value={`${onlineProviders}/${DEMO_PROVIDERS.length}`} icon="⚡" valueColor="#4ade80" />
+
               </div>
 
               <SectionLabel>Recent Jobs {backendStatus === 'offline' && <DemoBadge />}</SectionLabel>
-              <JobsTable jobs={DEMO_JOBS.slice(0, 6)} />
-
-              <div style={{ marginTop: '20px' }}>
-                <SectionLabel>Active Providers <DemoBadge /></SectionLabel>
-                <ProvidersTable providers={DEMO_PROVIDERS} />
-              </div>
+              {jobs.length === 0 && backendStatus !== 'checking' ? (
+                <div style={{ backgroundColor: '#111', border: '1px solid #1e1e1e', borderRadius: '12px', padding: '40px', textAlign: 'center' }}>
+                  <p style={{ fontSize: '13px', color: '#555' }}>No jobs yet</p>
+                </div>
+              ) : (
+                <JobsTable jobs={jobs.slice(0, 6)} />
+              )}
             </>
           )}
 
@@ -331,44 +288,29 @@ export default function AdminPage() {
           {/* ── USERS ── */}
           {activeNav === 'users' && (
             <>
-              <SectionLabel>All Users <DemoBadge /></SectionLabel>
-              <Table headers={['User', 'Email', 'Jobs submitted', 'Joined', 'Status']} cols="180px 1fr 120px 140px 100px">
-                {DEMO_USERS.map((u, i) => (
-                  <TableRow key={u.id} cols="180px 1fr 120px 140px 100px" isLast={i === DEMO_USERS.length - 1}>
-                    <span style={{ fontSize: '13px', color: '#fff' }}>{u.name}</span>
-                    <span style={{ fontSize: '13px', color: '#888' }}>{u.email}</span>
-                    <span style={{ fontSize: '13px', color: '#ddd', textAlign: 'center' }}>{u.jobs}</span>
-                    <span style={{ fontSize: '12px', color: '#555' }}>{u.joined}</span>
-                    <UserStatusPill status={u.status} />
-                  </TableRow>
-                ))}
-              </Table>
+              <SectionLabel>All Users</SectionLabel>
+              <div style={{ backgroundColor: '#111', border: '1px solid #1e1e1e', borderRadius: '12px', padding: '40px', textAlign: 'center' }}>
+                <p style={{ fontSize: '13px', color: '#555' }}>User management not yet implemented</p>
+              </div>
             </>
           )}
 
           {/* ── PROVIDERS ── */}
           {activeNav === 'providers' && (
             <>
-              <SectionLabel>All Providers <DemoBadge /></SectionLabel>
-              <ProvidersTable providers={DEMO_PROVIDERS} showAll />
+              <SectionLabel>All Providers</SectionLabel>
+              <div style={{ backgroundColor: '#111', border: '1px solid #1e1e1e', borderRadius: '12px', padding: '40px', textAlign: 'center' }}>
+                <p style={{ fontSize: '13px', color: '#555' }}>Provider management not yet implemented</p>
+              </div>
             </>
           )}
 
           {/* ── LOGS ── */}
           {activeNav === 'logs' && (
             <>
-              <SectionLabel>System Logs <DemoBadge /></SectionLabel>
-              <div style={{ backgroundColor: '#0f0f0f', border: '1px solid #1e1e1e', borderRadius: '12px', padding: '16px', fontFamily: 'monospace' }}>
-                {DEMO_LOGS.map((log, i) => (
-                  <div key={i} style={{
-                    display: 'flex', gap: '14px', padding: '8px 0',
-                    borderBottom: i < DEMO_LOGS.length - 1 ? '1px solid #161616' : 'none',
-                  }}>
-                    <span style={{ fontSize: '11px', color: '#333', flexShrink: 0, width: '60px' }}>{log.time}</span>
-                    <span style={{ fontSize: '11px', color: LOG_COLORS[log.level], flexShrink: 0, width: '40px', textTransform: 'uppercase' }}>{log.level}</span>
-                    <span style={{ fontSize: '12px', color: '#666' }}>{log.msg}</span>
-                  </div>
-                ))}
+              <SectionLabel>System Logs</SectionLabel>
+              <div style={{ backgroundColor: '#111', border: '1px solid #1e1e1e', borderRadius: '12px', padding: '40px', textAlign: 'center' }}>
+                <p style={{ fontSize: '13px', color: '#555' }}>Log streaming not yet implemented</p>
               </div>
             </>
           )}

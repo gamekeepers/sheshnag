@@ -5,6 +5,9 @@ import Link from 'next/link';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
+/* Terminal statuses — leaf states in backend VALID_TRANSITIONS (empty allowed list) */
+const TERMINAL_STATUSES = ['completed', 'failed'];
+
 function MoonknightLogo({ size = 28 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: size / 4 }}>
@@ -52,9 +55,10 @@ export default function JobsPage() {
 
   /* ---- poll ref so the effect can clear it later ---- */
   const pollRef = useRef(null);
+  const abortRef = useRef(null);
 
   /* ---- fetch helper (stable reference for interval / SSE callback) ---- */
-  const fetchJobs = useCallback(async () => {
+  const fetchJobs = useCallback(async (signal) => {
     setLoading(true);
     let raw = null;
     try {
@@ -64,6 +68,7 @@ export default function JobsPage() {
           'ngrok-skip-browser-warning': 'true',
           'Authorization': `Bearer ${token}`,
         },
+        signal,
       });
       const data = await res.json();
       raw = data.data || [];
@@ -81,7 +86,9 @@ export default function JobsPage() {
       setJobs(mapped);
       setSelectedJob(mapped[0] || null);
     } catch (err) {
-      console.error('Failed to fetch jobs:', err);
+      if (err.name !== 'AbortError') {
+        console.error('Failed to fetch jobs:', err);
+      }
     } finally {
       setLoading(false);
     }
@@ -90,9 +97,12 @@ export default function JobsPage() {
 
   /* ---- auto-refresh: poll every 15 s (stops when all jobs terminal) ---- */
   useEffect(() => {
+    abortRef.current = new AbortController();
+
     const checkAndFetch = async () => {
-      const raw = await fetchJobs();
-      if (raw && raw.every(j => ['validated', 'failed', 'completed'].includes(j.status))) {
+      if (abortRef.current.signal.aborted) return;
+      const raw = await fetchJobs(abortRef.current.signal);
+      if (raw && raw.every(j => TERMINAL_STATUSES.includes(j.status))) {
         clearInterval(pollRef.current);
         pollRef.current = null;
       }
@@ -100,11 +110,26 @@ export default function JobsPage() {
 
     checkAndFetch();
     pollRef.current = setInterval(checkAndFetch, 15000);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    return () => {
+      abortRef.current.abort();
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
   }, [fetchJobs]);
 
   /* ---- SSE subscription for batches still validating ---- */
+  const validatingIdsRef = useRef(new Set());
+
   useEffect(() => {
+    const currentIds = new Set(jobs.filter(j => j.status === 'validating').map(j => j.id));
+    const prevIds = validatingIdsRef.current;
+
+    // Only recreate SSE connections when the set of validating job IDs changes
+    const idsChanged = currentIds.size !== prevIds.size ||
+      [...currentIds].some(id => !prevIds.has(id));
+
+    if (!idsChanged) return;
+
+    validatingIdsRef.current = currentIds;
     const eventSources = [];
 
     for (const job of jobs) {
@@ -113,7 +138,7 @@ export default function JobsPage() {
       try {
         const es = new EventSource(`${BACKEND}/v1/batches/${job.id}/events`);
         es.addEventListener('validation_complete', () => {
-          fetchJobs();
+          fetchJobs(abortRef.current?.signal);
           es.close();
         });
         eventSources.push(es);
