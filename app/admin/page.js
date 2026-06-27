@@ -185,6 +185,22 @@ export default function AdminPage() {
               <p style={{ fontSize: '10px', color: '#444', margin: 0, textTransform: 'capitalize' }}>{adminUser.role}</p>
             </div>
           </div>
+          <button
+            onClick={() => {
+              localStorage.removeItem('mk_token');
+              localStorage.removeItem('mk_user');
+              router.push('/login');
+            }}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '8px',
+              width: '100%', padding: '8px 12px', marginTop: '12px',
+              borderRadius: '6px', border: '1px solid #3a1a1a', cursor: 'pointer',
+              fontSize: '12px', textAlign: 'left', backgroundColor: '#1a0a0a', color: '#f87171',
+            }}
+          >
+            <span style={{ fontSize: '14px' }}>🚪</span>
+            Logout
+          </button>
         </div>
       </div>
 

@@ -102,15 +102,20 @@ localStorage.setItem('moonknight_file_map', JSON.stringify(fileMap));
         <div className="px-4 pb-4 mb-3 border-b border-[#2a2a2a]">
           <Link href="/"><MoonknightLogo size={24} /></Link>
         </div>
-        <p className="px-4 text-[10px] text-[#555] uppercase tracking-widest mb-2">Manage</p>
-        <Link href="/" className="mx-2 px-3 py-2 rounded-md text-sm text-[#aaa] hover:bg-[#1e1e1e] hover:text-white">
-          🏠 Home
-        </Link>
-        <Link href="/jobs" className="mx-2 px-3 py-2 rounded-md text-sm text-[#aaa] hover:bg-[#1e1e1e] hover:text-white">
-          📋 Jobs
-        </Link>
-        <div className="mx-2 px-3 py-2 rounded-md text-sm text-white bg-[#1e1e1e]">
-          📁 Upload
+        <div className="flex-1">
+          <p className="px-4 text-[10px] text-[#555] uppercase tracking-widest mb-2">Manage</p>
+          <Link href="/" className="block mx-2 px-3 py-2 rounded-md text-sm text-[#aaa] hover:bg-[#1e1e1e] hover:text-white">
+            🏠 Home
+          </Link>
+          <Link href="/jobs" className="block mx-2 px-3 py-2 rounded-md text-sm text-[#aaa] hover:bg-[#1e1e1e] hover:text-white">
+            📋 Jobs
+          </Link>
+          <div className="mx-2 px-3 py-2 rounded-md text-sm text-white bg-[#1e1e1e]">
+            📁 Upload
+          </div>
+        </div>
+        <div className="px-4 pt-4 border-t border-[#2a2a2a] mt-auto">
+          <button onClick={() => { localStorage.removeItem('mk_token'); localStorage.removeItem('mk_user'); router.push('/login'); }} className="flex items-center gap-2 w-full px-3 py-2 rounded-md text-sm text-red-400 hover:bg-[#1e1e1e]">🚪 Logout</button>
         </div>
       </div>
 
