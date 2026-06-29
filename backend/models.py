@@ -86,3 +86,4 @@ class ProviderCapability(Base):
     loaded_models     = Column(String, default="[]")
     status            = Column(String, default="online")
     last_heartbeat    = Column(Integer, default=unix_now)
+
