@@ -22,10 +22,7 @@ export default function LoginPage() {
       setError('Please fill in all fields.');
       return;
     }
-    if (mode === 'admin') {
-      router.push('/admin');
-      return;
-    }
+
     setLoading(true);
     setError('');
     try {
@@ -45,15 +42,21 @@ export default function LoginPage() {
           headers: { 'Authorization': `Bearer ${data.access_token}`, 'ngrok-skip-browser-warning': 'true' },
         });
         const me = await meRes.json();
+        const userRole = me.role || 'user';
         localStorage.setItem('mk_user', JSON.stringify({
           email: me.email || email,
           full_name: me.full_name || email,
-          role: me.role || 'user',
+          role: userRole,
         }));
+        if (userRole === 'admin') {
+          router.push('/admin');
+        } else {
+          router.push('/jobs');
+        }
       } catch {
-        localStorage.setItem('mk_user', JSON.stringify({ email, full_name: email }));
+        localStorage.setItem('mk_user', JSON.stringify({ email, full_name: email, role: 'user' }));
+        router.push('/jobs');
       }
-      router.push('/jobs');
     } catch {
       setError('Cannot reach server. Please try again.');
     } finally {
