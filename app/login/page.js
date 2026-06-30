@@ -43,6 +43,19 @@ export default function LoginPage() {
         });
         const me = await meRes.json();
         const userRole = me.role || 'user';
+
+        // Block if role doesn't match selected tab
+        if (mode === 'user' && userRole === 'admin') {
+          setError('Admin accounts must use the Admin tab.');
+          localStorage.removeItem('mk_token');
+          return;
+        }
+        if (mode === 'admin' && userRole !== 'admin') {
+          setError('This account does not have admin access.');
+          localStorage.removeItem('mk_token');
+          return;
+        }
+
         localStorage.setItem('mk_user', JSON.stringify({
           email: me.email || email,
           full_name: me.full_name || email,
@@ -125,6 +138,7 @@ export default function LoginPage() {
                 width: '100%', background: 'transparent', border: '1px solid rgba(255,255,255,0.25)',
                 borderRadius: '24px', padding: '12px 16px', color: '#fff', fontSize: '14px', outline: 'none',
                 WebkitTextFillColor: '#fff', caretColor: '#fff',
+                WebkitBoxShadow: '0 0 0 1000px #050505 inset',
               }}
             />
           </div>
@@ -139,6 +153,7 @@ export default function LoginPage() {
                 width: '100%', background: 'transparent', border: '1px solid rgba(255,255,255,0.25)',
                 borderRadius: '24px', padding: '12px 16px', color: '#fff', fontSize: '14px', outline: 'none',
                 WebkitTextFillColor: '#fff', caretColor: '#fff',
+                WebkitBoxShadow: '0 0 0 1000px #050505 inset',
               }}
             />
           </div>
@@ -163,7 +178,18 @@ export default function LoginPage() {
             </p>
           )}
 
-
+          {/* Provider portal link */}
+          <div style={{ marginTop: '20px', borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: '16px', textAlign: 'center' }}>
+            <Link href="/provider/login" style={{
+              display: 'inline-flex', alignItems: 'center', gap: '6px',
+              fontSize: '12px', color: 'rgba(255,255,255,0.35)',
+              textDecoration: 'none', padding: '6px 14px',
+              border: '1px solid rgba(255,255,255,0.08)', borderRadius: '20px',
+              transition: 'all 0.2s',
+            }}>
+              ⚡ Provider Portal
+            </Link>
+          </div>
 
         </div>
       </div>

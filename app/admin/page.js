@@ -30,9 +30,10 @@ function MoonknightLogo({ size = 22 }) {
 
 /* ── Nav ── */
 const NAV_ITEMS = [
-  { id: 'overview', label: 'Overview', icon: '⬛' },
-  { id: 'jobs',     label: 'Jobs',     icon: '📋' },
-  { id: 'users',    label: 'Users',    icon: '👥' },
+  { id: 'overview',  label: 'Overview',  icon: '⬛' },
+  { id: 'jobs',      label: 'Jobs',      icon: '📋' },
+  { id: 'users',     label: 'Users',     icon: '👥' },
+  { id: 'providers', label: 'Providers', icon: '⚡' },
 ];
 
 /* ── Status colours ── */
@@ -183,6 +184,7 @@ export default function AdminPage() {
   const [activeNav,     setActiveNav]     = useState('overview');
   const [jobs,          setJobs]          = useState([]);
   const [users,         setUsers]         = useState([]);
+  const [providers,     setProviders]     = useState([]);
   const [jobFilter,     setJobFilter]     = useState('all');
   const [backendStatus, setBackendStatus] = useState('checking');
   const [isLoading,     setIsLoading]     = useState(true);
@@ -221,10 +223,21 @@ export default function AdminPage() {
   /* ── load all users ── */
   const loadUsers = useCallback(async () => {
     try {
-      const res = await fetch(`${BACKEND}/v1/users`, { headers: authHeaders() });
+      const res = await fetch(`${BACKEND}/v1/admin/users`, { headers: authHeaders() });
       if (res.ok) {
         const d = await res.json();
         setUsers(Array.isArray(d) ? d : (d.data || d.users || []));
+      }
+    } catch {}
+  }, []);
+
+  /* ── load all providers ── */
+  const loadProviders = useCallback(async () => {
+    try {
+      const res = await fetch(`${BACKEND}/v1/admin/providers`, { headers: authHeaders() });
+      if (res.ok) {
+        const d = await res.json();
+        setProviders(Array.isArray(d) ? d : (d.data || []));
       }
     } catch {}
   }, []);
@@ -236,7 +249,8 @@ export default function AdminPage() {
     loadAdminProfile();
     loadJobs();
     loadUsers();
-  }, [router, loadJobs, loadUsers]);
+    loadProviders();
+  }, [router, loadJobs, loadUsers, loadProviders]);
 
   function handleLogout() {
     localStorage.removeItem('mk_token');
@@ -448,6 +462,43 @@ export default function AdminPage() {
                   <button onClick={() => setEditingUser(user)} style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid #2a2a2a', background: 'transparent', color: '#aaa', cursor: 'pointer', fontSize: '12px' }}>
                     Edit
                   </button>
+                </>)}
+              />
+            </>
+          )}
+
+          {/* ── PROVIDERS ── */}
+          {activeNav === 'providers' && (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <p style={{ fontSize: '11px', color: '#444', textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
+                  All Providers — {providers.length} total
+                </p>
+              </div>
+              <AdminTable
+                headers={['Worker ID', 'Provider', 'VRAM Total', 'VRAM Free', 'Loaded Models', 'Status', 'Last Heartbeat']}
+                cols="160px 140px 100px 100px 1fr 110px 140px"
+                rows={providers}
+                emptyMsg="No providers found"
+                renderRow={p => (<>
+                  <span style={{ fontFamily: 'monospace', fontSize: '11px', color: '#ddd' }}>{p.worker_id || '—'}</span>
+                  <span style={{ fontSize: '12px', color: '#888' }}>{p.provider_id || '—'}</span>
+                  <span style={{ fontSize: '13px', color: '#ddd' }}>{p.vram_total_gb != null ? `${p.vram_total_gb} GB` : '—'}</span>
+                  <span style={{ fontSize: '13px', color: '#4ade80' }}>{p.vram_available_gb != null ? `${p.vram_available_gb} GB` : '—'}</span>
+                  <span style={{ fontSize: '11px', color: '#888' }}>{(p.loaded_models || []).join(', ') || '—'}</span>
+                  <span style={{
+                    fontSize: '11px', padding: '2px 10px', borderRadius: '999px', border: '1px solid', display: 'inline-block',
+                    ...(p.status === 'online'
+                      ? { backgroundColor: '#1a3a1a', borderColor: '#2d5a2d', color: '#4ade80' }
+                      : p.status === 'busy'
+                      ? { backgroundColor: '#1a2a4a', borderColor: '#2d4a8a', color: '#60a5fa' }
+                      : { backgroundColor: '#3a1a1a', borderColor: '#5a2d2d', color: '#f87171' })
+                  }}>
+                    {p.status || 'unknown'}
+                  </span>
+                  <span style={{ fontSize: '11px', color: '#555' }}>
+                    {p.last_heartbeat ? new Date(p.last_heartbeat * 1000).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '—'}
+                  </span>
                 </>)}
               />
             </>
