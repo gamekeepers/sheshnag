@@ -1,9 +1,9 @@
 ## Concept map
-Organization: is the user/organization with resources at it"s disposal.  Keep it minimalistic for now. LAter on might add invite provider functionality in organization.
-Provider: is a user/organization with resources at it"s disposal.  
-Worker is the machine hosting the resources(in our case, RAM, VRAM) that allows it to run some jobs. 
-Daemon is the background client that runs on the provider's machine and communicates with the platform. Each worker has a daemon associated with it.
-Runtime is the modality in which the worker can run jobs. Eg. Ollama, vllm, TensorRT, costumized Docker.
+Organization: is the user/organization with resources at it"s disposal.  Keep it minimalistic for now. LAter on might add invite provider functionality in organization.  
+Provider: is a user/organization with resources at it"s disposal.    
+Worker: is the machine hosting the resources(in our case, RAM, VRAM) that allows it to run some jobs.   
+Daemon: is the background client that runs on the provider's machine and communicates with the platform. Each worker has a daemon associated with it.  
+Runtime: is the modality in which the worker can run jobs. Eg. Ollama, vllm, TensorRT, costumized Docker.    
 
 
 ## Provider registration flow:
