@@ -1,15 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
-from models import User
+from models import User, ProviderCapability
 from schemas import (
     SignupRequest, LoginRequest, ChangePasswordRequest,
     UserOut, TokenOut,
 )
 from auth import (
     hash_password, verify_password, create_access_token,
-    generate_api_key, get_current_user,
+    generate_api_key, get_current_user, require_role,
 )
+import json
 
 router = APIRouter()
 
@@ -87,3 +88,51 @@ def regenerate_api_key(
     db.commit()
     db.refresh(user)
     return {"api_key": user.api_key}
+
+
+@router.get("/admin/users")
+def list_users(
+    admin=Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """Admin: list all users."""
+    users = db.query(User).order_by(User.created_at.desc()).all()
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": u.id,
+                "email": u.email,
+                "full_name": u.full_name,
+                "role": u.role,
+                "is_active": u.is_active,
+                "created_at": u.created_at,
+            }
+            for u in users
+        ],
+    }
+
+
+@router.get("/admin/providers")
+def list_providers(
+    admin=Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+):
+    """Admin: list all providers and their capabilities."""
+    caps = db.query(ProviderCapability).all()
+    return {
+        "object": "list",
+        "data": [
+            {
+                "worker_id": c.worker_id,
+                "provider_id": c.provider_id,
+                "vram_total_gb": c.vram_total_gb,
+                "vram_available_gb": c.vram_available_gb,
+                "loaded_models": json.loads(c.loaded_models) if c.loaded_models else [],
+                "status": c.status,
+                "last_heartbeat": c.last_heartbeat,
+            }
+            for c in caps
+        ],
+    }
+
