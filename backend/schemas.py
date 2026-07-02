@@ -137,4 +137,14 @@ class HeartbeatRequest(BaseModel):
     vram_total_gb: float
     vram_available_gb: float = 0
     loaded_models: List[str] = []
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
 

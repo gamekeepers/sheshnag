@@ -86,4 +86,16 @@ class ProviderCapability(Base):
     loaded_models     = Column(String, default="[]")
     status            = Column(String, default="online")
     last_heartbeat    = Column(Integer, default=unix_now)
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    id         = Column(String, primary_key=True)
+    user_id    = Column(String, nullable=False)
+    token      = Column(String, unique=True, nullable=False)
+    expires_at = Column(Integer, nullable=False)
+    used       = Column(Boolean, default=False)
+    created_at = Column(Integer, default=unix_now)
+
 
