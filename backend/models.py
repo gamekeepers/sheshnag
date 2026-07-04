@@ -1,11 +1,19 @@
 from database import Base
-from sqlalchemy import Column, String, Integer, Boolean, Float
+from sqlalchemy import Column, String, Integer, Boolean, Float, Text
 from datetime import datetime, timezone
 import uuid
 
 
 def generate_user_id():
     return f"user-{uuid.uuid4().hex[:24]}"
+
+
+def generate_org_id():
+    return f"org-{uuid.uuid4().hex[:24]}"
+
+
+def generate_worker_id():
+    return f"worker-{uuid.uuid4().hex[:24]}"
 
 
 def generate_file_id():
@@ -28,10 +36,37 @@ class User(Base):
     password_hash        = Column(String, nullable=False)
     full_name            = Column(String, nullable=False)
     role                 = Column(String, nullable=False)
+    org_id               = Column(String, nullable=True)
     api_key              = Column(String, unique=True, nullable=True)
     is_active            = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
     created_at           = Column(Integer, default=unix_now)
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id         = Column(String, primary_key=True, default=generate_org_id)
+    name       = Column(String, nullable=False)
+    owner_id   = Column(String, nullable=False)
+    created_at = Column(Integer, default=unix_now)
+
+
+class Worker(Base):
+    __tablename__ = "workers"
+
+    id             = Column(String, primary_key=True, default=generate_worker_id)
+    provider_id    = Column(String, nullable=False)
+    org_id         = Column(String, nullable=False)
+    hostname       = Column(String, nullable=False)
+    os             = Column(String, nullable=True)
+    cpu_cores      = Column(Integer, nullable=True)
+    ram_total_gb   = Column(Float, nullable=True)
+    gpus           = Column(Text, default="[]")
+    runtimes       = Column(Text, default="[]")
+    status         = Column(String, default="online")
+    last_heartbeat = Column(Integer, default=unix_now)
+    created_at     = Column(Integer, default=unix_now)
 
 
 class File(Base):

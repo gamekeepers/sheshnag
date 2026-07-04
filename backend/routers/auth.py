@@ -122,21 +122,25 @@ def list_providers(
     admin=Depends(require_role("admin")),
     db: Session = Depends(get_db),
 ):
-    """Admin: list all providers and their capabilities."""
-    caps = db.query(ProviderCapability).all()
+    """Admin: list all providers and their workers."""
+    from models import Worker
+    workers = db.query(Worker).order_by(Worker.created_at.desc()).all()
     return {
         "object": "list",
         "data": [
             {
-                "worker_id": c.worker_id,
-                "provider_id": c.provider_id,
-                "vram_total_gb": c.vram_total_gb,
-                "vram_available_gb": c.vram_available_gb,
-                "loaded_models": json.loads(c.loaded_models) if c.loaded_models else [],
-                "status": c.status,
-                "last_heartbeat": c.last_heartbeat,
+                "worker_id": w.id,
+                "provider_id": w.provider_id,
+                "hostname": w.hostname,
+                "os": w.os,
+                "cpu_cores": w.cpu_cores,
+                "ram_total_gb": w.ram_total_gb,
+                "gpus": json.loads(w.gpus) if w.gpus else [],
+                "runtimes": json.loads(w.runtimes) if w.runtimes else [],
+                "status": w.status,
+                "last_heartbeat": w.last_heartbeat,
             }
-            for c in caps
+            for w in workers
         ],
     }
 

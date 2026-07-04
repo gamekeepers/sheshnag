@@ -147,4 +147,38 @@ class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
 
+
+# ─── Provider / Worker schemas ─────────────────────────────
+
+class ProviderSignupRequest(BaseModel):
+    email: str
+    password: str
+    full_name: str
+    org_name: str
+
+
+class GpuInfo(BaseModel):
+    index: int = 0
+    vendor: str = "nvidia"
+    name: str
+    vram_gb: float
+    driver: Optional[str] = None
+    cuda: Optional[str] = None
+
+
+class RuntimeInfo(BaseModel):
+    type: str                   # "ollama", "vllm", etc.
+    endpoint: str
+    models: List[str] = []
+
+
+class WorkerRegisterRequest(BaseModel):
+    hostname: str
+    os: Optional[str] = None
+    cpu: Optional[dict] = None
+    ram: Optional[dict] = None
+    gpus: List[GpuInfo] = []
+    runtimes: List[RuntimeInfo] = []
+
+
 

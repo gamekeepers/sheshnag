@@ -4,7 +4,7 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
-from routers import files, batches, workers, auth
+from routers import files, batches, workers, auth, providers
 from models import User
 from auth import hash_password
 
@@ -20,10 +20,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth.router,    prefix="/v1",      tags=["Auth"])
-app.include_router(files.router,   prefix="/v1",      tags=["Files"])
-app.include_router(batches.router, prefix="/v1",      tags=["Batches"])
-app.include_router(workers.router, prefix="/workers",  tags=["Workers"])
+app.include_router(auth.router,      prefix="/v1",      tags=["Auth"])
+app.include_router(files.router,     prefix="/v1",      tags=["Files"])
+app.include_router(batches.router,   prefix="/v1",      tags=["Batches"])
+app.include_router(workers.router,   prefix="/workers",  tags=["Workers"])
+app.include_router(providers.router, prefix="",          tags=["Providers"])
 
 
 @app.on_event("startup")
