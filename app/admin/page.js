@@ -476,16 +476,16 @@ export default function AdminPage() {
                 </p>
               </div>
               <AdminTable
-                headers={['Worker ID', 'Provider', 'VRAM Total', 'VRAM Free', 'Loaded Models', 'Status', 'Last Heartbeat']}
-                cols="160px 140px 100px 100px 1fr 110px 140px"
+                headers={['Worker ID', 'Provider ID', 'GPUs', 'VRAM Total', 'Loaded Models', 'Status', 'Last Heartbeat']}
+                cols="140px 140px 180px 100px 1fr 100px 140px"
                 rows={providers}
                 emptyMsg="No providers found"
                 renderRow={p => (<>
                   <span style={{ fontFamily: 'monospace', fontSize: '11px', color: '#ddd' }}>{p.worker_id || '—'}</span>
                   <span style={{ fontSize: '12px', color: '#888' }}>{p.provider_id || '—'}</span>
-                  <span style={{ fontSize: '13px', color: '#ddd' }}>{p.vram_total_gb != null ? `${p.vram_total_gb} GB` : '—'}</span>
-                  <span style={{ fontSize: '13px', color: '#4ade80' }}>{p.vram_available_gb != null ? `${p.vram_available_gb} GB` : '—'}</span>
-                  <span style={{ fontSize: '11px', color: '#888' }}>{(p.loaded_models || []).join(', ') || '—'}</span>
+                  <span style={{ fontSize: '12px', color: '#aaa' }}>{(p.gpus || []).map(g => g.name).join(', ') || '—'}</span>
+                  <span style={{ fontSize: '13px', color: '#ddd' }}>{(p.gpus || []).reduce((acc, g) => acc + (g.vram_gb || 0), 0)} GB</span>
+                  <span style={{ fontSize: '12px', color: '#888' }}>{(p.runtimes || []).flatMap(r => r.models || []).join(', ') || '—'}</span>
                   <span style={{
                     fontSize: '11px', padding: '2px 10px', borderRadius: '999px', border: '1px solid', display: 'inline-block',
                     ...(p.status === 'online'

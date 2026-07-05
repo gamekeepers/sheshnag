@@ -9,13 +9,12 @@ import CursorEffect from '../components/CursorEffect';
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
 export default function LoginPage() {
-  const [mode, setMode] = useState('user');
+  const [mode, setMode] = useState('user'); // 'user', 'provider', or 'admin'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const router = useRouter();
-
   const [loading, setLoading] = useState(false);
+  const router = useRouter();
 
   async function handleSubmit() {
     if (!email || !password) {
@@ -37,6 +36,7 @@ export default function LoginPage() {
         return;
       }
       localStorage.setItem('mk_token', data.access_token);
+      
       try {
         const meRes = await fetch(`${BACKEND}/v1/auth/me`, {
           headers: { 'Authorization': `Bearer ${data.access_token}`, 'ngrok-skip-browser-warning': 'true' },
@@ -44,12 +44,25 @@ export default function LoginPage() {
         const me = await meRes.json();
         const userRole = me.role || 'user';
 
-        // Block if role doesn't match selected tab
-        if (mode === 'user' && userRole === 'admin') {
-          setError('Admin accounts must use the Admin tab.');
+        // Check if role matches the selected login mode
+        if (mode === 'user' && userRole !== 'user') {
+          if (userRole === 'admin') {
+            setError('Admin accounts must use the Admin Login link.');
+          } else if (userRole === 'provider') {
+            setError('Provider accounts must use the Provider tab.');
+          } else {
+            setError('Access denied.');
+          }
           localStorage.removeItem('mk_token');
           return;
         }
+        
+        if (mode === 'provider' && userRole !== 'provider') {
+          setError('This account does not have provider access.');
+          localStorage.removeItem('mk_token');
+          return;
+        }
+        
         if (mode === 'admin' && userRole !== 'admin') {
           setError('This account does not have admin access.');
           localStorage.removeItem('mk_token');
@@ -61,14 +74,24 @@ export default function LoginPage() {
           full_name: me.full_name || email,
           role: userRole,
         }));
+
         if (userRole === 'admin') {
           router.push('/admin');
+        } else if (userRole === 'provider') {
+          router.push('/provider');
         } else {
           router.push('/jobs');
         }
       } catch {
-        localStorage.setItem('mk_user', JSON.stringify({ email, full_name: email, role: 'user' }));
-        router.push('/jobs');
+        // Fallback for simple testing or network issue on /me
+        localStorage.setItem('mk_user', JSON.stringify({ email, full_name: email, role: mode }));
+        if (mode === 'admin') {
+          router.push('/admin');
+        } else if (mode === 'provider') {
+          router.push('/provider');
+        } else {
+          router.push('/jobs');
+        }
       }
     } catch {
       setError('Cannot reach server. Please try again.');
@@ -95,6 +118,7 @@ export default function LoginPage() {
       <div style={{ position: 'relative', zIndex: 3, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
         <div style={{ width: '100%', maxWidth: '340px' }}>
 
+          {/* Toggle Tabs */}
           <div style={{ display: 'flex', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '3px', marginBottom: '20px' }}>
             <button
               onClick={() => { setMode('user'); setError(''); }}
@@ -107,19 +131,19 @@ export default function LoginPage() {
               User
             </button>
             <button
-              onClick={() => { setMode('admin'); setError(''); }}
+              onClick={() => { setMode('provider'); setError(''); }}
               style={{
                 flex: 1, padding: '7px', fontSize: '12px', borderRadius: '6px', border: 'none', cursor: 'pointer',
-                background: mode === 'admin' ? 'rgba(255,255,255,0.12)' : 'transparent',
-                color: mode === 'admin' ? '#fff' : 'rgba(255,255,255,0.4)',
+                background: mode === 'provider' ? 'rgba(255,255,255,0.12)' : 'transparent',
+                color: mode === 'provider' ? '#fff' : 'rgba(255,255,255,0.4)',
               }}
             >
-              Admin
+              Provider
             </button>
           </div>
 
           <h1 style={{ color: '#fff', fontSize: '21px', fontWeight: 500, textAlign: 'center', marginBottom: '24px' }}>
-            {mode === 'admin' ? 'Admin login' : 'Welcome back'}
+            {mode === 'admin' ? 'Admin Login' : mode === 'provider' ? 'Provider Login' : 'Welcome back'}
           </h1>
 
           {mode === 'admin' && (
@@ -134,6 +158,7 @@ export default function LoginPage() {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              autoComplete="off"
               style={{
                 width: '100%', background: 'transparent', border: '1px solid rgba(255,255,255,0.25)',
                 borderRadius: '24px', padding: '12px 16px', color: '#fff', fontSize: '14px', outline: 'none',
@@ -144,11 +169,15 @@ export default function LoginPage() {
           </div>
 
           <div style={{ marginBottom: '14px' }}>
-            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.55)', marginBottom: '6px', display: 'block' }}>Password</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+              <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.55)' }}>Password</span>
+              <Link href="/forgot-password" style={{ fontSize: '11px', color: '#9bb8e8', textDecoration: 'none' }}>Forgot password?</Link>
+            </div>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              autoComplete="new-password"
               style={{
                 width: '100%', background: 'transparent', border: '1px solid rgba(255,255,255,0.25)',
                 borderRadius: '24px', padding: '12px 16px', color: '#fff', fontSize: '14px', outline: 'none',
@@ -168,27 +197,37 @@ export default function LoginPage() {
               color: loading ? 'rgba(255,255,255,0.4)' : '#fff', borderRadius: '24px', fontSize: '14px', fontWeight: 500, cursor: loading ? 'default' : 'pointer', marginTop: '6px',
             }}
           >
-            {loading ? 'Logging in...' : mode === 'admin' ? 'Login as Admin' : 'Continue'}
+            {loading ? 'Logging in...' : 'Continue'}
           </button>
 
-          {mode === 'user' && (
+          {mode !== 'admin' && (
             <p style={{ textAlign: 'center', fontSize: '13px', color: 'rgba(255,255,255,0.45)', marginTop: '18px' }}>
               Don't have an account?{' '}
-              <Link href="/signup" style={{ color: '#9bb8e8' }}>Sign up</Link>
+              <Link href={mode === 'provider' ? '/signup?mode=provider' : '/signup'} style={{ color: '#9bb8e8' }}>Sign up</Link>
             </p>
           )}
 
-          {/* Provider portal link */}
+          {/* Admin Link at the bottom */}
           <div style={{ marginTop: '20px', borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: '16px', textAlign: 'center' }}>
-            <Link href="/provider/login" style={{
-              display: 'inline-flex', alignItems: 'center', gap: '6px',
-              fontSize: '12px', color: 'rgba(255,255,255,0.35)',
-              textDecoration: 'none', padding: '6px 14px',
-              border: '1px solid rgba(255,255,255,0.08)', borderRadius: '20px',
-              transition: 'all 0.2s',
-            }}>
-              ⚡ Provider Portal
-            </Link>
+            {mode === 'admin' ? (
+              <button onClick={() => { setMode('user'); setError(''); }} style={{
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                fontSize: '12px', color: 'rgba(255,255,255,0.35)',
+                padding: '6px 14px', transition: 'all 0.2s',
+              }}>
+                👤 User/Provider Login
+              </button>
+            ) : (
+              <button onClick={() => { setMode('admin'); setError(''); }} style={{
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                fontSize: '12px', color: 'rgba(255,255,255,0.35)',
+                padding: '6px 14px', transition: 'all 0.2s',
+              }}>
+                🔒 Admin Login
+              </button>
+            )}
           </div>
 
         </div>
