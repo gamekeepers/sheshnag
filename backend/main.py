@@ -1,8 +1,12 @@
-import os
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
-from routers import files, batches, workers
+from routers import files, batches, workers, auth, providers
+from models import User
+from auth import hash_password
 
 Base.metadata.create_all(bind=engine)
 
@@ -10,15 +14,39 @@ app = FastAPI(title="Batch AI Compute Platform")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(","),
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(files.router,   prefix="/v1",     tags=["Files"])
-app.include_router(batches.router, prefix="/v1",     tags=["Batches"])
-app.include_router(workers.router, prefix="/workers", tags=["Workers"])
+app.include_router(auth.router,      prefix="/v1",      tags=["Auth"])
+app.include_router(files.router,     prefix="/v1",      tags=["Files"])
+app.include_router(batches.router,   prefix="/v1",      tags=["Batches"])
+app.include_router(workers.router,   prefix="/workers",  tags=["Workers"])
+app.include_router(providers.router, prefix="",          tags=["Providers"])
+
+
+@app.on_event("startup")
+def create_default_admin():
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        admin = db.query(User).filter(User.email == "admin@platform.com").first()
+        if not admin:
+            admin = User(
+                email="admin@platform.com",
+                password_hash=hash_password("admin"),
+                full_name="Platform Admin",
+                role="admin",
+                must_change_password=True,
+            )
+            db.add(admin)
+            db.commit()
+            print("Default admin created: admin@platform.com / admin")
+    finally:
+        db.close()
+
 
 @app.get("/")
 def health():

@@ -1,74 +1,185 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 
-function FalconLogo({ size = 28 }) {
+const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
+/* Terminal statuses — leaf states in backend VALID_TRANSITIONS (empty allowed list) */
+const TERMINAL_STATUSES = ['completed', 'failed'];
+
+function MoonknightLogo({ size = 28 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: size / 4 }}>
-      <svg width={size} height={size} viewBox="0 0 36 36" fill="none">
-        <line x1="4" y1="28" x2="20" y2="8" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"/>
-        <line x1="12" y1="28" x2="28" y2="8" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" opacity="0.5"/>
-        <line x1="20" y1="28" x2="32" y2="12" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" opacity="0.25"/>
+      <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
+        <circle cx="16" cy="16" r="12" fill="#fff" />
+        <circle cx="20" cy="13" r="10" fill="#0a0a0a" />
       </svg>
-      <span style={{ color: '#fff', fontSize: size * 0.55, fontWeight: 500, letterSpacing: '0.15em' }}>FALCON</span>
+      <span style={{ color: '#fff', fontSize: size * 0.45, fontWeight: 500, letterSpacing: '0.12em' }}>MOONKNIGHT</span>
     </div>
   );
 }
 
-const DEMO_JOBS = [
-  { id: 1, filename: 'prompts_batch1.jsonl', status: 'completed', created_at: '24 May 2026, 08:00 AM', total: 120, done: 120 },
-  { id: 2, filename: 'qa_test_run.jsonl', status: 'running', created_at: '24 May 2026, 09:30 AM', total: 80, done: 45 },
-  { id: 3, filename: 'large_batch.jsonl', status: 'queued', created_at: '24 May 2026, 10:15 AM', total: 500, done: 0 },
-  { id: 4, filename: 'marketing_prompts.jsonl', status: 'completed', created_at: '24 May 2026, 11:00 AM', total: 60, done: 60 },
-  { id: 5, filename: 'broken_input.jsonl', status: 'failed', created_at: '24 May 2026, 11:45 AM', total: 30, done: 0 },
-];
+
 
 function StatusBadge({ status }) {
   const styles = {
     completed: 'bg-green-900 text-green-400',
     running: 'bg-blue-900 text-blue-400',
+    in_progress: 'bg-blue-900 text-blue-400',
     queued: 'bg-yellow-900 text-yellow-400',
+    validated: 'bg-green-900 text-green-400',
     failed: 'bg-red-900 text-red-400',
-    validating: 'bg-yellow-900 text-yellow-400',
+    validating: 'bg-yellow-900 text-yellow-400 animate-pulse',
   };
   return (
     <span className={`text-xs px-2 py-0.5 rounded-full ${styles[status] || 'bg-gray-800 text-gray-300'}`}>
-      {status}
+      {status.replace('_', ' ')}
     </span>
   );
 }
 
 export default function JobsPage() {
-  const [jobs, setJobs] = useState(DEMO_JOBS);
-  const [selectedJob, setSelectedJob] = useState(DEMO_JOBS[0]);
+  const router = useRouter();
+  const [jobs, setJobs] = useState([]);
+  const [selectedJob, setSelectedJob] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [userName, setUserName] = useState('');
 
-useEffect(() => {
-  async function fetchJobs() {
-    try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/v1/batches`);
-      const data = await res.json();
-      console.log('Jobs from backend:', data);
-      const jobList = data.data || [];
-const fileMap = JSON.parse(localStorage.getItem('falcon_file_map') || '{}');
-if (jobList.length > 0) {
-  const mapped = jobList.map((job) => ({
-    id: job.id,
-    filename: fileMap[job.input_file_id] || job.input_file_id || 'unknown.jsonl',
-          status: job.status,
-          created_at: job.created_at ? new Date(job.created_at * 1000).toLocaleString('en-IN') : 'N/A',
-          total: job.request_counts?.total || 0,
-          done: job.request_counts?.completed || 0,
-        }));
-        setJobs(mapped);
-        setSelectedJob(mapped[0]);
-      }
-    } catch (err) {
-      console.error('Failed to fetch jobs:', err);
+  useEffect(() => {
+    const userRaw = localStorage.getItem('mk_user');
+    if (userRaw) {
+      try { setUserName(JSON.parse(userRaw).full_name || JSON.parse(userRaw).email || ''); } catch {}
     }
-  }
-  fetchJobs();
-}, []);
+  }, []);
+
+  /* ---- refs for the polling loop ---- */
+  const pollTimerRef = useRef(null);        // holds the setTimeout handle
+  const initialFetchDone = useRef(false);   // guard against loading flicker
+
+  /* ---- fetch helper (returns raw backend data) ---- */
+  const fetchJobs = useCallback(async () => {
+    try {
+      const controller = new AbortController();
+      const token = localStorage.getItem('mk_token') || '';
+      const res = await fetch(`${BACKEND}/v1/batches`, {
+        headers: {
+          'ngrok-skip-browser-warning': 'true',
+          'Authorization': `Bearer ${token}`,
+        },
+        signal: controller.signal,
+      });
+      const data = await res.json();
+      const raw = data.data || [];
+
+      const fileMap = JSON.parse(localStorage.getItem('moonknight_file_map') || '{}');
+      const mapped = raw.map((job) => ({
+        id: job.id,
+        filename: fileMap[job.input_file_id] || job.input_file_id || 'unknown.jsonl',
+        status: job.status,
+        error_details: job.error_details || null,
+        created_at: job.created_at ? new Date(job.created_at * 1000).toLocaleString('en-IN') : 'N/A',
+        total: job.request_counts?.total || 0,
+        done: job.request_counts?.completed || 0,
+      }));
+
+      /* merge by id so React doesn't diff the entire array on every poll */
+      setJobs(prev => {
+        const map = new Map();
+        prev.forEach(j => map.set(j.id, j));
+        mapped.forEach(j => map.set(j.id, j));       // overwrite or insert
+        // remove jobs that no longer exist
+        const aliveIds = new Set(mapped.map(j => j.id));
+        map.forEach((v, k) => { if (!aliveIds.has(k)) map.delete(k); });
+        return [...map.values()];
+      });
+
+      /* preserve user's selection — only fall back to first job when nothing matches */
+      setSelectedJob(old => mapped.find(j => j.id === old?.id) ?? (mapped[0] || null));
+
+      /* silence the loading spinner after the first successful fetch */
+      if (!initialFetchDone.current) {
+        initialFetchDone.current = true;
+        setLoading(false);
+      }
+
+      return mapped;
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        console.error('Failed to fetch jobs:', err);
+      }
+      /* ensure spinner goes away on hard failure during initial load */
+      if (!initialFetchDone.current) {
+        initialFetchDone.current = true;
+        setLoading(false);
+      }
+      return null;
+    }
+  }, []);
+
+  /* ---- polling loop (recursive setTimeout, stops when all terminal) ---- */
+  const ACTIVE_INTERVAL = 7000;
+
+  useEffect(() => {
+    let stopped = false;
+
+    const poll = async () => {
+      const result = await fetchJobs();
+
+      if (stopped) return;
+
+      /* stop when all jobs are terminal */
+      const hasActive = result && result.some(j => !TERMINAL_STATUSES.includes(j.status));
+      if (!hasActive) return;
+
+      pollTimerRef.current = setTimeout(poll, ACTIVE_INTERVAL);
+    };
+
+    poll();
+
+    return () => {
+      stopped = true;
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    };
+  }, [fetchJobs]);
+
+  /* ---- SSE subscription for batches still validating ---- */
+  const validatingIdsRef = useRef(new Set());
+
+  useEffect(() => {
+    const currentIds = new Set(jobs.filter(j => j.status === 'validating').map(j => j.id));
+    const prevIds = validatingIdsRef.current;
+
+    // Only recreate SSE connections when the set of validating job IDs changes
+    const idsChanged = currentIds.size !== prevIds.size ||
+      [...currentIds].some(id => !prevIds.has(id));
+
+    if (!idsChanged) return;
+
+    validatingIdsRef.current = currentIds;
+    const eventSources = [];
+
+    for (const job of jobs) {
+      if (job.status !== 'validating') continue;
+
+      try {
+        const es = new EventSource(`${BACKEND}/v1/batches/${job.id}/events`);
+        es.addEventListener('validation_complete', () => {
+          fetchJobs();
+          es.close();
+        });
+        es.addEventListener('error', () => {
+          es.close();
+        });
+        eventSources.push(es);
+      } catch (err) {
+        console.warn('SSE not available for batch', job.id, err);
+      }
+    }
+
+    return () => { eventSources.forEach((es) => es.close()); };
+  }, [jobs, fetchJobs]);
 
   const total = jobs.length;
   const completed = jobs.filter(j => j.status === 'completed').length;
@@ -81,12 +192,17 @@ if (jobList.length > 0) {
       {/* Sidebar */}
       <div className="w-48 bg-[#111] border-r border-[#2a2a2a] flex flex-col py-4 flex-shrink-0">
         <div className="px-4 pb-4 mb-3 border-b border-[#2a2a2a]">
-          <Link href="/"><FalconLogo size={24} /></Link>
+          <Link href="/"><MoonknightLogo size={24} /></Link>
         </div>
-        <p className="px-4 text-[10px] text-[#555] uppercase tracking-widest mb-2">Manage</p>
-        <Link href="/" className="mx-2 px-3 py-2 rounded-md text-sm text-[#aaa] hover:bg-[#1e1e1e] hover:text-white">🏠 Home</Link>
-        <div className="mx-2 px-3 py-2 rounded-md text-sm text-white bg-[#1e1e1e]">📋 Jobs</div>
-        <Link href="/upload" className="mx-2 px-3 py-2 rounded-md text-sm text-[#aaa] hover:bg-[#1e1e1e] hover:text-white">📁 Upload</Link>
+        <div className="flex-1">
+          <p className="px-4 text-[10px] text-[#555] uppercase tracking-widest mb-2">Manage</p>
+          <Link href="/" className="block mx-2 px-3 py-2 rounded-md text-sm text-[#aaa] hover:bg-[#1e1e1e] hover:text-white">🏠 Home</Link>
+          <div className="mx-2 px-3 py-2 rounded-md text-sm text-white bg-[#1e1e1e]">📋 Jobs</div>
+          <Link href="/upload" className="block mx-2 px-3 py-2 rounded-md text-sm text-[#aaa] hover:bg-[#1e1e1e] hover:text-white">📁 Upload</Link>
+        </div>
+        <div className="px-4 pt-4 border-t border-[#2a2a2a] mt-auto">
+          <button onClick={() => { localStorage.removeItem('mk_token'); localStorage.removeItem('mk_user'); router.push('/login'); }} className="flex items-center gap-2 w-full px-3 py-2 rounded-md text-sm text-red-400 hover:bg-[#1e1e1e]">🚪 Logout</button>
+        </div>
       </div>
 
       {/* Main */}
@@ -95,9 +211,24 @@ if (jobList.length > 0) {
         {/* Topbar */}
         <div className="flex items-center justify-between px-6 py-3 border-b border-[#2a2a2a]">
           <h1 className="text-white font-medium text-base">Jobs</h1>
-          <Link href="/upload" className="flex items-center gap-1 px-3 py-1.5 text-sm border border-[#3a3a3a] rounded-md hover:bg-[#1e1e1e] text-white">
-            + Create
-          </Link>
+          <div className="flex items-center gap-3">
+            {userName && (
+              <div className="flex items-center gap-2">
+                <div style={{
+                  width: '28px', height: '28px', borderRadius: '50%',
+                  backgroundColor: '#1e3a5f', border: '1px solid #2d5a8a',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '12px', fontWeight: 600, color: '#60a5fa',
+                }}>
+                  {userName.charAt(0).toUpperCase()}
+                </div>
+                <span className="text-sm text-[#aaa]">{userName}</span>
+              </div>
+            )}
+            <Link href="/upload" className="flex items-center gap-1 px-3 py-1.5 text-sm border border-[#3a3a3a] rounded-md hover:bg-[#1e1e1e] text-white">
+              + New Job
+            </Link>
+          </div>
         </div>
 
         {/* Stats Cards */}
@@ -130,17 +261,34 @@ if (jobList.length > 0) {
               <span className="flex-1">File</span>
               <span className="w-24 text-center">Status</span>
             </div>
-            {jobs.map((job) => (
-              <div
-                key={job.id}
-                onClick={() => setSelectedJob(job)}
-                className={`flex items-center px-4 py-3 border-b border-[#1a1a1a] cursor-pointer hover:bg-[#141414] transition-colors ${selectedJob?.id === job.id ? 'bg-[#1a1a1a]' : ''}`}
-              >
-                <span className="w-14 text-[#555] text-xs font-mono">#{job.id}</span>
-                <span className="flex-1 text-sm text-white truncate pr-2">{job.filename}</span>
-                <span className="w-24 flex justify-center"><StatusBadge status={job.status} /></span>
+
+            {loading ? (
+              <div className="flex flex-col items-center justify-center py-20 text-[#444]">
+                <div style={{ width: '28px', height: '28px', border: '2px solid #333', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                <p className="text-xs mt-3">Loading your jobs...</p>
               </div>
-            ))}
+            ) : jobs.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 text-center px-6">
+                <div className="text-4xl mb-4">📭</div>
+                <p className="text-white text-sm font-medium mb-1">No jobs yet</p>
+                <p className="text-[#555] text-xs mb-5">Upload a JSONL file to submit your first batch job</p>
+                <Link href="/upload" className="px-4 py-2 bg-white text-black text-xs rounded-full font-medium hover:bg-gray-100">
+                  + Upload your first job
+                </Link>
+              </div>
+            ) : (
+              jobs.map((job) => (
+                <div
+                  key={job.id}
+                  onClick={() => setSelectedJob(job)}
+                  className={`flex items-center px-4 py-3 border-b border-[#1a1a1a] cursor-pointer hover:bg-[#141414] transition-colors ${selectedJob?.id === job.id ? 'bg-[#1a1a1a]' : ''}`}
+                >
+                  <span className="w-14 text-[#555] text-xs font-mono">#{String(job.id).slice(-4)}</span>
+                  <span className="flex-1 text-sm text-white truncate pr-2">{job.filename}</span>
+                  <span className="w-24 flex justify-center"><StatusBadge status={job.status} /></span>
+                </div>
+              ))
+            )}
           </div>
 
           {/* Detail Panel */}
@@ -167,7 +315,7 @@ if (jobList.length > 0) {
                         className="bg-blue-500 h-1.5 rounded-full"
                         style={{ width: `${(selectedJob.done / selectedJob.total) * 100}%` }}
                       />
-                    </div>      
+                    </div>
                   </div>
                 )}
 
@@ -210,8 +358,43 @@ if (jobList.length > 0) {
 
                 {selectedJob.status === 'failed' && (
                   <div className="mt-6 border border-red-900 rounded-lg p-4">
-                    <p className="text-red-400 text-xs font-medium mb-1">Job failed</p>
-                    <p className="text-[#666] text-xs">The input file may have been malformed. Please check your JSONL format and try again.</p>
+                    <p className="text-red-400 text-xs font-medium mb-2">Job failed</p>
+                    {selectedJob.error_details ? (() => {
+                      try {
+                        const details = JSON.parse(selectedJob.error_details);
+                        if (details.data && details.data.length) {
+                          return (
+                            <div className="max-h-48 overflow-y-auto space-y-1">
+                              {details.data.map((err, i) => {
+                                // Handle new structured format (code + message) or legacy format (errors array)
+                                const content = err.code
+                                  ? <>
+                                      <code className="text-yellow-300">{err.code}</code>{' '}
+                                      {err.message}
+                                    </>
+                                  : err.errors.join('; ');
+                                return (
+                                  <div key={i} className="text-[#999] text-xs font-mono">
+                                    <span className="text-red-300">Line {err.line}:</span>{' '}
+                                    {content}
+                                  </div>
+                                );
+                              })}
+                              {details.total_errors > details.data.length && (
+                                <p className="text-[#555] text-xs mt-2">
+                                  …and {details.total_errors - details.data.length} more error(s)
+                                </p>
+                              )}
+                            </div>
+                          );
+                        }
+                      } catch {
+                        /* fall through to raw display */
+                      }
+                      return <p className="text-[#666] text-xs font-mono">{selectedJob.error_details}</p>;
+                    })() : (
+                      <p className="text-[#666] text-xs">The input file may have been malformed. Please check your JSONL format and try again.</p>
+                    )}
                   </div>
                 )}
               </div>

@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import File as FileModel
 from schemas import FileOut
+from auth import get_current_user, require_role
 import shutil, os
 
 router = APIRouter()
@@ -15,9 +16,11 @@ os.makedirs(FILES_DIR, exist_ok=True)
 def upload_file(
     file: UploadFile = File(...),
     purpose: str = Form("batch"),
+    user=Depends(require_role("user", "admin")),
     db: Session = Depends(get_db),
 ):
     db_file = FileModel(
+        user_id=user.id,
         filename=file.filename or "upload.jsonl",
         purpose=purpose,
     )
@@ -36,10 +39,31 @@ def upload_file(
 
 
 @router.get("/files/{file_id}/content")
-def download_file_content(file_id: str, db: Session = Depends(get_db)):
+def download_file_content(
+    file_id: str,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     db_file = db.query(FileModel).filter(FileModel.id == file_id).first()
     if not db_file:
         raise HTTPException(status_code=404, detail="File not found")
+
+    if user.role == "user" and db_file.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if user.role == "provider":
+        from models import Batch, BatchAssignment
+        assigned = (
+            db.query(BatchAssignment)
+            .join(Batch, Batch.id == BatchAssignment.batch_id)
+            .filter(
+                Batch.input_file_id == file_id,
+                BatchAssignment.worker_id.contains(""),
+            )
+            .first()
+        )
+        if not assigned:
+            raise HTTPException(status_code=403, detail="Access denied")
+
     if not os.path.exists(db_file.filepath):
         raise HTTPException(status_code=404, detail="File data missing")
     return FileResponse(db_file.filepath, filename=db_file.filename)

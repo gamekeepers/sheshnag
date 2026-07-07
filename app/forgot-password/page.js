@@ -2,16 +2,16 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import ParticleField from '../components/ParticleField';
 
-function FalconLogo({ size = 28 }) {
+function MoonknightLogo({ size = 28 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: size / 4 }}>
-      <svg width={size} height={size} viewBox="0 0 36 36" fill="none">
-        <line x1="4" y1="28" x2="20" y2="8" stroke="#fff" strokeWidth="2.5" strokeLinecap="round"/>
-        <line x1="12" y1="28" x2="28" y2="8" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" opacity="0.5"/>
-        <line x1="20" y1="28" x2="32" y2="12" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" opacity="0.25"/>
+      <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
+        <circle cx="16" cy="16" r="12" fill="#fff" />
+        <circle cx="20" cy="13" r="10" fill="#0a0a0a" />
       </svg>
-      <span style={{ color: '#fff', fontSize: size * 0.55, fontWeight: 500, letterSpacing: '0.15em' }}>FALCON</span>
+      <span style={{ color: '#fff', fontSize: size * 0.45, fontWeight: 500, letterSpacing: '0.12em' }}>MOONKNIGHT</span>
     </div>
   );
 }
@@ -19,53 +19,56 @@ function FalconLogo({ size = 28 }) {
 export default function ForgotPasswordPage() {
   const [step, setStep] = useState(1);
   const [email, setEmail] = useState('');
-  const [code, setCode] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirm, setConfirm] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  function handleSendCode() {
+  async function handleSendCode() {
     if (!email) {
       setError('Please enter your email.');
       return;
     }
+    setLoading(true);
     setError('');
-    setStep(2);
-  }
-
-  function handleVerifyCode() {
-    if (!code) {
-      setError('Please enter the code.');
-      return;
+    
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'}/v1/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+        body: JSON.stringify({ email }),
+      });
+      
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data?.detail || 'Failed to send reset link. Please try again.');
+        return;
+      }
+      
+      setStep(2);
+    } catch {
+      setError('Cannot reach server. Please try again.');
+    } finally {
+      setLoading(false);
     }
-    setError('');
-    setStep(3);
-  }
-
-  function handleReset() {
-    if (!password || !confirm) {
-      setError('Please fill in all fields.');
-      return;
-    }
-    if (password !== confirm) {
-      setError('Passwords do not match.');
-      return;
-    }
-    setError('');
-    setStep(4);
   }
 
   return (
-    <div className="bg-[#0a0a0a] min-h-screen flex flex-col font-sans">
+    <div style={{ background: '#050505', minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', fontFamily: 'sans-serif' }}>
+      <ParticleField />
 
       {/* Top bar */}
-      <div className="px-7 py-5">
-        <Link href="/"><FalconLogo size={26} /></Link>
+      <div style={{ position: 'relative', zIndex: 3, padding: '20px 28px' }}>
+        <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none' }}>
+          <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
+            <circle cx="16" cy="16" r="12" fill="#fff" />
+            <circle cx="20" cy="13" r="10" fill="#050505" />
+          </svg>
+          <span style={{ color: '#fff', fontSize: '14px', fontWeight: 500, letterSpacing: '0.12em' }}>MOONKNIGHT</span>
+        </Link>
       </div>
 
       {/* Body */}
-      <div className="flex-1 flex items-center justify-center px-6">
-        <div className="w-full max-w-sm">
+      <div style={{ position: 'relative', zIndex: 3, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
+        <div style={{ width: '100%', maxWidth: '340px' }}>
 
           {/* Step 1 — Enter email */}
           {step === 1 && (
@@ -74,7 +77,7 @@ export default function ForgotPasswordPage() {
                 Forgot password?
               </h1>
               <p className="text-[#555] text-sm text-center mb-6">
-                Enter your email and we'll send you a reset code.
+                Enter your email and we'll send you a reset link.
               </p>
 
               <div className="relative mb-4">
@@ -93,9 +96,10 @@ export default function ForgotPasswordPage() {
 
               <button
                 onClick={handleSendCode}
-                className="w-full bg-white text-black py-3 rounded-full text-sm font-medium hover:bg-gray-100"
+                disabled={loading}
+                className="w-full bg-white text-black py-3 rounded-full text-sm font-medium hover:bg-gray-100 disabled:opacity-50"
               >
-                Send reset code
+                {loading ? 'Sending...' : 'Send reset link'}
               </button>
 
               <p className="text-center text-[#666] text-sm mt-4">
@@ -105,105 +109,14 @@ export default function ForgotPasswordPage() {
             </>
           )}
 
-          {/* Step 2 — Enter code */}
+          {/* Step 2 — Success */}
           {step === 2 && (
-            <>
-              <h1 className="text-white text-2xl font-medium text-center mb-2">
+            <div className="text-center">
+              <h1 className="text-white text-2xl font-medium mb-2">
                 Check your email
               </h1>
-              <p className="text-[#555] text-sm text-center mb-6">
-                We sent a 6-digit code to <span className="text-white">{email}</span>
-              </p>
-
-              <div className="relative mb-4">
-                <label className="absolute -top-2 left-3 bg-[#0a0a0a] px-1 text-[11px] text-[#2d7dd6]">
-                  Reset code
-                </label>
-                <input
-                  type="text"
-                  value={code}
-                  onChange={(e) => setCode(e.target.value)}
-                  maxLength={6}
-                  placeholder="000000"
-                  className="w-full bg-transparent border border-[#2d7dd6] rounded-full px-4 py-3 text-white text-sm outline-none focus:border-[#4d9cf8] tracking-widest text-center"
-                />
-              </div>
-
-              {error && <p className="text-red-400 text-xs mb-3">{error}</p>}
-
-              <button
-                onClick={handleVerifyCode}
-                className="w-full bg-white text-black py-3 rounded-full text-sm font-medium hover:bg-gray-100"
-              >
-                Verify code
-              </button>
-
-              <p className="text-center text-[#666] text-sm mt-4">
-                Didn't get a code?{' '}
-                <span
-                  onClick={() => setStep(1)}
-                  className="text-[#2d7dd6] cursor-pointer"
-                >
-                  Resend
-                </span>
-              </p>
-            </>
-          )}
-
-          {/* Step 3 — New password */}
-          {step === 3 && (
-            <>
-              <h1 className="text-white text-2xl font-medium text-center mb-2">
-                Reset password
-              </h1>
-              <p className="text-[#555] text-sm text-center mb-6">
-                Enter your new password below.
-              </p>
-
-              <div className="relative mb-4">
-                <label className="absolute -top-2 left-3 bg-[#0a0a0a] px-1 text-[11px] text-[#2d7dd6]">
-                  New password
-                </label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-transparent border border-[#2d7dd6] rounded-full px-4 py-3 text-white text-sm outline-none focus:border-[#4d9cf8]"
-                />
-              </div>
-
-              <div className="relative mb-4">
-                <label className="absolute -top-2 left-3 bg-[#0a0a0a] px-1 text-[11px] text-[#2d7dd6]">
-                  Confirm password
-                </label>
-                <input
-                  type="password"
-                  value={confirm}
-                  onChange={(e) => setConfirm(e.target.value)}
-                  className="w-full bg-transparent border border-[#2d7dd6] rounded-full px-4 py-3 text-white text-sm outline-none focus:border-[#4d9cf8]"
-                />
-              </div>
-
-              {error && <p className="text-red-400 text-xs mb-3">{error}</p>}
-
-              <button
-                onClick={handleReset}
-                className="w-full bg-white text-black py-3 rounded-full text-sm font-medium hover:bg-gray-100"
-              >
-                Reset password
-              </button>
-            </>
-          )}
-
-          {/* Step 4 — Success */}
-          {step === 4 && (
-            <div className="text-center">
-              <div className="text-5xl mb-4">✅</div>
-              <h1 className="text-white text-2xl font-medium mb-2">
-                Password reset!
-              </h1>
               <p className="text-[#555] text-sm mb-8">
-                Your password has been reset successfully.
+                We sent a password reset link to <span className="text-white">{email}</span>. Click the link in the email to set a new password.
               </p>
               <Link
                 href="/login"

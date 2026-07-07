@@ -1,15 +1,19 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from database import get_db
-from models import Batch, BatchAssignment, File as FileModel, unix_now
+from models import Batch, BatchAssignment, File as FileModel, ProviderCapability, unix_now
+from schemas import HeartbeatRequest
 from pydantic import BaseModel
 from typing import Optional
-import shutil, os
+from auth import require_role
+from provider_picker import picker
+import shutil, os, json
 
 router = APIRouter()
 
 VALID_TRANSITIONS = {
-    "validating":  ["in_progress"],
+    "validating":  ["validated", "failed"],
+    "validated":   ["in_progress"],
     "in_progress": ["completed", "failed"],
     "completed":   [],
     "failed":      [],
@@ -36,14 +40,62 @@ class FailureReport(BaseModel):
     error: Optional[str] = None
 
 
+@router.post("/heartbeat")
+def heartbeat(
+    req: HeartbeatRequest,
+    user=Depends(require_role("provider", "admin")),
+    db: Session = Depends(get_db),
+):
+    caps = db.query(ProviderCapability).filter(
+        ProviderCapability.worker_id == req.worker_id,
+    ).first()
+
+    if caps:
+        caps.vram_total_gb = req.vram_total_gb
+        caps.vram_available_gb = req.vram_available_gb
+        caps.loaded_models = json.dumps(req.loaded_models)
+        caps.status = "online"
+        caps.last_heartbeat = unix_now()
+    else:
+        caps = ProviderCapability(
+            worker_id=req.worker_id,
+            provider_id=user.id,
+            vram_total_gb=req.vram_total_gb,
+            vram_available_gb=req.vram_available_gb,
+            loaded_models=json.dumps(req.loaded_models),
+            status="online",
+            last_heartbeat=unix_now(),
+        )
+        db.add(caps)
+
+    db.commit()
+    return {"status": "ok"}
+
+
 @router.post("/poll")
-def poll_job(req: PollRequest, db: Session = Depends(get_db)):
-    batch = (
+def poll_job(
+    req: PollRequest,
+    user=Depends(require_role("provider", "admin")),
+    db: Session = Depends(get_db),
+):
+    caps = db.query(ProviderCapability).filter(
+        ProviderCapability.worker_id == req.worker_id,
+    ).first()
+
+    available_batches = (
         db.query(Batch)
-        .filter(Batch.status == "validating")
+        .filter(Batch.status == "validated")
         .order_by(Batch.created_at)
-        .first()
+        .all()
     )
+
+    if not available_batches:
+        return {"job": None}
+
+    if caps:
+        batch = picker.find_best_batch(caps, available_batches)
+    else:
+        batch = available_batches[0] if available_batches else None
 
     if not batch:
         return {"job": None}
@@ -65,6 +117,7 @@ def poll_job(req: PollRequest, db: Session = Depends(get_db)):
             "job_id":        batch.id,
             "input_file_id": batch.input_file_id,
             "input_path":    f"/v1/files/{batch.input_file_id}/content",
+            "model":         batch.model,
         }
     }
 
@@ -73,6 +126,7 @@ def poll_job(req: PollRequest, db: Session = Depends(get_db)):
 def upload_results(
     job_id: str = Form(...),
     file: UploadFile = File(...),
+    user=Depends(require_role("provider", "admin")),
     db: Session = Depends(get_db),
 ):
     batch = db.query(Batch).filter(Batch.id == job_id).first()
@@ -82,6 +136,7 @@ def upload_results(
     validate_transition(batch.status, "completed")
 
     output_file = FileModel(
+        user_id=batch.user_id,
         filename=f"{batch.id}_output.jsonl",
         purpose="batch_output",
     )
@@ -113,7 +168,11 @@ def upload_results(
 
 
 @router.post("/report-failure")
-def report_failure(req: FailureReport, db: Session = Depends(get_db)):
+def report_failure(
+    req: FailureReport,
+    user=Depends(require_role("provider", "admin")),
+    db: Session = Depends(get_db),
+):
     batch = db.query(Batch).filter(Batch.id == req.job_id).first()
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found")
