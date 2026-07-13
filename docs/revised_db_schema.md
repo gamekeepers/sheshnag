@@ -115,17 +115,18 @@ This separation avoids the need to add administrators as members of every organi
 
 # API Keys
 
-API keys belong to organizations rather than users.
+API keys identify either a worker or the user who created them, depending on `key_type`. Authorization is never derived from the key itself — it is resolved through the associated organization (worker keys) or the owning user's memberships (personal keys).
 
-A user creates an API key on behalf of an organization.
+Two distinct key types exist:
 
-The key is then used exclusively for machine authentication.
+* **Worker keys** — used exclusively by daemon workers to register themselves with the platform. They never represent a user identity. The only scope granted is worker registration and heartbeat.
+* **Personal keys** — created for individual users to programmatically upload batches, check job status, and download results through CLI or automated tooling.
 
-The API key is **not** the authorization boundary.
+## Worker Keys
 
-Instead, it serves as an identity that allows a worker to register itself.
+A worker key belongs to an organization. A user who has owner or admin membership creates it on behalf of that organization.
 
-Once registration succeeds, the worker inherits the organization associated with that API key.
+The key serves as a machine identity that allows a worker to register itself. Once registration succeeds, the worker inherits the organization associated with that key.
 
 This allows:
 
@@ -136,6 +137,34 @@ This allows:
 * different keys for different clusters.
 
 Only hashed keys are stored in the database.
+
+Worker keys carry no user identity. All authorization is resolved through the key's organization membership.
+
+## Personal Keys
+
+A personal key belongs to a specific user (recorded as `created_by`). It grants that user programmatic access equivalent to their authenticated session — i.e., the user can operate across every organization of which they are a member.
+
+When a personal key is presented:
+
+1. The backend validates the key.
+2. The owning user is resolved via `created_by`.
+3. Authorization checks run against that user's memberships, exactly as if the user had logged in normally.
+
+
+<!--## Scopes
+
+Personal keys support per-key scopes to limit what endpoints the key can access:
+
+* `batches:read` — view batch details and status
+* `batches:write` — create and upload batches
+* `jobs:read` — inspect job progress
+* `results:read` — download model outputs
+
+A personal key without explicit scopes defaults to all read operations. Worker keys ignore scopes entirely.-->
+
+## Expiration
+
+Both key types support an optional expiration timestamp (`expires_at`). Personal keys default to no expiry unless the creator specifies one. Worker keys may be time-bound for temporary cluster deployments.
 
 ---
 
