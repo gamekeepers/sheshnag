@@ -2,7 +2,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from database import get_db
-from models import File as FileModel
+from models import File as FileModel, Batch, BatchAssignment, Worker, OrganizationMembership
 from schemas import FileOut
 from auth import get_current_user, require_role
 import shutil, os
@@ -16,7 +16,7 @@ os.makedirs(FILES_DIR, exist_ok=True)
 def upload_file(
     file: UploadFile = File(...),
     purpose: str = Form("batch"),
-    user=Depends(require_role("user", "admin")),
+    user=Depends(require_role("user", "superadmin")),
     db: Session = Depends(get_db),
 ):
     db_file = FileModel(
@@ -48,20 +48,35 @@ def download_file_content(
     if not db_file:
         raise HTTPException(status_code=404, detail="File not found")
 
-    if user.role == "user" and db_file.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Access denied")
-    if user.role == "provider":
-        from models import Batch, BatchAssignment
-        assigned = (
-            db.query(BatchAssignment)
-            .join(Batch, Batch.id == BatchAssignment.batch_id)
-            .filter(
-                Batch.input_file_id == file_id,
-                BatchAssignment.worker_id.contains(""),
-            )
-            .first()
-        )
-        if not assigned:
+    # Superadmin can access all files
+    if user.platform_role == "superadmin":
+        pass
+    # Owner can access their own files
+    elif db_file.user_id == user.id:
+        pass
+    else:
+        # Check if user is member of an org whose worker is assigned to this file's batch
+        batch = db.query(Batch).filter(Batch.input_file_id == file_id).first()
+        if batch:
+            assignment = db.query(BatchAssignment).filter(
+                BatchAssignment.batch_id == batch.id
+            ).first()
+            if assignment:
+                worker = db.query(Worker).filter(Worker.id == assignment.worker_id).first()
+                if worker:
+                    membership = db.query(OrganizationMembership).filter(
+                        OrganizationMembership.org_id == worker.org_id,
+                        OrganizationMembership.user_id == user.id,
+                    ).first()
+                    if membership:
+                        pass  # Allow access
+                    else:
+                        raise HTTPException(status_code=403, detail="Access denied")
+                else:
+                    raise HTTPException(status_code=403, detail="Access denied")
+            else:
+                raise HTTPException(status_code=403, detail="Access denied")
+        else:
             raise HTTPException(status_code=403, detail="Access denied")
 
     if not os.path.exists(db_file.filepath):

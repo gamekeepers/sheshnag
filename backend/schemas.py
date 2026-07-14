@@ -99,7 +99,6 @@ class SignupRequest(BaseModel):
     email: str
     password: str
     full_name: str
-    role: str = "user"
 
 
 class LoginRequest(BaseModel):
@@ -116,8 +115,7 @@ class UserOut(BaseModel):
     id: str
     email: str
     full_name: str
-    role: str
-    api_key: Optional[str] = None
+    platform_role: str
     is_active: bool
     must_change_password: bool
     created_at: int
@@ -129,6 +127,7 @@ class UserOut(BaseModel):
 class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    platform_role: str = "user"
     must_change_password: bool = False
 
 
@@ -148,14 +147,7 @@ class ResetPasswordRequest(BaseModel):
     new_password: str
 
 
-# ─── Provider / Worker schemas ─────────────────────────────
-
-class ProviderSignupRequest(BaseModel):
-    email: str
-    password: str
-    full_name: str
-    org_name: str
-
+# ─── Worker schemas ────────────────────────────────────────
 
 class GpuInfo(BaseModel):
     index: int = 0

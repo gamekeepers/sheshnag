@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
-from models import User, ProviderCapability, PasswordResetToken, unix_now
+from models import User, Organization, OrganizationMembership, ApiKey, Worker, PasswordResetToken, unix_now
 from schemas import (
     SignupRequest, LoginRequest, ChangePasswordRequest,
     ForgotPasswordRequest, ResetPasswordRequest,
@@ -18,30 +18,53 @@ import uuid
 
 router = APIRouter()
 
-ALLOWED_SIGNUP_ROLES = ["user", "provider"]
 
+# ─── Auth ───────────────────────────────────────────────────
 
 @router.post("/auth/signup", response_model=UserOut)
 def signup(req: SignupRequest, db: Session = Depends(get_db)):
-    if req.role not in ALLOWED_SIGNUP_ROLES:
-        raise HTTPException(status_code=400, detail="Role must be 'user' or 'provider'")
-
+    """Unified signup: creates user + personal org + membership + API key."""
     existing = db.query(User).filter(User.email == req.email).first()
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
 
-    api_key = generate_api_key() if req.role == "user" else None
-
+    # Create user
     user = User(
         email=req.email,
         password_hash=hash_password(req.password),
         full_name=req.full_name,
-        role=req.role,
-        api_key=api_key,
+        platform_role="user",
     )
     db.add(user)
+    db.flush()
+
+    # Auto-create personal organization
+    org = Organization(
+        name=f"{req.full_name}'s Personal Org",
+        owner_id=user.id,
+    )
+    db.add(org)
+    db.flush()
+
+    # Create owner membership
+    membership = OrganizationMembership(
+        org_id=org.id,
+        user_id=user.id,
+        role="owner",
+    )
+    db.add(membership)
+
+    # Generate default API key for the org
+    api_key = ApiKey(
+        key=generate_api_key(),
+        org_id=org.id,
+        name="Default Key",
+    )
+    db.add(api_key)
+
     db.commit()
     db.refresh(user)
+
     return user
 
 
@@ -53,16 +76,48 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is disabled")
 
-    token = create_access_token(user.id, user.role)
+    token = create_access_token(user.id, user.platform_role)
     return TokenOut(
         access_token=token,
+        platform_role=user.platform_role,
         must_change_password=user.must_change_password,
     )
 
 
-@router.get("/auth/me", response_model=UserOut)
-def get_profile(user=Depends(get_current_user)):
-    return user
+@router.get("/auth/me")
+def get_profile(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Return user profile with org memberships and personal org API key."""
+    memberships = db.query(OrganizationMembership).filter(
+        OrganizationMembership.user_id == user.id
+    ).all()
+
+    orgs = []
+    api_key_value = None
+    for m in memberships:
+        org = db.query(Organization).filter(Organization.id == m.org_id).first()
+        if org:
+            orgs.append({
+                "id": org.id,
+                "name": org.name,
+                "role": m.role,
+            })
+            # Return the personal org's API key for backward compat
+            if org.owner_id == user.id:
+                key_entry = db.query(ApiKey).filter(ApiKey.org_id == org.id).first()
+                if key_entry:
+                    api_key_value = key_entry.key
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
+        "platform_role": user.platform_role,
+        "api_key": api_key_value,
+        "is_active": user.is_active,
+        "must_change_password": user.must_change_password,
+        "created_at": user.created_at,
+        "organizations": orgs,
+    }
 
 
 @router.post("/auth/change-password")
@@ -85,21 +140,33 @@ def regenerate_api_key(
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if user.role != "user":
-        raise HTTPException(status_code=403, detail="Only users can have API keys")
+    """Regenerate the API key for the user's personal organization."""
+    # Find user's owned org
+    membership = db.query(OrganizationMembership).filter(
+        OrganizationMembership.user_id == user.id,
+        OrganizationMembership.role == "owner",
+    ).first()
+    if not membership:
+        raise HTTPException(status_code=404, detail="No organization found")
 
-    user.api_key = generate_api_key()
+    api_key_entry = db.query(ApiKey).filter(ApiKey.org_id == membership.org_id).first()
+    if not api_key_entry:
+        raise HTTPException(status_code=404, detail="No API key found")
+
+    api_key_entry.key = generate_api_key()
     db.commit()
-    db.refresh(user)
-    return {"api_key": user.api_key}
+    db.refresh(api_key_entry)
+    return {"api_key": api_key_entry.key}
 
+
+# ─── Superadmin ─────────────────────────────────────────────
 
 @router.get("/admin/users")
 def list_users(
-    admin=Depends(require_role("admin")),
+    admin=Depends(require_role("superadmin")),
     db: Session = Depends(get_db),
 ):
-    """Admin: list all users."""
+    """Superadmin: list all users."""
     users = db.query(User).order_by(User.created_at.desc()).all()
     return {
         "object": "list",
@@ -108,7 +175,7 @@ def list_users(
                 "id": u.id,
                 "email": u.email,
                 "full_name": u.full_name,
-                "role": u.role,
+                "platform_role": u.platform_role,
                 "is_active": u.is_active,
                 "created_at": u.created_at,
             }
@@ -117,20 +184,19 @@ def list_users(
     }
 
 
-@router.get("/admin/providers")
-def list_providers(
-    admin=Depends(require_role("admin")),
+@router.get("/admin/workers")
+def list_all_workers(
+    admin=Depends(require_role("superadmin")),
     db: Session = Depends(get_db),
 ):
-    """Admin: list all providers and their workers."""
-    from models import Worker
+    """Superadmin: list all workers across all organizations."""
     workers = db.query(Worker).order_by(Worker.created_at.desc()).all()
     return {
         "object": "list",
         "data": [
             {
                 "worker_id": w.id,
-                "provider_id": w.provider_id,
+                "org_id": w.org_id,
                 "hostname": w.hostname,
                 "os": w.os,
                 "cpu_cores": w.cpu_cores,
@@ -145,6 +211,29 @@ def list_providers(
     }
 
 
+@router.get("/admin/organizations")
+def list_all_organizations(
+    admin=Depends(require_role("superadmin")),
+    db: Session = Depends(get_db),
+):
+    """Superadmin: list all organizations."""
+    orgs = db.query(Organization).order_by(Organization.created_at.desc()).all()
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": o.id,
+                "name": o.name,
+                "owner_id": o.owner_id,
+                "created_at": o.created_at,
+            }
+            for o in orgs
+        ],
+    }
+
+
+# ─── Password Reset ────────────────────────────────────────
+
 RESET_TOKEN_EXPIRY_SECONDS = 3600  # 1 hour
 
 
@@ -155,13 +244,11 @@ def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)):
     if not user:
         return {"detail": "If that email is registered, a reset link has been sent."}
 
-    # Invalidate any existing unused tokens for this user
     db.query(PasswordResetToken).filter(
         PasswordResetToken.user_id == user.id,
         PasswordResetToken.used == False,
     ).update({"used": True})
 
-    # Generate new token
     token = secrets.token_urlsafe(32)
     reset_entry = PasswordResetToken(
         id=f"rst-{uuid.uuid4().hex[:24]}",
@@ -172,7 +259,6 @@ def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)):
     db.add(reset_entry)
     db.commit()
 
-    # Send email via Mailgun
     send_password_reset_email(user.email, token)
 
     return {"detail": "If that email is registered, a reset link has been sent."}

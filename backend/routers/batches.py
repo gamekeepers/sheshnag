@@ -30,14 +30,14 @@ async def _validate_and_notify(batch_id: str, filepath: str) -> None:
 @router.post("/batches")
 async def create_batch(
     req: BatchCreate,
-    user=Depends(require_role("user", "admin")),
+    user=Depends(require_role("user", "superadmin")),
     db: Session = Depends(get_db),
 ):
     input_file = db.query(FileModel).filter(FileModel.id == req.input_file_id).first()
     if not input_file:
         raise HTTPException(status_code=400, detail=f"Input file '{req.input_file_id}' not found")
 
-    if user.role == "user" and input_file.user_id != user.id:
+    if user.platform_role == "user" and input_file.user_id != user.id:
         raise HTTPException(status_code=403, detail="You don't own this file")
 
     batch = Batch(
@@ -106,11 +106,8 @@ def get_batch(
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found")
 
-    if user.role == "user" and batch.user_id != user.id:
+    if user.platform_role == "user" and batch.user_id != user.id:
         raise HTTPException(status_code=403, detail="Access denied")
-
-    if user.role == "provider":
-        return BatchSummary.from_batch(batch)
 
     return BatchOut.from_batch(batch)
 
@@ -122,16 +119,10 @@ def list_batches(
 ):
     query = db.query(Batch)
 
-    if user.role == "user":
+    if user.platform_role == "user":
         query = query.filter(Batch.user_id == user.id)
 
     batches = query.order_by(Batch.created_at.desc()).all()
-
-    if user.role == "provider":
-        return {
-            "object": "list",
-            "data": [BatchSummary.from_batch(b) for b in batches],
-        }
 
     return {
         "object": "list",
