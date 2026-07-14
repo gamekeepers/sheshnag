@@ -104,8 +104,8 @@ localStorage.setItem('moonknight_file_map', JSON.stringify(fileMap));
         </div>
         <div className="flex-1">
           <p className="px-4 text-[10px] text-[#555] uppercase tracking-widest mb-2">Manage</p>
-          <Link href="/" className="block mx-2 px-3 py-2 rounded-md text-sm text-[#aaa] hover:bg-[#1e1e1e] hover:text-white">
-            🏠 Home
+          <Link href="/dashboard" className="block mx-2 px-3 py-2 rounded-md text-sm text-[#aaa] hover:bg-[#1e1e1e] hover:text-white">
+            ⚡ Dashboard
           </Link>
           <Link href="/jobs" className="block mx-2 px-3 py-2 rounded-md text-sm text-[#aaa] hover:bg-[#1e1e1e] hover:text-white">
             📋 Jobs

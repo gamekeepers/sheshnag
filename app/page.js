@@ -176,7 +176,7 @@ return (
           }}>
             {isLoggedIn ? (
               <>
-                <MenuItem label="My Jobs" onClick={() => { router.push('/jobs'); setMenuOpen(false); }} />
+                <MenuItem label="Dashboard" onClick={() => { router.push('/dashboard'); setMenuOpen(false); }} />
                 <MenuItem label="Upload Batch" onClick={() => { router.push('/upload'); setMenuOpen(false); }} />
                 <div style={{ height: '1px', background: 'rgba(255,255,255,0.08)', margin: '6px 0' }} />
                 <MenuItem label="Log out" onClick={handleLogout} danger />

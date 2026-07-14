@@ -30,10 +30,11 @@ function MoonknightLogo({ size = 22 }) {
 
 /* ── Nav ── */
 const NAV_ITEMS = [
-  { id: 'overview',  label: 'Overview',  icon: '⬛' },
-  { id: 'jobs',      label: 'Jobs',      icon: '📋' },
-  { id: 'users',     label: 'Users',     icon: '👥' },
-  { id: 'providers', label: 'Providers', icon: '⚡' },
+  { id: 'overview',      label: 'Overview',      icon: '⬛' },
+  { id: 'jobs',          label: 'Jobs',          icon: '📋' },
+  { id: 'users',         label: 'Users',         icon: '👥' },
+  { id: 'organizations', label: 'Organizations', icon: '🏢' },
+  { id: 'workers',       label: 'Workers',       icon: '⚙️' },
 ];
 
 /* ── Status colours ── */
@@ -158,8 +159,7 @@ function EditUserModal({ user, onClose, onSaved }) {
           <label style={labelStyle}>Role</label>
           <select value={role} onChange={e => setRole(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
             <option value="user">User</option>
-            <option value="admin">Admin</option>
-            <option value="provider">Provider</option>
+            <option value="superadmin">Superadmin</option>
           </select>
         </div>
 
@@ -170,7 +170,7 @@ function EditUserModal({ user, onClose, onSaved }) {
             Cancel
           </button>
           <button onClick={handleSave} disabled={saving} style={{ padding: '8px 18px', borderRadius: '8px', border: 'none', background: '#fff', color: '#000', cursor: saving ? 'default' : 'pointer', fontSize: '13px', fontWeight: 500 }}>
-            {saving ? 'Saving…' : 'Save'}
+            {saving ? 'Save' : 'Save'}
           </button>
         </div>
       </div>
@@ -184,12 +184,13 @@ export default function AdminPage() {
   const [activeNav,     setActiveNav]     = useState('overview');
   const [jobs,          setJobs]          = useState([]);
   const [users,         setUsers]         = useState([]);
-  const [providers,     setProviders]     = useState([]);
+  const [organizations, setOrganizations] = useState([]);
+  const [workers,       setWorkers]       = useState([]);
   const [jobFilter,     setJobFilter]     = useState('all');
   const [backendStatus, setBackendStatus] = useState('checking');
   const [isLoading,     setIsLoading]     = useState(true);
   const [lastRefresh,   setLastRefresh]   = useState(null);
-  const [adminUser,     setAdminUser]     = useState({ name: 'Admin', role: 'admin' });
+  const [adminUser,     setAdminUser]     = useState({ name: 'Admin', role: 'superadmin' });
   const [editingUser,   setEditingUser]   = useState(null);
 
   /* ── load admin profile ── */
@@ -198,7 +199,7 @@ export default function AdminPage() {
       const res = await fetch(`${BACKEND}/v1/auth/me`, { headers: authHeaders() });
       if (res.ok) {
         const d = await res.json();
-        setAdminUser({ name: d.full_name || d.email || 'Admin', role: d.role || 'admin' });
+        setAdminUser({ name: d.full_name || d.email || 'Admin', role: d.role || 'superadmin' });
       }
     } catch {}
   }
@@ -231,13 +232,24 @@ export default function AdminPage() {
     } catch {}
   }, []);
 
-  /* ── load all providers ── */
-  const loadProviders = useCallback(async () => {
+  /* ── load all organizations ── */
+  const loadOrganizations = useCallback(async () => {
     try {
-      const res = await fetch(`${BACKEND}/v1/admin/providers`, { headers: authHeaders() });
+      const res = await fetch(`${BACKEND}/v1/admin/organizations`, { headers: authHeaders() });
       if (res.ok) {
         const d = await res.json();
-        setProviders(Array.isArray(d) ? d : (d.data || []));
+        setOrganizations(d.data || []);
+      }
+    } catch {}
+  }, []);
+
+  /* ── load all workers ── */
+  const loadWorkers = useCallback(async () => {
+    try {
+      const res = await fetch(`${BACKEND}/v1/admin/workers`, { headers: authHeaders() });
+      if (res.ok) {
+        const d = await res.json();
+        setWorkers(d.data || []);
       }
     } catch {}
   }, []);
@@ -245,12 +257,16 @@ export default function AdminPage() {
   useEffect(() => {
     const token = localStorage.getItem('mk_token');
     const user  = JSON.parse(localStorage.getItem('mk_user') || '{}');
-    if (!token || user.role !== 'admin') { router.push('/login'); return; }
+    if (!token || (user.platform_role !== 'superadmin' && user.role !== 'superadmin')) {
+      router.push('/login');
+      return;
+    }
     loadAdminProfile();
     loadJobs();
     loadUsers();
-    loadProviders();
-  }, [router, loadJobs, loadUsers, loadProviders]);
+    loadOrganizations();
+    loadWorkers();
+  }, [router, loadJobs, loadUsers, loadOrganizations, loadWorkers]);
 
   function handleLogout() {
     localStorage.removeItem('mk_token');
@@ -330,7 +346,7 @@ export default function AdminPage() {
           </h1>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
             {lastRefresh && <span style={{ fontSize: '11px', color: '#444' }}>Updated {lastRefresh}</span>}
-            <button onClick={() => { loadJobs(); loadUsers(); }} disabled={isLoading} style={{ padding: '5px 12px', borderRadius: '8px', border: '1px solid #2a2a2a', background: 'transparent', color: isLoading ? '#444' : '#aaa', cursor: isLoading ? 'default' : 'pointer', fontSize: '12px' }}>
+            <button onClick={() => { loadJobs(); loadUsers(); loadOrganizations(); loadWorkers(); }} disabled={isLoading} style={{ padding: '5px 12px', borderRadius: '8px', border: '1px solid #2a2a2a', background: 'transparent', color: isLoading ? '#444' : '#aaa', cursor: isLoading ? 'default' : 'pointer', fontSize: '12px' }}>
               {isLoading ? '↻ Loading...' : '↻ Refresh'}
             </button>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -366,15 +382,19 @@ export default function AdminPage() {
                 ))}
               </div>
 
-              {/* Users quick summary */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px', marginBottom: '24px' }}>
+              {/* Users & Orgs quick summary */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '24px' }}>
                 <div style={S.card}>
                   <p style={{ fontSize: '11px', color: '#444', textTransform: 'uppercase', letterSpacing: '0.06em', margin: '0 0 10px' }}>Total Users</p>
                   <p style={{ fontSize: '28px', fontWeight: 600, color: '#fff', margin: 0 }}>{users.length}</p>
                 </div>
                 <div style={S.card}>
-                  <p style={{ fontSize: '11px', color: '#444', textTransform: 'uppercase', letterSpacing: '0.06em', margin: '0 0 10px' }}>Admin Users</p>
-                  <p style={{ fontSize: '28px', fontWeight: 600, color: '#a78bfa', margin: 0 }}>{users.filter(u => u.role === 'admin').length}</p>
+                  <p style={{ fontSize: '11px', color: '#444', textTransform: 'uppercase', letterSpacing: '0.06em', margin: '0 0 10px' }}>Total Organizations</p>
+                  <p style={{ fontSize: '28px', fontWeight: 600, color: '#60a5fa', margin: 0 }}>{organizations.length}</p>
+                </div>
+                <div style={S.card}>
+                  <p style={{ fontSize: '11px', color: '#444', textTransform: 'uppercase', letterSpacing: '0.06em', margin: '0 0 10px' }}>Connected Workers</p>
+                  <p style={{ fontSize: '28px', fontWeight: 600, color: '#4ade80', margin: 0 }}>{workers.length}</p>
                 </div>
               </div>
 
@@ -444,17 +464,15 @@ export default function AdminPage() {
               </div>
               <AdminTable
                 headers={['Name', 'Email', 'Role', 'Actions']}
-                cols="1fr 1fr 120px 100px"
+                cols="1fr 1fr 140px 100px"
                 rows={users}
                 emptyMsg="No users found"
                 renderRow={user => (<>
                   <span style={{ fontSize: '13px', color: '#fff' }}>{user.full_name || '—'}</span>
                   <span style={{ fontSize: '12px', color: '#888' }}>{user.email}</span>
                   <span style={{ fontSize: '11px', padding: '2px 10px', borderRadius: '999px', border: '1px solid', display: 'inline-block',
-                    ...(user.role === 'admin'
+                    ...(user.role === 'superadmin' || user.role === 'admin'
                       ? { backgroundColor: '#1e1040', borderColor: '#4c1d95', color: '#a78bfa' }
-                      : user.role === 'provider'
-                      ? { backgroundColor: '#1a2a4a', borderColor: '#2d4a8a', color: '#60a5fa' }
                       : { backgroundColor: '#1a3a1a', borderColor: '#2d5a2d', color: '#4ade80' })
                   }}>
                     {user.role || 'user'}
@@ -467,37 +485,64 @@ export default function AdminPage() {
             </>
           )}
 
-          {/* ── PROVIDERS ── */}
-          {activeNav === 'providers' && (
+          {/* ── ORGANIZATIONS ── */}
+          {activeNav === 'organizations' && (
             <>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                 <p style={{ fontSize: '11px', color: '#444', textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
-                  All Providers — {providers.length} total
+                  All Organizations — {organizations.length} total
                 </p>
               </div>
               <AdminTable
-                headers={['Worker ID', 'Provider ID', 'GPUs', 'VRAM Total', 'Loaded Models', 'Status', 'Last Heartbeat']}
-                cols="140px 140px 180px 100px 1fr 100px 140px"
-                rows={providers}
-                emptyMsg="No providers found"
-                renderRow={p => (<>
-                  <span style={{ fontFamily: 'monospace', fontSize: '11px', color: '#ddd' }}>{p.worker_id || '—'}</span>
-                  <span style={{ fontSize: '12px', color: '#888' }}>{p.provider_id || '—'}</span>
-                  <span style={{ fontSize: '12px', color: '#aaa' }}>{(p.gpus || []).map(g => g.name).join(', ') || '—'}</span>
-                  <span style={{ fontSize: '13px', color: '#ddd' }}>{(p.gpus || []).reduce((acc, g) => acc + (g.vram_gb || 0), 0)} GB</span>
-                  <span style={{ fontSize: '12px', color: '#888' }}>{(p.runtimes || []).flatMap(r => r.models || []).join(', ') || '—'}</span>
+                headers={['Org ID', 'Name', 'Owner ID', 'Members', 'Workers', 'Created']}
+                cols="180px 1.2fr 180px 100px 100px 160px"
+                rows={organizations}
+                emptyMsg="No organizations found"
+                renderRow={o => (<>
+                  <span style={{ fontFamily: 'monospace', fontSize: '11px', color: '#ddd' }}>{o.id}</span>
+                  <span style={{ fontSize: '13px', color: '#fff', fontWeight: 500 }}>{o.name || '—'}</span>
+                  <span style={{ fontFamily: 'monospace', fontSize: '11px', color: '#888' }}>{o.owner_id || '—'}</span>
+                  <span style={{ fontSize: '12px', color: '#ccc' }}>{o.members_count || 0}</span>
+                  <span style={{ fontSize: '12px', color: '#ccc' }}>{o.workers_count || 0}</span>
+                  <span style={{ fontSize: '11px', color: '#555' }}>
+                    {o.created_at ? new Date(o.created_at * 1000).toLocaleDateString() : '—'}
+                  </span>
+                </>)}
+              />
+            </>
+          )}
+
+          {/* ── WORKERS ── */}
+          {activeNav === 'workers' && (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <p style={{ fontSize: '11px', color: '#444', textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
+                  All Registered Workers — {workers.length} total
+                </p>
+              </div>
+              <AdminTable
+                headers={['Worker ID', 'Hostname', 'Org ID', 'GPUs', 'VRAM Total', 'Status', 'Last Heartbeat']}
+                cols="160px 140px 160px 1.2fr 100px 100px 140px"
+                rows={workers}
+                emptyMsg="No workers registered"
+                renderRow={w => (<>
+                  <span style={{ fontFamily: 'monospace', fontSize: '11px', color: '#ddd' }}>{w.id || '—'}</span>
+                  <span style={{ fontSize: '13px', color: '#fff', fontWeight: 500 }}>{w.hostname || '—'}</span>
+                  <span style={{ fontFamily: 'monospace', fontSize: '11px', color: '#888' }}>{w.org_id || '—'}</span>
+                  <span style={{ fontSize: '12px', color: '#aaa' }}>{(w.gpus || []).map(g => g.name).join(', ') || '—'}</span>
+                  <span style={{ fontSize: '13px', color: '#ddd' }}>{(w.gpus || []).reduce((acc, g) => acc + (g.vram_gb || 0), 0)} GB</span>
                   <span style={{
                     fontSize: '11px', padding: '2px 10px', borderRadius: '999px', border: '1px solid', display: 'inline-block',
-                    ...(p.status === 'online'
+                    ...(w.status === 'online'
                       ? { backgroundColor: '#1a3a1a', borderColor: '#2d5a2d', color: '#4ade80' }
-                      : p.status === 'busy'
+                      : w.status === 'busy'
                       ? { backgroundColor: '#1a2a4a', borderColor: '#2d4a8a', color: '#60a5fa' }
                       : { backgroundColor: '#3a1a1a', borderColor: '#5a2d2d', color: '#f87171' })
                   }}>
-                    {p.status || 'unknown'}
+                    {w.status || 'unknown'}
                   </span>
                   <span style={{ fontSize: '11px', color: '#555' }}>
-                    {p.last_heartbeat ? new Date(p.last_heartbeat * 1000).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '—'}
+                    {w.last_heartbeat ? new Date(w.last_heartbeat * 1000).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '—'}
                   </span>
                 </>)}
               />
