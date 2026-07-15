@@ -5,7 +5,7 @@ from database import get_db
 from models import ApiKey, unix_now
 from schemas import ApiKeyCreate, ApiKeyUpdate, ApiKeyOut
 from auth import (
-    get_current_user,
+    get_human_context,
     generate_api_key,
     hash_api_key,
     get_api_key_prefix,
@@ -15,22 +15,13 @@ from rate_limit import check_key_creation_rate
 router = APIRouter()
 
 
-def _reject_machine_identity(user):
-    """Raise 403 if the caller is a worker key."""
-    if getattr(user, "_is_machine_identity", False):
-        raise HTTPException(
-            status_code=403,
-            detail="This endpoint requires user authentication (JWT or personal API key)",
-        )
-
-
 # ─── POST /users/me/api-keys — Create personal key ─────────
 
 
 @router.post("/users/me/api-keys")
 def create_personal_api_key(
     body: ApiKeyCreate,
-    user=Depends(get_current_user),
+    ctx=Depends(get_human_context),
     db: Session = Depends(get_db),
 ):
     """Create a new personal API key.
@@ -38,7 +29,7 @@ def create_personal_api_key(
     The raw key is returned **once** — store it securely. Subsequent requests
     only show the prefix for identification.
     """
-    _reject_machine_identity(user)
+    user, _api_key = ctx
     check_key_creation_rate(user.id)
 
     # Validate expires_at is in the future and not too far out
@@ -86,14 +77,14 @@ def create_personal_api_key(
 
 @router.get("/users/me/api-keys")
 def list_personal_api_keys(
-    user=Depends(get_current_user),
+    ctx=Depends(get_human_context),
     db: Session = Depends(get_db),
 ):
     """List all personal API keys for the current user.
 
     Full key values are **never** returned — only the prefix for identification.
     """
-    _reject_machine_identity(user)
+    user, _api_key = ctx
 
     keys = (
         db.query(ApiKey)
@@ -130,14 +121,14 @@ def list_personal_api_keys(
 def update_personal_api_key(
     key_id: str,
     body: ApiKeyUpdate,
-    user=Depends(get_current_user),
+    ctx=Depends(get_human_context),
     db: Session = Depends(get_db),
 ):
     """Update a personal API key's name, expiry, or status.
 
     The actual key value cannot be changed — revoke and create a new one instead.
     """
-    _reject_machine_identity(user)
+    user, _api_key = ctx
 
     api_key_entry = db.query(ApiKey).filter(
         ApiKey.id == key_id,
@@ -189,7 +180,7 @@ def update_personal_api_key(
 @router.delete("/users/me/api-keys/{key_id}")
 def revoke_personal_api_key(
     key_id: str,
-    user=Depends(get_current_user),
+    ctx=Depends(get_human_context),
     db: Session = Depends(get_db),
 ):
     """Revoke a personal API key.
@@ -197,7 +188,7 @@ def revoke_personal_api_key(
     This is a soft-delete — the record is kept for audit purposes with
     status set to 'revoked'.
     """
-    _reject_machine_identity(user)
+    user, _api_key = ctx
 
     api_key_entry = db.query(ApiKey).filter(
         ApiKey.id == key_id,
