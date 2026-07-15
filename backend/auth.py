@@ -75,9 +75,9 @@ def get_current_user(
         if not api_key_entry:
             raise HTTPException(status_code=401, detail="Invalid API key")
 
-        # Update last_used_at
-        api_key_entry.last_used_at = int(datetime.now(timezone.utc).timestamp())
-        db.commit()
+        # Check expiration before resolving user identity
+        if api_key_entry.expires_at is not None and api_key_entry.expires_at < int(datetime.now(timezone.utc).timestamp()):
+            raise HTTPException(status_code=401, detail="API key has expired")
 
         if api_key_entry.key_type == "worker":
             # Worker key — resolve the org owner as a proxy identity
@@ -92,9 +92,8 @@ def get_current_user(
             user._is_machine_identity = True
             user._api_key_type = "worker"
             user.active_org_id = api_key_entry.org_id
-            return user
 
-        if api_key_entry.key_type == "personal":
+        elif api_key_entry.key_type == "personal":
             # Personal key — authenticate as the key's creator
             user = db.query(User).filter(
                 User.id == api_key_entry.created_by_user_id,
@@ -104,9 +103,14 @@ def get_current_user(
                 raise HTTPException(status_code=401, detail="User not found")
 
             user._api_key_type = "personal"
-            return user
+        else:
+            raise HTTPException(status_code=401, detail="Unknown key type")
 
-        raise HTTPException(status_code=401, detail="Unknown key type")
+        # Update last_used_at only after full auth succeeds.
+        # No explicit db.commit() — SQLAlchemy will flush on the session boundary,
+        # avoiding a hot-path disk write on every request.
+        api_key_entry.last_used_at = int(datetime.now(timezone.utc).timestamp())
+        return user
 
     # JWT auth path
     try:

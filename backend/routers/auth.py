@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
-from models import User, Organization, OrganizationMembership, ApiKey, PasswordResetToken, unix_now
+from models import User, Organization, OrganizationMembership, ApiKey, Worker, PasswordResetToken, unix_now
 from schemas import (
     SignupRequest, LoginRequest, ChangePasswordRequest,
     ForgotPasswordRequest, ResetPasswordRequest,
