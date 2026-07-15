@@ -35,8 +35,11 @@ import httpx
 from daemon.client import BackendClient
 from daemon.config import DaemonConfig
 from daemon.executors.base import BaseExecutor
+from daemon.executors.ollama import OllamaExecutor
 from daemon.log import get_logger
 from daemon.models import CompletionResult, Job, PromptRequest
+from daemon.heartbeat import HeartbeatManager
+from daemon.model_manager import ModelManager
 
 logger = get_logger(__name__)
 
@@ -67,6 +70,20 @@ class Worker:
         self._running = False
         self._current_job_id: str | None = None
 
+        self._heartbeat = HeartbeatManager(
+            client=client,
+            worker_id=config.worker_id,
+            interval=config.heartbeat_interval,
+        )
+        
+        self._model_manager = None
+        if isinstance(executor, OllamaExecutor):
+            self._model_manager = ModelManager(
+                executor=executor,
+                client=client,
+                worker_id=config.worker_id,
+            )
+
         # Ensure work directory exists
         self._work_dir = Path(config.work_dir)
         self._work_dir.mkdir(parents=True, exist_ok=True)
@@ -89,6 +106,8 @@ class Worker:
             f"polling {self._config.backend_url} "
             f"every {self._config.poll_interval}s"
         )
+        
+        await self._heartbeat.start()
 
         # Pre-flight: check vLLM health
         await self._wait_for_executor()
@@ -129,6 +148,7 @@ class Worker:
         self._running = False
         logger.info("Shutting down worker...")
 
+        await self._heartbeat.stop()
         await self._executor.close()
         await self._client.close()
 
@@ -173,8 +193,18 @@ class Worker:
 
         input_path = job_dir / "input.jsonl"
         output_path = job_dir / "output.jsonl"
+        
+        # ── Step 0: Ensure model is available ────────────────────────
+        if self._model_manager and job.model:
+            self._heartbeat.update_status("downloading_model", job.job_id)
+            available = await self._model_manager.ensure_model(job.model)
+            if not available:
+                await self._client.report_failure(job.job_id, f"Failed to download model: {job.model}")
+                self._heartbeat.update_status("idle")
+                return
 
         # ── Step 1: Download input ───────────────────────────────
+        self._heartbeat.update_status("busy", job.job_id)
         logger.info(f"[{job.job_id}] Downloading input file...")
         await self._client.download_input(job.job_id, job.input_path, input_path)
 
@@ -214,6 +244,8 @@ class Worker:
             f"[{job.job_id}] Results: {successes}/{total} succeeded, "
             f"{failures} failed, {total_tokens:,} total tokens"
         )
+        
+        self._heartbeat.update_status("idle")
 
     # ── Prompt Processing ────────────────────────────────────────
 
@@ -259,6 +291,8 @@ class Worker:
         """
         results: List[CompletionResult] = []
         total = len(prompts)
+        completed = 0
+        failed = 0
 
         for idx, prompt in enumerate(prompts, start=1):
             if not self._running:
@@ -277,15 +311,37 @@ class Worker:
             results.append(result)
 
             if result.is_success:
+                completed += 1
                 tokens = result.usage.get("total_tokens", "?")
                 logger.debug(
                     f"[{job.job_id}] Prompt {prompt.custom_id} "
                     f"completed ({tokens} tokens)"
                 )
             else:
+                failed += 1
                 logger.warning(
                     f"[{job.job_id}] Prompt {prompt.custom_id} "
                     f"failed: {result.error}"
+                )
+                
+            # Update heartbeat with current progress
+            self._heartbeat.update_status(
+                status="busy",
+                job_id=job.job_id,
+                progress={
+                    "total_prompts": total,
+                    "completed_prompts": completed,
+                    "failed_prompts": failed,
+                }
+            )
+            
+            # Report progress to platform every 10 prompts or on completion
+            if idx % 10 == 0 or idx == total:
+                await self._client.report_progress(
+                    job_id=job.job_id,
+                    completed=completed,
+                    failed=failed,
+                    total=total,
                 )
 
         return results

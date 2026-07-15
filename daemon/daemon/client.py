@@ -65,6 +65,12 @@ class BackendClient:
         self._api_key = api_key
         self._client: httpx.AsyncClient | None = None
 
+    def update_api_key(self, api_key: str) -> None:
+        """Update the API key after registration."""
+        self._api_key = api_key
+        if self._client:
+            self._client.headers["Authorization"] = f"Bearer {api_key}"
+
     def _get_client(self) -> httpx.AsyncClient:
         """
         Lazy-initialize the HTTP client with production-grade settings.
@@ -100,7 +106,7 @@ class BackendClient:
     #       Until then, registration is a no-op — the daemon logs
     #       the worker info locally and proceeds to polling.
 
-    async def register_worker(self, worker_info: WorkerInfo) -> None:
+    async def register_worker(self, worker_info: WorkerInfo) -> dict:
         """
         Register this worker with the control plane.
 
@@ -108,33 +114,22 @@ class BackendClient:
         models, runtime) before it begins polling for jobs. This lets
         the scheduler know what this worker can handle.
 
-        NOTE: Endpoint not yet implemented on backend. Currently a
-        no-op that logs worker info. Will be enabled once Akshay adds
-        POST /workers/register to the backend API.
-
         Args:
             worker_info: Worker registration payload.
+            
+        Returns:
+            Dictionary containing 'status', 'worker_id', and 'api_key'.
         """
-        # ── Commented out until backend supports /workers/register ──
-        # client = self._get_client()
-        #
-        # response = await client.post(
-        #     "/workers/register",
-        #     json=worker_info.model_dump(),
-        # )
-        # response.raise_for_status()
+        client = self._get_client()
 
-        logger.info(
-            f"Worker registration skipped (endpoint not yet on backend). "
-            f"Worker info: id={worker_info.worker_id}, "
-            f"GPU={worker_info.gpu_name}, "
-            f"VRAM={worker_info.vram_gb}GB, "
-            f"models={worker_info.models}"
+        response = await client.post(
+            "/workers/register",
+            json=worker_info.model_dump(),
         )
-        logger.warning(
-            "TODO: Enable registration once POST /workers/register is "
-            "available on the backend"
-        )
+        response.raise_for_status()
+        data = response.json()
+        logger.info(f"Worker registered: {worker_info.worker_id}")
+        return data
 
     # ── Job Polling ──────────────────────────────────────────────
 
@@ -292,6 +287,60 @@ class BackendClient:
         except Exception as exc:
             # Best-effort — don't crash if failure reporting itself fails
             logger.warning(f"Failed to report failure for job {job_id}: {exc}")
+
+    # ── Heartbeat and Progress ───────────────────────────────────
+    
+    async def send_heartbeat(self, payload: dict) -> None:
+        """POST /workers/heartbeat — best-effort, never crash."""
+        client = self._get_client()
+        try:
+            response = await client.post(
+                "/workers/heartbeat",
+                json=payload,
+                timeout=httpx.Timeout(10.0),
+            )
+            response.raise_for_status()
+            logger.debug(f"Heartbeat sent (status={payload.get('status')})")
+        except Exception as exc:
+            logger.warning(f"Heartbeat failed: {exc}")
+
+    async def report_progress(self, job_id: str, completed: int, failed: int, total: int) -> None:
+        """Report batch processing progress to the platform."""
+        client = self._get_client()
+        try:
+            response = await client.post(
+                f"/workers/progress",
+                json={
+                    "job_id": job_id,
+                    "worker_id": self._worker_id,
+                    "completed": completed,
+                    "failed": failed,
+                    "total": total,
+                },
+                timeout=httpx.Timeout(10.0),
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            logger.debug(f"Progress report failed (non-fatal): {exc}")
+
+    async def report_model_download(self, worker_id: str, model_name: str, status: str, completed: int, total: int) -> None:
+        """Report model download progress to platform."""
+        client = self._get_client()
+        try:
+            response = await client.post(
+                f"/workers/model-progress",
+                json={
+                    "worker_id": worker_id,
+                    "model_name": model_name,
+                    "status": status,
+                    "completed": completed,
+                    "total": total,
+                },
+                timeout=httpx.Timeout(10.0),
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            logger.debug(f"Model progress report failed (non-fatal): {exc}")
 
     # ── Lifecycle ────────────────────────────────────────────────
 

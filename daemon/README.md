@@ -52,12 +52,7 @@ A lightweight polling daemon that connects to the central control plane, claims 
 
 ```bash
 cd daemon
-pip install -e .
-```
-
-For dev dependencies (testing, mock servers):
-```bash
-pip install -e ".[dev]"
+pip install -r requirements.txt
 ```
 
 ### Test WITHOUT vLLM (mock mode)
@@ -66,6 +61,7 @@ This runs the daemon against a mock backend and a mock vLLM to verify the full f
 
 **Terminal 1 — Mock Backend:**
 ```bash
+pip install fastapi uvicorn python-multipart
 cd daemon
 python -m tests.mock_backend
 ```
@@ -82,8 +78,7 @@ vllm serve mistralai/Mistral-7B-Instruct-v0.2 --port 8100
 **Terminal 3 — Daemon:**
 ```bash
 cd daemon
-gpu-daemon --config config.yaml
-# or: python -m daemon.main --config config.yaml
+python -m daemon.main --config config.yaml
 ```
 
 ### Test WITH real vLLM
@@ -97,7 +92,7 @@ vllm serve mistralai/Mistral-7B-Instruct-v0.2 --port 8100
 
 # Terminal 3: Start daemon
 cd daemon
-gpu-daemon \
+python -m daemon.main \
   --backend-url http://localhost:8000 \
   --vllm-url http://localhost:8100
 ```
@@ -176,9 +171,11 @@ The daemon expects these endpoints from the backend:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/workers/poll` | POST | Poll for available jobs |
-| `/jobs/{id}/input` | GET | Download input JSONL |
+| `/workers/poll` | POST | Poll for available batches |
+| `/v1/files/{id}/content` | GET | Download input JSONL (path from poll response) |
 | `/workers/upload-results` | POST | Upload output JSONL |
+| `/workers/report-failure` | POST | Report job failure |
+| `/workers/register` | POST | Register worker *(TODO: not yet on backend)* |
 
 See [client.py](daemon/client.py) for full request/response details.
 

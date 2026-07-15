@@ -30,12 +30,12 @@ import sys
 from daemon import __version__
 from daemon.client import BackendClient
 from daemon.config import DaemonConfig
-from daemon.executors.vllm import VLLMExecutor
+from daemon.executor_factory import create_executor
 from daemon.log import get_logger, setup_logging
 from daemon.models import WorkerInfo
+from daemon.registration import RegistrationManager
 from daemon.worker import Worker
 
-logger = get_logger(__name__)
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser."""
@@ -76,6 +76,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="vLLM server URL (default: http://localhost:8100)",
     )
+    
+    parser.add_argument(
+        "--ollama-url",
+        type=str,
+        default=None,
+        help="Ollama server URL (default: http://localhost:11434)",
+    )
 
     parser.add_argument(
         "--worker-id",
@@ -85,10 +92,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--provider-id",
+        type=str,
+        default=None,
+        help="Unique provider ID who owns this worker",
+    )
+
+    parser.add_argument(
         "--poll-interval",
         type=int,
         default=None,
         help="Seconds between poll attempts (default: 5)",
+    )
+    
+    parser.add_argument(
+        "--heartbeat-interval",
+        type=int,
+        default=None,
+        help="Seconds between heartbeats (default: 30)",
     )
 
     parser.add_argument(
@@ -166,12 +187,14 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
     This dict is passed to DaemonConfig.load(cli_overrides=...)
     so all precedence logic lives in one place.
     """
-    # Map CLI arg names → config field names
     mapping = {
         "backend_url": args.backend_url,
         "vllm_url": args.vllm_url,
+        "ollama_url": args.ollama_url,
         "worker_id": args.worker_id,
+        "provider_id": args.provider_id,
         "poll_interval": args.poll_interval,
+        "heartbeat_interval": args.heartbeat_interval,
         "log_level": args.log_level,
         "work_dir": args.work_dir,
         "api_key": args.api_key,
@@ -199,44 +222,37 @@ async def _run(config: DaemonConfig) -> None:
         2. Register worker with control plane (spec §8)
         3. Start the poll-execute loop
     """
+    # ── Try to load saved credentials ────────────────────────────
+    reg_manager = RegistrationManager(config.credentials_path)
+    saved_key = reg_manager.load_saved_credentials()
+    
     # ── Create components ────────────────────────────────────────
     client = BackendClient(
         base_url=config.backend_url,
         worker_id=config.worker_id,
-        api_key=config.api_key,
+        api_key=saved_key or config.api_key,
     )
+    
+    # ── Register with platform ───────────────────────────────────
+    try:
+        api_key = await reg_manager.register(client, config)
+        client.update_api_key(api_key)
+        config.api_key = api_key
+    except Exception as exc:
+        logger.error(f"Failed to register with platform: {exc}")
+        if not saved_key and not config.api_key:
+            logger.error("No API key available. Exiting.")
+            sys.exit(1)
+        logger.warning("Continuing with existing API key despite registration failure.")
 
-    executor = VLLMExecutor(
-        base_url=config.vllm_url,
-        timeout=config.vllm_timeout,
-        supported_models=config.models if config.models else None,
-    )
+    # ── Executor and Worker ──────────────────────────────────────
+    executor = create_executor(config)
 
     worker = Worker(
         config=config,
         client=client,
         executor=executor,
     )
-
-    # ── Register with control plane (Spec §8) ────────────────────
-    worker_info = WorkerInfo(
-        worker_id=config.worker_id,
-        gpu_name=config.gpu_name,
-        vram_gb=config.vram_gb,
-        models=config.models,
-        runtime=config.runtime,
-        status="online",
-    )
-
-    try:
-        await client.register_worker(worker_info)
-    except Exception as exc:
-        # Registration failure is not fatal — the worker can still
-        # attempt to poll. The backend may already know this worker
-        # or may accept unregistered workers in dev mode.
-        logger.warning(
-            f"Worker registration failed (continuing anyway): {exc}"
-        )
 
     # ── Run ──────────────────────────────────────────────────────
     try:
@@ -270,15 +286,16 @@ def main() -> None:
     logger.info(f"{'='*60}")
     logger.info(f"  GPU Worker Daemon v{__version__}")
     logger.info(f"  Worker ID:     {config.worker_id}")
+    logger.info(f"  Provider ID:   {config.provider_id}")
     logger.info(f"  Backend URL:   {config.backend_url}")
+    logger.info(f"  Ollama URL:    {config.ollama_url}")
     logger.info(f"  vLLM URL:      {config.vllm_url}")
     logger.info(f"  Poll interval: {config.poll_interval}s")
+    logger.info(f"  Heartbeat:     {config.heartbeat_interval}s")
     logger.info(f"  Work dir:      {config.work_dir}")
     logger.info(f"  Auth:          {auth_status}")
-    logger.info(f"  GPU:           {config.gpu_name} ({config.vram_gb}GB)")
     logger.info(f"  Models:        {models_str}")
     logger.info(f"  Runtime:       {config.runtime}")
-    logger.info(f"  vLLM timeout:  {config.vllm_timeout}s")
     logger.info(f"{'='*60}")
 
     # Run the async event loop

@@ -1,0 +1,17 @@
+[Unit]
+Description=MoonKnight GPU Worker Daemon
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gpu-daemon
+Group=gpu-daemon
+WorkingDirectory=/opt/gpu-daemon
+ExecStart=/opt/gpu-daemon/venv/bin/python -m daemon.main --config /opt/gpu-daemon/config.yaml
+Restart=always
+RestartSec=10
+EnvironmentFile=-/opt/gpu-daemon/.env
+
+[Install]
+WantedBy=multi-user.target
