@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
-from models import User, Organization, OrganizationMembership, ApiKey, Worker, PasswordResetToken, unix_now
+from models import User, Organization, OrganizationMembership, ApiKey, PasswordResetToken, unix_now
 from schemas import (
     SignupRequest, LoginRequest, ChangePasswordRequest,
     ForgotPasswordRequest, ResetPasswordRequest,
@@ -9,7 +9,7 @@ from schemas import (
 )
 from auth import (
     hash_password, verify_password, create_access_token,
-    generate_api_key, get_current_user, require_role,
+    generate_api_key, hash_api_key, get_api_key_prefix, get_current_user, require_role,
 )
 from services.email_service import send_password_reset_email
 import json
@@ -23,7 +23,7 @@ router = APIRouter()
 
 @router.post("/auth/signup", response_model=UserOut)
 def signup(req: SignupRequest, db: Session = Depends(get_db)):
-    """Unified signup: creates user + personal org + membership + API key."""
+    """Unified signup: creates user + personal org + membership."""
     existing = db.query(User).filter(User.email == req.email).first()
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -54,14 +54,6 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
     )
     db.add(membership)
 
-    # Generate default API key for the org
-    api_key = ApiKey(
-        key=generate_api_key(),
-        org_id=org.id,
-        name="Default Key",
-    )
-    db.add(api_key)
-
     db.commit()
     db.refresh(user)
 
@@ -86,13 +78,16 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
 
 @router.get("/auth/me")
 def get_profile(user=Depends(get_current_user), db: Session = Depends(get_db)):
-    """Return user profile with org memberships and personal org API key."""
+    """Return user profile with org memberships and personal API key."""
+    # Reject machine identity — daemons shouldn't query this
+    if getattr(user, "_is_machine_identity", False):
+        raise HTTPException(status_code=403, detail="Worker keys cannot access profile endpoints")
+
     memberships = db.query(OrganizationMembership).filter(
         OrganizationMembership.user_id == user.id
     ).all()
 
     orgs = []
-    api_key_value = None
     for m in memberships:
         org = db.query(Organization).filter(Organization.id == m.org_id).first()
         if org:
@@ -101,18 +96,20 @@ def get_profile(user=Depends(get_current_user), db: Session = Depends(get_db)):
                 "name": org.name,
                 "role": m.role,
             })
-            # Return the personal org's API key for backward compat
-            if org.owner_id == user.id:
-                key_entry = db.query(ApiKey).filter(ApiKey.org_id == org.id).first()
-                if key_entry:
-                    api_key_value = key_entry.key
+
+    # Return personal key prefix for this user
+    personal_key = db.query(ApiKey).filter(
+        ApiKey.created_by_user_id == user.id,
+        ApiKey.key_type == "personal",
+        ApiKey.status == "active",
+    ).first()
 
     return {
         "id": user.id,
         "email": user.email,
         "full_name": user.full_name,
         "platform_role": user.platform_role,
-        "api_key": api_key_value,
+        "personal_key_prefix": personal_key.key_prefix if personal_key else None,
         "is_active": user.is_active,
         "must_change_password": user.must_change_password,
         "created_at": user.created_at,
@@ -136,27 +133,28 @@ def change_password(
 
 
 @router.post("/auth/api-keys/regenerate")
-def regenerate_api_key(
+def regenerate_personal_api_key(
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Regenerate the API key for the user's personal organization."""
-    # Find user's owned org
-    membership = db.query(OrganizationMembership).filter(
-        OrganizationMembership.user_id == user.id,
-        OrganizationMembership.role == "owner",
+    """Regenerate the user's personal API key."""
+    # Reject machine identity
+    if getattr(user, "_is_machine_identity", False):
+        raise HTTPException(status_code=403, detail="Worker keys cannot access profile endpoints")
+
+    api_key_entry = db.query(ApiKey).filter(
+        ApiKey.created_by_user_id == user.id,
+        ApiKey.key_type == "personal",
     ).first()
-    if not membership:
-        raise HTTPException(status_code=404, detail="No organization found")
-
-    api_key_entry = db.query(ApiKey).filter(ApiKey.org_id == membership.org_id).first()
     if not api_key_entry:
-        raise HTTPException(status_code=404, detail="No API key found")
+        raise HTTPException(status_code=404, detail="No personal API key found")
 
-    api_key_entry.key = generate_api_key()
+    raw_key = generate_api_key()
+    api_key_entry.key_prefix = get_api_key_prefix(raw_key)
+    api_key_entry.key_hash = hash_api_key(raw_key)
+    api_key_entry.last_used_at = None
     db.commit()
-    db.refresh(api_key_entry)
-    return {"api_key": api_key_entry.key}
+    return {"api_key": raw_key}
 
 
 # ─── Superadmin ─────────────────────────────────────────────

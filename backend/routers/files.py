@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import File as FileModel, Batch, BatchAssignment, Worker, OrganizationMembership
 from schemas import FileOut
-from auth import get_current_user, require_role
+from auth import require_role, require_human_user
 import shutil, os
 
 router = APIRouter()
@@ -41,7 +41,7 @@ def upload_file(
 @router.get("/files/{file_id}/content")
 def download_file_content(
     file_id: str,
-    user=Depends(get_current_user),
+    user=Depends(require_human_user),
     db: Session = Depends(get_db),
 ):
     db_file = db.query(FileModel).filter(FileModel.id == file_id).first()

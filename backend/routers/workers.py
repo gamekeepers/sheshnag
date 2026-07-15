@@ -8,7 +8,7 @@ from models import (
 from schemas import HeartbeatRequest, WorkerRegisterRequest
 from pydantic import BaseModel
 from typing import Optional
-from auth import get_current_user, require_role, generate_api_key
+from auth import get_current_user, require_role, generate_api_key, hash_api_key, get_api_key_prefix, require_worker_key
 from provider_picker import picker
 import shutil, os, json
 
@@ -48,20 +48,14 @@ class FailureReport(BaseModel):
 @router.post("/register")
 def register_worker(
     req: WorkerRegisterRequest,
-    user=Depends(get_current_user),
+    user=Depends(require_worker_key),
     db: Session = Depends(get_db),
 ):
-    """Register a worker under the user's organization (via API key or JWT)."""
-    # Determine org_id: from active_org_id (API key path) or membership
+    """Register a worker under the API key's organization."""
+    # org_id comes directly from the worker key — no membership lookup needed
     org_id = getattr(user, "active_org_id", None)
     if not org_id:
-        membership = db.query(OrganizationMembership).filter(
-            OrganizationMembership.user_id == user.id,
-            OrganizationMembership.role == "owner",
-        ).first()
-        if not membership:
-            raise HTTPException(status_code=400, detail="No organization found")
-        org_id = membership.org_id
+        raise HTTPException(status_code=400, detail="Worker key has no associated organization")
 
     # Check if worker with same hostname already exists for this org
     existing = db.query(Worker).filter(
@@ -113,7 +107,7 @@ def register_worker(
 @router.post("/{worker_id}/heartbeat")
 def worker_heartbeat(
     worker_id: str,
-    user=Depends(get_current_user),
+    user=Depends(require_worker_key),
     db: Session = Depends(get_db),
 ):
     """Worker heartbeat — updates status and timestamp."""
@@ -132,14 +126,17 @@ def worker_heartbeat(
 @router.post("/heartbeat")
 def heartbeat(
     req: HeartbeatRequest,
-    user=Depends(get_current_user),
+    user=Depends(require_worker_key),
     db: Session = Depends(get_db),
 ):
+    """Legacy heartbeat (ProviderCapability compat)."""
     caps = db.query(ProviderCapability).filter(
         ProviderCapability.worker_id == req.worker_id,
     ).first()
 
-    org_id = getattr(user, "active_org_id", user.id)
+    org_id = getattr(user, "active_org_id", None)
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Worker key has no associated organization")
 
     if caps:
         caps.vram_total_gb = req.vram_total_gb
@@ -168,7 +165,7 @@ def heartbeat(
 @router.post("/poll")
 def poll_job(
     req: PollRequest,
-    user=Depends(get_current_user),
+    user=Depends(require_worker_key),
     db: Session = Depends(get_db),
 ):
     caps = db.query(ProviderCapability).filter(
@@ -219,7 +216,7 @@ def poll_job(
 def upload_results(
     job_id: str = Form(...),
     file: UploadFile = File(...),
-    user=Depends(get_current_user),
+    user=Depends(require_worker_key),
     db: Session = Depends(get_db),
 ):
     batch = db.query(Batch).filter(Batch.id == job_id).first()
@@ -263,7 +260,7 @@ def upload_results(
 @router.post("/report-failure")
 def report_failure(
     req: FailureReport,
-    user=Depends(get_current_user),
+    user=Depends(require_worker_key),
     db: Session = Depends(get_db),
 ):
     batch = db.query(Batch).filter(Batch.id == req.job_id).first()
@@ -292,7 +289,9 @@ def list_user_organizations(
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List organizations the current user belongs to."""
+    """List organizations the current user belongs to. Rejects worker keys."""
+    if getattr(user, "_is_machine_identity", False):
+        raise HTTPException(status_code=403, detail="Worker keys cannot access management endpoints")
     memberships = db.query(OrganizationMembership).filter(
         OrganizationMembership.user_id == user.id
     ).all()
@@ -318,7 +317,10 @@ def list_org_api_keys(
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List API keys for an organization. Must be a member."""
+    """List worker API keys for an organization. Must be a member."""
+    if getattr(user, "_is_machine_identity", False):
+        raise HTTPException(status_code=403, detail="Worker keys cannot access management endpoints")
+
     membership = db.query(OrganizationMembership).filter(
         OrganizationMembership.org_id == org_id,
         OrganizationMembership.user_id == user.id,
@@ -327,14 +329,20 @@ def list_org_api_keys(
     if not membership and user.platform_role != "superadmin":
         raise HTTPException(status_code=403, detail="Not a member of this organization")
 
-    keys = db.query(ApiKey).filter(ApiKey.org_id == org_id).order_by(ApiKey.created_at.desc()).all()
+    keys = db.query(ApiKey).filter(
+        ApiKey.org_id == org_id,
+        ApiKey.key_type == "worker",
+    ).order_by(ApiKey.created_at.desc()).all()
     return {
         "object": "list",
         "data": [
             {
                 "id": k.id,
-                "key": k.key,
+                "key_prefix": k.key_prefix,
                 "name": k.name,
+                "status": k.status,
+                "last_used_at": k.last_used_at,
+                "expires_at": k.expires_at,
                 "created_at": k.created_at,
             }
             for k in keys
@@ -348,7 +356,9 @@ def regenerate_org_api_key(
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Regenerate API key for an organization. Must be owner or admin."""
+    """Regenerate a worker API key for an organization. Must be owner or admin."""
+    if getattr(user, "_is_machine_identity", False):
+        raise HTTPException(status_code=403, detail="Worker keys cannot access management endpoints")
     membership = db.query(OrganizationMembership).filter(
         OrganizationMembership.org_id == org_id,
         OrganizationMembership.user_id == user.id,
@@ -358,14 +368,19 @@ def regenerate_org_api_key(
     if not membership and user.platform_role != "superadmin":
         raise HTTPException(status_code=403, detail="Only org owner/admin can regenerate keys")
 
-    api_key_entry = db.query(ApiKey).filter(ApiKey.org_id == org_id).first()
+    api_key_entry = db.query(ApiKey).filter(
+        ApiKey.org_id == org_id,
+        ApiKey.key_type == "worker",
+    ).first()
     if not api_key_entry:
-        raise HTTPException(status_code=404, detail="No API key found for this org")
+        raise HTTPException(status_code=404, detail="No worker API key found for this org")
 
-    api_key_entry.key = generate_api_key()
+    raw_key = generate_api_key()
+    api_key_entry.key_prefix = get_api_key_prefix(raw_key)
+    api_key_entry.key_hash = hash_api_key(raw_key)
     db.commit()
     db.refresh(api_key_entry)
-    return {"api_key": api_key_entry.key}
+    return {"api_key": raw_key}
 
 
 @router.get("/v1/organizations/{org_id}/workers")
@@ -375,6 +390,8 @@ def list_org_workers(
     db: Session = Depends(get_db),
 ):
     """List workers belonging to an organization. Must be a member."""
+    if getattr(user, "_is_machine_identity", False):
+        raise HTTPException(status_code=403, detail="Worker keys cannot access management endpoints")
     membership = db.query(OrganizationMembership).filter(
         OrganizationMembership.org_id == org_id,
         OrganizationMembership.user_id == user.id,
