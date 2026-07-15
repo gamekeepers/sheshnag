@@ -76,11 +76,18 @@ class OrganizationMembership(Base):
 class ApiKey(Base):
     __tablename__ = "api_keys"
 
-    id         = Column(String, primary_key=True, default=generate_api_key_id)
-    key        = Column(String, unique=True, nullable=False)
-    org_id     = Column(String, nullable=False)
-    name       = Column(String, nullable=True)
-    created_at = Column(Integer, default=unix_now)
+    id                  = Column(String, primary_key=True, default=generate_api_key_id)
+    org_id              = Column(String, nullable=True)          # required for worker keys, NULL for personal
+    key_type            = Column(String, nullable=False)         # "worker" or "personal"
+    created_by_user_id  = Column(String, nullable=False)
+    name                = Column(String, nullable=False)
+    key_prefix          = Column(String, nullable=False)   # first 8 chars shown in UI
+    key_hash            = Column(String, unique=True, nullable=False)  # SHA-256 of full key
+    status              = Column(String, nullable=False, default="active")
+    last_used_at        = Column(Integer, nullable=True)
+    expires_at          = Column(Integer, nullable=True)
+    created_at          = Column(Integer, nullable=False, default=unix_now)
+    revoked_at          = Column(Integer, nullable=True)
 
 
 # ─── Workers ────────────────────────────────────────────────
