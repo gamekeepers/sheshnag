@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import Optional, List
+from pydantic import Field, BaseModel
+from typing import Literal, Optional, List
 
 
 class FileOut(BaseModel):
@@ -177,13 +177,19 @@ class WorkerRegisterRequest(BaseModel):
 
 class ApiKeyCreate(BaseModel):
     name: str
-    expires_at: Optional[int] = None
+    expires_at: Optional[int] = Field(
+        None,
+        description="Unix timestamp. Must be in the future, max 1 year out.",
+    )
 
 
 class ApiKeyUpdate(BaseModel):
     name: Optional[str] = None
-    expires_at: Optional[int] = None
-    status: Optional[str] = None  # "active" or "revoked"
+    expires_at: Optional[int] = Field(
+        None,
+        description="Unix timestamp. Must be in the future, max 1 year out.",
+    )
+    status: Optional[Literal["active", "revoked"]] = None  # validated at schema level
 
 
 class ApiKeyOut(BaseModel):

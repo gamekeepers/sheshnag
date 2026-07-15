@@ -10,6 +10,7 @@ from auth import (
     hash_api_key,
     get_api_key_prefix,
 )
+from rate_limit import check_key_creation_rate
 
 router = APIRouter()
 
@@ -38,6 +39,18 @@ def create_personal_api_key(
     only show the prefix for identification.
     """
     _reject_machine_identity(user)
+    check_key_creation_rate(user.id)
+
+    # Validate expires_at is in the future and not too far out
+    if body.expires_at is not None:
+        now = int(datetime.now(timezone.utc).timestamp())
+        if body.expires_at <= now:
+            raise HTTPException(status_code=400, detail="expires_at must be in the future")
+        if body.expires_at > now + (365 * 24 * 3600):
+            raise HTTPException(
+                status_code=400,
+                detail="expires_at cannot be more than 1 year in the future",
+            )
 
     raw_key = generate_api_key()
 
@@ -139,14 +152,17 @@ def update_personal_api_key(
         api_key_entry.name = body.name
 
     if body.expires_at is not None:
+        now = int(datetime.now(timezone.utc).timestamp())
+        if body.expires_at <= now:
+            raise HTTPException(status_code=400, detail="expires_at must be in the future")
+        if body.expires_at > now + (365 * 24 * 3600):
+            raise HTTPException(
+                status_code=400,
+                detail="expires_at cannot be more than 1 year in the future",
+            )
         api_key_entry.expires_at = body.expires_at
 
     if body.status is not None:
-        if body.status not in ("active", "revoked"):
-            raise HTTPException(
-                status_code=400,
-                detail='Status must be "active" or "revoked"',
-            )
         api_key_entry.status = body.status
         if body.status == "revoked":
             api_key_entry.revoked_at = unix_now()

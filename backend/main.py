@@ -29,6 +29,11 @@ app.include_router(workers.router,   prefix="/workers",  tags=["Workers"])
 
 @app.on_event("startup")
 def create_default_admin():
+    """Ensure a default superadmin user exists with an owner org membership.
+
+    Idempotent — skips everything if admin and membership already exist.
+    If admin exists but membership was deleted, recreates the org + membership.
+    """
     from database import SessionLocal
     db = SessionLocal()
     try:
@@ -44,11 +49,14 @@ def create_default_admin():
             db.add(admin)
             db.flush()
 
-            # Auto-create personal organization and owner membership
-            org = Organization(
-                name="Platform Admin Org",
-                owner_id=admin.id,
-            )
+        # Ensure the owner membership still exists — guards against partial deletions
+        has_owner_membership = db.query(OrganizationMembership).filter(
+            OrganizationMembership.user_id == admin.id,
+            OrganizationMembership.role == "owner",
+        ).first()
+
+        if not has_owner_membership:
+            org = Organization(name="Platform Admin Org")
             db.add(org)
             db.flush()
 
@@ -58,9 +66,10 @@ def create_default_admin():
                 role="owner",
             )
             db.add(membership)
-
             db.commit()
-            print("Default superadmin created: admin@platform.com / admin")
+
+        if admin.must_change_password:
+            print("Default superadmin ready: admin@platform.com / admin (change password on first login)")
     finally:
         db.close()
 

@@ -60,12 +60,25 @@ class Organization(Base):
 
     id         = Column(String, primary_key=True, default=generate_org_id)
     name       = Column(String, nullable=False)
-    owner_id   = Column(String, nullable=False)  # deprecated - derive from memberships where role=owner
     created_at = Column(Integer, default=unix_now)
 
     memberships = relationship("OrganizationMembership", back_populates="org")
     workers     = relationship("Worker", back_populates="organization")
     api_keys    = relationship("ApiKey", back_populates="organization")
+
+
+def get_org_owner(db, org_id: str):
+    """Derive the owner user_id from memberships where role='owner'."""
+    m = db.query(OrganizationMembership).filter(
+        OrganizationMembership.org_id == org_id,
+        OrganizationMembership.role == "owner",
+    ).first()
+    return m.user_id if m else None
+
+
+def get_org_owner_for_org_obj(db, org):
+    """Convenience: derive owner_id from an already-queried Organization instance."""
+    return get_org_owner(db, org.id)
 
 
 class OrganizationMembership(Base):
@@ -89,7 +102,11 @@ class ApiKey(Base):
     id                  = Column(String, primary_key=True, default=generate_api_key_id)
     org_id              = Column(String, ForeignKey("organizations.id"), nullable=True)          # required for worker keys, NULL for personal
     key_type            = Column(String, nullable=False)         # "worker" or "personal"
-    created_by_user_id  = Column(String, ForeignKey("users.id"), nullable=False)
+    created_by_user_id  = Column(
+        String, ForeignKey("users.id"), nullable=False,
+    )
+    # Note: back-reference exists via .creator below, but no reciprocal
+    # User.api_keys — keys are sensitive and loaded on-demand only.
     name                = Column(String, nullable=False)
     key_prefix          = Column(String, nullable=False)   # first 8 chars shown in UI
     key_hash            = Column(String, unique=True, nullable=False)  # SHA-256 of full key
@@ -100,6 +117,12 @@ class ApiKey(Base):
     revoked_at          = Column(Integer, nullable=True)
 
     organization = relationship("Organization", back_populates="api_keys")
+    creator      = relationship(
+        "User",
+        foreign_keys=[created_by_user_id],
+        lazy="select",
+        doc="Back-reference to the user who created this key.",
+    )
 
 
 # ─── Workers ────────────────────────────────────────────────

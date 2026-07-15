@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import (
     Batch, BatchAssignment, File as FileModel, Worker,
-    ProviderCapability, Organization, OrganizationMembership, ApiKey, unix_now,
+    ProviderCapability, Organization, OrganizationMembership, ApiKey, unix_now, get_org_owner,
 )
 from schemas import HeartbeatRequest, WorkerRegisterRequest
 from pydantic import BaseModel
@@ -304,7 +304,7 @@ def list_user_organizations(
                 "id": org.id,
                 "name": org.name,
                 "role": m.role,
-                "owner_id": org.owner_id,
+                "derived_owner_id": get_org_owner(db, org.id),
                 "created_at": org.created_at,
             })
 
