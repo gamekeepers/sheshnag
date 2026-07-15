@@ -1,5 +1,6 @@
 from database import Base
-from sqlalchemy import Column, String, Integer, Boolean, Float, Text
+from sqlalchemy import Column, String, Integer, Boolean, Float, Text, ForeignKey
+from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 import uuid
 import hashlib
@@ -51,24 +52,33 @@ class User(Base):
     must_change_password = Column(Boolean, default=False)
     created_at           = Column(Integer, default=unix_now)
 
+    memberships = relationship("OrganizationMembership", back_populates="user")
+
 
 class Organization(Base):
     __tablename__ = "organizations"
 
     id         = Column(String, primary_key=True, default=generate_org_id)
     name       = Column(String, nullable=False)
-    owner_id   = Column(String, nullable=False)
+    owner_id   = Column(String, nullable=False)  # deprecated - derive from memberships where role=owner
     created_at = Column(Integer, default=unix_now)
+
+    memberships = relationship("OrganizationMembership", back_populates="org")
+    workers     = relationship("Worker", back_populates="organization")
+    api_keys    = relationship("ApiKey", back_populates="organization")
 
 
 class OrganizationMembership(Base):
     __tablename__ = "organization_memberships"
 
     id         = Column(String, primary_key=True, default=generate_membership_id)
-    org_id     = Column(String, nullable=False)
-    user_id    = Column(String, nullable=False)
+    org_id     = Column(String, ForeignKey("organizations.id"), nullable=False)
+    user_id    = Column(String, ForeignKey("users.id"), nullable=False)
     role       = Column(String, nullable=False)   # "owner", "admin", "viewer"
     created_at = Column(Integer, default=unix_now)
+
+    org  = relationship("Organization", back_populates="memberships")
+    user = relationship("User", back_populates="memberships")
 
 
 # ─── API Keys ───────────────────────────────────────────────
@@ -77,9 +87,9 @@ class ApiKey(Base):
     __tablename__ = "api_keys"
 
     id                  = Column(String, primary_key=True, default=generate_api_key_id)
-    org_id              = Column(String, nullable=True)          # required for worker keys, NULL for personal
+    org_id              = Column(String, ForeignKey("organizations.id"), nullable=True)          # required for worker keys, NULL for personal
     key_type            = Column(String, nullable=False)         # "worker" or "personal"
-    created_by_user_id  = Column(String, nullable=False)
+    created_by_user_id  = Column(String, ForeignKey("users.id"), nullable=False)
     name                = Column(String, nullable=False)
     key_prefix          = Column(String, nullable=False)   # first 8 chars shown in UI
     key_hash            = Column(String, unique=True, nullable=False)  # SHA-256 of full key
@@ -89,6 +99,8 @@ class ApiKey(Base):
     created_at          = Column(Integer, nullable=False, default=unix_now)
     revoked_at          = Column(Integer, nullable=True)
 
+    organization = relationship("Organization", back_populates="api_keys")
+
 
 # ─── Workers ────────────────────────────────────────────────
 
@@ -96,7 +108,7 @@ class Worker(Base):
     __tablename__ = "workers"
 
     id             = Column(String, primary_key=True, default=generate_worker_id)
-    org_id         = Column(String, nullable=False)
+    org_id         = Column(String, ForeignKey("organizations.id"), nullable=False)
     api_key_id     = Column(String, nullable=True)
     hostname       = Column(String, nullable=False)
     os             = Column(String, nullable=True)
@@ -107,6 +119,8 @@ class Worker(Base):
     status         = Column(String, default="online")
     last_heartbeat = Column(Integer, default=unix_now)
     created_at     = Column(Integer, default=unix_now)
+
+    organization = relationship("Organization", back_populates="workers")
 
 
 # ─── Files & Batches ────────────────────────────────────────

@@ -173,4 +173,31 @@ class WorkerRegisterRequest(BaseModel):
     runtimes: List[RuntimeInfo] = []
 
 
-
+# ─── Personal API Key schemas ──────────────────────────────
+
+class ApiKeyCreate(BaseModel):
+    name: str
+    expires_at: Optional[int] = None
+
+
+class ApiKeyUpdate(BaseModel):
+    name: Optional[str] = None
+    expires_at: Optional[int] = None
+    status: Optional[str] = None  # "active" or "revoked"
+
+
+class ApiKeyOut(BaseModel):
+    id: str
+    name: Optional[str] = None
+    key_prefix: str
+    status: str
+    key_type: str = "personal"
+    expires_at: Optional[int] = None
+    last_used_at: Optional[int] = None
+    created_at: int
+
+    class Config:
+        from_attributes = True
+
+
+

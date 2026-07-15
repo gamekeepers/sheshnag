@@ -4,8 +4,8 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
-from routers import files, batches, workers, auth
-from models import User
+from routers import files, batches, workers, auth, users
+from models import User, Organization, OrganizationMembership
 from auth import hash_password
 
 Base.metadata.create_all(bind=engine)
@@ -23,6 +23,7 @@ app.add_middleware(
 app.include_router(auth.router,      prefix="/v1",      tags=["Auth"])
 app.include_router(files.router,     prefix="/v1",      tags=["Files"])
 app.include_router(batches.router,   prefix="/v1",      tags=["Batches"])
+app.include_router(users.router,     prefix="/v1",      tags=["Users"])
 app.include_router(workers.router,   prefix="/workers",  tags=["Workers"])
 
 
@@ -41,6 +42,23 @@ def create_default_admin():
                 must_change_password=True,
             )
             db.add(admin)
+            db.flush()
+
+            # Auto-create personal organization and owner membership
+            org = Organization(
+                name="Platform Admin Org",
+                owner_id=admin.id,
+            )
+            db.add(org)
+            db.flush()
+
+            membership = OrganizationMembership(
+                org_id=org.id,
+                user_id=admin.id,
+                role="owner",
+            )
+            db.add(membership)
+
             db.commit()
             print("Default superadmin created: admin@platform.com / admin")
     finally:
