@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import Optional, List
+from pydantic import Field, BaseModel
+from typing import Literal, Optional, List
 
 
 class FileOut(BaseModel):
@@ -173,4 +173,37 @@ class WorkerRegisterRequest(BaseModel):
     runtimes: List[RuntimeInfo] = []
 
 
-
+# ─── Personal API Key schemas ──────────────────────────────
+
+class ApiKeyCreate(BaseModel):
+    name: str
+    expires_at: Optional[int] = Field(
+        None,
+        description="Unix timestamp. Must be in the future, max 1 year out.",
+    )
+
+
+class ApiKeyUpdate(BaseModel):
+    name: Optional[str] = None
+    expires_at: Optional[int] = Field(
+        None,
+        description="Unix timestamp. Must be in the future, max 1 year out.",
+    )
+    status: Optional[Literal["active", "revoked"]] = None  # validated at schema level
+
+
+class ApiKeyOut(BaseModel):
+    id: str
+    name: Optional[str] = None
+    key_prefix: str
+    status: str
+    key_type: str = "personal"
+    expires_at: Optional[int] = None
+    last_used_at: Optional[int] = None
+    created_at: int
+
+    class Config:
+        from_attributes = True
+
+
+

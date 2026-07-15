@@ -6,3 +6,7 @@ python-jose[cryptography]   # import: from jose import jwt
 passlib[bcrypt]              # import: from passlib.context import CryptContext
 python-dotenv                # import: from dotenv import load_dotenv
 requests                     # for Mailgun email service
+
+# Dev / test dependencies
+pytest>=7.0
+httpx>=0.25

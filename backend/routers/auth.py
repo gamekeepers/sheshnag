@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
-from models import User, Organization, OrganizationMembership, ApiKey, Worker, PasswordResetToken, unix_now
+from models import User, Organization, OrganizationMembership, ApiKey, Worker, PasswordResetToken, unix_now, get_org_owner
 from schemas import (
     SignupRequest, LoginRequest, ChangePasswordRequest,
     ForgotPasswordRequest, ResetPasswordRequest,
@@ -39,10 +39,7 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
     db.flush()
 
     # Auto-create personal organization
-    org = Organization(
-        name=f"{req.full_name}'s Personal Org",
-        owner_id=user.id,
-    )
+    org = Organization(name=f"{req.full_name}'s Personal Org")
     db.add(org)
     db.flush()
 
@@ -138,9 +135,14 @@ def regenerate_personal_api_key(
     db: Session = Depends(get_db),
 ):
     """Regenerate the user's personal API key."""
+    from rate_limit import check_key_creation_rate
+
     # Reject machine identity
     if getattr(user, "_is_machine_identity", False):
         raise HTTPException(status_code=403, detail="Worker keys cannot access profile endpoints")
+
+    # Rate limit key regeneration for defense-in-depth
+    check_key_creation_rate(user.id)
 
     api_key_entry = db.query(ApiKey).filter(
         ApiKey.created_by_user_id == user.id,
@@ -222,7 +224,7 @@ def list_all_organizations(
             {
                 "id": o.id,
                 "name": o.name,
-                "owner_id": o.owner_id,
+                "derived_owner_id": get_org_owner(db, o.id),
                 "created_at": o.created_at,
             }
             for o in orgs
