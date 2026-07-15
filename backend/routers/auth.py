@@ -9,8 +9,11 @@ from schemas import (
 )
 from auth import (
     hash_password, verify_password, create_access_token,
-    generate_api_key, hash_api_key, get_api_key_prefix, get_current_user, require_role,
+    generate_api_key, hash_api_key, get_api_key_prefix,
+    get_current_user, get_human_context, require_role,
 )
+# get_current_user is JWT-only
+# get_human_context accepts JWT or personal API key
 from services.email_service import send_password_reset_email
 import json
 import secrets
@@ -76,9 +79,6 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
 @router.get("/auth/me")
 def get_profile(user=Depends(get_current_user), db: Session = Depends(get_db)):
     """Return user profile with org memberships and personal API key."""
-    # Reject machine identity — daemons shouldn't query this
-    if getattr(user, "_is_machine_identity", False):
-        raise HTTPException(status_code=403, detail="Worker keys cannot access profile endpoints")
 
     memberships = db.query(OrganizationMembership).filter(
         OrganizationMembership.user_id == user.id
@@ -131,17 +131,14 @@ def change_password(
 
 @router.post("/auth/api-keys/regenerate")
 def regenerate_personal_api_key(
-    user=Depends(get_current_user),
+    ctx=Depends(get_human_context),
     db: Session = Depends(get_db),
 ):
-    """Regenerate the user's personal API key."""
+    """Regenerate the user's personal API key. Accepts JWT or personal API key."""
     from rate_limit import check_key_creation_rate
 
-    # Reject machine identity
-    if getattr(user, "_is_machine_identity", False):
-        raise HTTPException(status_code=403, detail="Worker keys cannot access profile endpoints")
+    user, _api_key = ctx
 
-    # Rate limit key regeneration for defense-in-depth
     check_key_creation_rate(user.id)
 
     api_key_entry = db.query(ApiKey).filter(

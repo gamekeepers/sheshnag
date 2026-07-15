@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import Batch, File as FileModel
 from schemas import BatchCreate, BatchOut, BatchSummary
-from auth import require_human_user, require_role
+from auth import get_human_context
 from provider_picker import is_model_supported
 from services.batch_validator import validate_batch_file
 from services.sse_manager import sse_manager
@@ -30,9 +30,11 @@ async def _validate_and_notify(batch_id: str, filepath: str) -> None:
 @router.post("/batches")
 async def create_batch(
     req: BatchCreate,
-    user=Depends(require_role("user", "superadmin")),
+    ctx=Depends(get_human_context),
     db: Session = Depends(get_db),
 ):
+    user, api_key = ctx
+
     input_file = db.query(FileModel).filter(FileModel.id == req.input_file_id).first()
     if not input_file:
         raise HTTPException(status_code=400, detail=f"Input file '{req.input_file_id}' not found")
@@ -42,6 +44,7 @@ async def create_batch(
 
     batch = Batch(
         user_id=user.id,
+        api_key_id=api_key.id if api_key else None,
         endpoint=req.endpoint,
         input_file_id=req.input_file_id,
         completion_window=req.completion_window,
@@ -61,10 +64,12 @@ async def create_batch(
 @router.get("/batches/{batch_id}/events")
 async def batch_events(
     batch_id: str,
-    user=Depends(require_human_user),
+    ctx=Depends(get_human_context),
     db: Session = Depends(get_db),
 ):
     """SSE stream for batch status changes."""
+    user, _api_key = ctx
+
     batch = db.query(Batch).filter(Batch.id == batch_id).first()
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found")
@@ -99,9 +104,11 @@ async def batch_events(
 @router.get("/batches/{batch_id}")
 def get_batch(
     batch_id: str,
-    user=Depends(require_human_user),
+    ctx=Depends(get_human_context),
     db: Session = Depends(get_db),
 ):
+    user, _api_key = ctx
+
     batch = db.query(Batch).filter(Batch.id == batch_id).first()
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found")
@@ -114,9 +121,11 @@ def get_batch(
 
 @router.get("/batches")
 def list_batches(
-    user=Depends(require_human_user),
+    ctx=Depends(get_human_context),
     db: Session = Depends(get_db),
 ):
+    user, _api_key = ctx
+
     query = db.query(Batch)
 
     if user.platform_role == "user":

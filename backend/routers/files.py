@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import File as FileModel, Batch, BatchAssignment, Worker, OrganizationMembership
 from schemas import FileOut
-from auth import require_role, require_human_user
+from auth import get_human_context
 import shutil, os
 
 router = APIRouter()
@@ -16,9 +16,11 @@ os.makedirs(FILES_DIR, exist_ok=True)
 def upload_file(
     file: UploadFile = File(...),
     purpose: str = Form("batch"),
-    user=Depends(require_role("user", "superadmin")),
+    ctx=Depends(get_human_context),
     db: Session = Depends(get_db),
 ):
+    user, _api_key = ctx
+
     db_file = FileModel(
         user_id=user.id,
         filename=file.filename or "upload.jsonl",
@@ -41,9 +43,11 @@ def upload_file(
 @router.get("/files/{file_id}/content")
 def download_file_content(
     file_id: str,
-    user=Depends(require_human_user),
+    ctx=Depends(get_human_context),
     db: Session = Depends(get_db),
 ):
+    user, _api_key = ctx
+
     db_file = db.query(FileModel).filter(FileModel.id == file_id).first()
     if not db_file:
         raise HTTPException(status_code=404, detail="File not found")

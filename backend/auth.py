@@ -1,4 +1,6 @@
 from datetime import datetime, timezone, timedelta
+from typing import Tuple
+
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException
@@ -51,68 +53,12 @@ def get_api_key_prefix(raw_key: str) -> str:
     return raw_key[:8]
 
 
-# ─── Auth: get_current_user ─────────────────────────────────
+# ─── Shared helpers (used by multiple deps) ────────────────
 
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db),
-):
-    """Authenticate via JWT or API key (gk-...).
+def _resolve_jwt(token: str, db: Session):
+    """Decode a JWT token and return the User, or raise 401."""
+    from models import User
 
-    Worker keys: authenticate the key's org, mark user as machine identity.
-    Personal keys: authenticate the key's owning user directly.
-    """
-    from models import User, ApiKey
-    token = credentials.credentials
-
-    # API key auth path
-    if token.startswith("gk-"):
-        token_hash = hash_api_key(token)
-        api_key_entry = db.query(ApiKey).filter(
-            ApiKey.key_hash == token_hash,
-            ApiKey.status == "active",
-        ).first()
-        if not api_key_entry:
-            raise HTTPException(status_code=401, detail="Invalid API key")
-
-        # Check expiration before resolving user identity
-        if api_key_entry.expires_at is not None and api_key_entry.expires_at < int(datetime.now(timezone.utc).timestamp()):
-            raise HTTPException(status_code=401, detail="API key has expired")
-
-        if api_key_entry.key_type == "worker":
-            # Worker key — resolve the org owner as a proxy identity
-            user = db.query(User).filter(
-                User.id == api_key_entry.created_by_user_id,
-                User.is_active,
-            ).first()
-            if not user:
-                raise HTTPException(status_code=401, detail="User not found")
-
-            # Mark as machine identity so downstream routes can enforce scope
-            user._is_machine_identity = True
-            user._api_key_type = "worker"
-            user.active_org_id = api_key_entry.org_id
-
-        elif api_key_entry.key_type == "personal":
-            # Personal key — authenticate as the key's creator
-            user = db.query(User).filter(
-                User.id == api_key_entry.created_by_user_id,
-                User.is_active,
-            ).first()
-            if not user:
-                raise HTTPException(status_code=401, detail="User not found")
-
-            user._api_key_type = "personal"
-        else:
-            raise HTTPException(status_code=401, detail="Unknown key type")
-
-        # Update last_used_at only after full auth succeeds.
-        # No explicit db.commit() — SQLAlchemy will flush on the session boundary,
-        # avoiding a hot-path disk write on every request.
-        api_key_entry.last_used_at = int(datetime.now(timezone.utc).timestamp())
-        return user
-
-    # JWT auth path
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("sub")
@@ -130,19 +76,141 @@ def get_current_user(
     return user
 
 
+def _resolve_personal_api_key(token: str, db: Session) -> Tuple:
+    """Resolve a personal API key and return (api_key_record, user), or raise 401."""
+    from models import User, ApiKey
+
+    token_hash = hash_api_key(token)
+    api_key_entry = db.query(ApiKey).filter(
+        ApiKey.key_hash == token_hash,
+        ApiKey.key_type == "personal",
+        ApiKey.status == "active",
+    ).first()
+    if not api_key_entry:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    if api_key_entry.expires_at is not None and api_key_entry.expires_at < int(datetime.now(timezone.utc).timestamp()):
+        raise HTTPException(status_code=401, detail="API key has expired")
+
+    user = db.query(User).filter(
+        User.id == api_key_entry.created_by_user_id,
+        User.is_active,
+    ).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    api_key_entry.last_used_at = int(datetime.now(timezone.utc).timestamp())
+    return (api_key_entry, user)
+
+
+# ─── 1. get_current_user — JWT only ────────────────────────
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+):
+    """Authenticate via JWT bearer token only. Rejects API keys."""
+    token = credentials.credentials
+
+    if token.startswith("gk-"):
+        raise HTTPException(
+            status_code=401,
+            detail="API key not allowed on this endpoint — use a JWT bearer token",
+        )
+
+    return _resolve_jwt(token, db)
+
+
+# ─── 2. get_worker_context — Worker API key only ───────────
+
+def get_worker_context(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+) -> Tuple:
+    """Authenticate via worker API key. Returns (api_key_record, organization)."""
+    from models import ApiKey, Organization
+
+    token = credentials.credentials
+
+    if not token.startswith("gk-"):
+        raise HTTPException(
+            status_code=401,
+            detail="Worker operations require a worker API key",
+        )
+
+    token_hash = hash_api_key(token)
+    api_key_entry = db.query(ApiKey).filter(
+        ApiKey.key_hash == token_hash,
+        ApiKey.key_type == "worker",
+        ApiKey.status == "active",
+    ).first()
+    if not api_key_entry:
+        raise HTTPException(status_code=401, detail="Invalid worker API key")
+
+    if api_key_entry.expires_at is not None and api_key_entry.expires_at < int(datetime.now(timezone.utc).timestamp()):
+        raise HTTPException(status_code=401, detail="API key has expired")
+
+    org = db.query(Organization).filter(
+        Organization.id == api_key_entry.org_id,
+    ).first()
+    if not org:
+        raise HTTPException(status_code=401, detail="Organization not found for this worker key")
+
+    api_key_entry.last_used_at = int(datetime.now(timezone.utc).timestamp())
+    return (api_key_entry, org)
+
+
+# ─── 3. get_personal_context — Personal API key only ──────
+
+def get_personal_context(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+) -> Tuple:
+    """Authenticate via personal API key. Returns (api_key_record, user)."""
+
+    token = credentials.credentials
+
+    if not token.startswith("gk-"):
+        raise HTTPException(
+            status_code=401,
+            detail="This endpoint requires a personal API key",
+        )
+
+    return _resolve_personal_api_key(token, db)
+
+
+# ─── 4. get_human_context — JWT or personal API key ────────
+
+def get_human_context(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+):
+    """Authenticate via JWT or personal API key. Rejects worker keys.
+
+    Returns (user, api_key_or_None) — api_key is set only when auth'd via
+    personal key, allowing attribution tracking.
+    """
+    token = credentials.credentials
+
+    # Personal API key path
+    if token.startswith("gk-"):
+        api_key_entry, user = _resolve_personal_api_key(token, db)
+        return (user, api_key_entry)
+
+    # JWT path
+    user = _resolve_jwt(token, db)
+    return (user, None)
+
+
+# ─── Role checker (built on get_current_user — JWT only) ──
+
 def require_role(*roles):
     """Dependency factory: require user to have one of the given platform_roles.
-    Maps legacy 'admin' to 'superadmin' for compatibility.
-    Rejects machine identities (worker keys)."""
+
+    Built on get_current_user (JWT only). Maps legacy 'admin' to 'superadmin'.
+    """
     def checker(user=Depends(get_current_user)):
-        # Worker keys cannot impersonate platform roles
-        if getattr(user, "_is_machine_identity", False):
-            raise HTTPException(
-                status_code=403,
-                detail="This endpoint requires user authentication (JWT or personal API key)",
-            )
         effective_role = user.platform_role
-        # Legacy compat: treat "admin" as "superadmin"
         if effective_role == "admin":
             effective_role = "superadmin"
         if effective_role not in roles:
@@ -152,23 +220,3 @@ def require_role(*roles):
             )
         return user
     return checker
-
-
-def require_worker_key(user=Depends(get_current_user)):
-    """Require an API key of type 'worker'. Rejects JWT and personal keys."""
-    if getattr(user, "_api_key_type", None) != "worker":
-        raise HTTPException(
-            status_code=403,
-            detail="Worker operations require a worker API key",
-        )
-    return user
-
-
-def require_human_user(user=Depends(get_current_user)):
-    """Require a real user (JWT or personal key). Rejects worker keys."""
-    if getattr(user, "_is_machine_identity", False):
-        raise HTTPException(
-            status_code=403,
-            detail="This endpoint requires user authentication (JWT or personal API key)",
-        )
-    return user
