@@ -131,11 +131,21 @@ class TokenOut(BaseModel):
     must_change_password: bool = False
 
 
-class HeartbeatRequest(BaseModel):
-    worker_id: str
-    vram_total_gb: float
-    vram_available_gb: float = 0
+class WorkerHeartbeatRequest(BaseModel):
+    """Unified worker heartbeat (spec §8.1: dynamic properties).
+
+    `status` is the daemon's activity (idle | busy | downloading_model);
+    liveness (`online`/`offline`) is derived server-side from last_heartbeat.
+    """
+    status: str = "idle"
+    current_job_id: Optional[str] = None
+    progress: Optional[dict] = None
+    gpu_utilization: float = 0.0
+    gpu_memory_used_gb: float = 0.0
+    vram_total_gb: float = 0.0
+    vram_available_gb: float = 0.0
     loaded_models: List[str] = []
+    uptime_seconds: int = 0
 
 
 class ForgotPasswordRequest(BaseModel):

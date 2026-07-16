@@ -5,7 +5,7 @@ from models import (
     Batch, BatchAssignment, File as FileModel, Worker,
     ProviderCapability, Organization, OrganizationMembership, ApiKey, unix_now, get_org_owner,
 )
-from schemas import HeartbeatRequest, WorkerRegisterRequest
+from schemas import WorkerHeartbeatRequest, WorkerRegisterRequest
 from pydantic import BaseModel
 from typing import Optional
 from auth import get_current_user, generate_api_key, hash_api_key, get_api_key_prefix, get_worker_context
@@ -105,36 +105,28 @@ def register_worker(
 @router.post("/{worker_id}/heartbeat")
 def worker_heartbeat(
     worker_id: str,
-    _ctx=Depends(get_worker_context),
+    req: WorkerHeartbeatRequest,
+    ctx=Depends(get_worker_context),
     db: Session = Depends(get_db),
 ):
-    """Worker heartbeat — updates status and timestamp."""
+    """Unified worker heartbeat (spec §8.1).
+
+    Updates the worker's liveness timestamp AND the dynamic capability
+    data (VRAM, loaded models) that the provider picker uses to match
+    batches to workers during /workers/poll.
+    """
+    _api_key, org = ctx
+
     worker = db.query(Worker).filter(Worker.id == worker_id).first()
     if not worker:
         raise HTTPException(status_code=404, detail="Worker not found")
 
     worker.status = "online"
     worker.last_heartbeat = unix_now()
-    db.commit()
-    return {"status": "ok", "worker_id": worker_id}
-
-
-# ─── Legacy heartbeat (ProviderCapability compat) ──────────
-
-@router.post("/heartbeat")
-def heartbeat(
-    req: HeartbeatRequest,
-    ctx=Depends(get_worker_context),
-    db: Session = Depends(get_db),
-):
-    """Legacy heartbeat (ProviderCapability compat)."""
-    _api_key, org = ctx
 
     caps = db.query(ProviderCapability).filter(
-        ProviderCapability.worker_id == req.worker_id,
+        ProviderCapability.worker_id == worker_id,
     ).first()
-
-    org_id = org.id
 
     if caps:
         caps.vram_total_gb = req.vram_total_gb
@@ -144,8 +136,8 @@ def heartbeat(
         caps.last_heartbeat = unix_now()
     else:
         caps = ProviderCapability(
-            worker_id=req.worker_id,
-            provider_id=org_id,
+            worker_id=worker_id,
+            provider_id=org.id,
             vram_total_gb=req.vram_total_gb,
             vram_available_gb=req.vram_available_gb,
             loaded_models=json.dumps(req.loaded_models),
@@ -155,7 +147,7 @@ def heartbeat(
         db.add(caps)
 
     db.commit()
-    return {"status": "ok"}
+    return {"status": "ok", "worker_id": worker_id}
 
 
 # ─── Job Polling & Results ─────────────────────────────────

@@ -74,8 +74,9 @@ class Worker:
             client=client,
             worker_id=config.worker_id,
             interval=config.heartbeat_interval,
+            get_loaded_models=self._get_loaded_models,
         )
-        
+
         self._model_manager = None
         if isinstance(executor, OllamaExecutor):
             self._model_manager = ModelManager(
@@ -87,6 +88,17 @@ class Worker:
         # Ensure work directory exists
         self._work_dir = Path(config.work_dir)
         self._work_dir.mkdir(parents=True, exist_ok=True)
+
+    async def _get_loaded_models(self) -> List[str]:
+        """
+        Models currently served by the runtime, reported in heartbeats
+        so the scheduler can prefer workers that already host a model.
+        Falls back to the statically configured list for runtimes that
+        can't be queried.
+        """
+        if hasattr(self._executor, "list_models"):
+            return await self._executor.list_models()
+        return list(self._config.models)
 
     # ── Public API ───────────────────────────────────────────────
 

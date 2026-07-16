@@ -31,8 +31,10 @@ log_level: "INFO"
 # Authentication (Spec §17)
 # ─────────────────────────────────────────────────────────────
 
-# Worker authentication
-# api_key: "your-api-key-here"
+# Org worker API key — REQUIRED. Created in the platform dashboard
+# (Provider portal → API keys); the backend derives the owning org
+# from this key. The daemon exits at startup if no key is configured.
+# api_key: "gk-your-api-key-here"
 
 # ─────────────────────────────────────────────────────────────
 # Registration Metadata (Spec §8)

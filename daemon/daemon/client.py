@@ -8,12 +8,13 @@ makes it trivial to:
     - Swap HTTP transport (e.g., gRPC in future)
     - Add auth headers, retries, etc. in one place
 
-API contract (updated to match @akshay's OpenAI batch spec refactor):
-    POST /workers/register      → NOT YET on backend (TODO: ask Akshay)
-    POST /workers/poll           → returns assigned batch or {"job": null}
-    GET  /v1/files/{id}/content  → downloads input JSONL (path from poll)
-    POST /workers/upload-results → multipart upload of output JSONL
-    POST /workers/report-failure → reports job failure
+API contract (all calls authenticated with an org worker API key):
+    POST /workers/register                → registers worker, returns assigned worker_id
+    POST /workers/{worker_id}/heartbeat   → liveness + dynamic capability stats
+    POST /workers/poll                    → returns assigned batch or {"job": null}
+    GET  /v1/files/{id}/content           → downloads input JSONL (path from poll)
+    POST /workers/upload-results          → multipart upload of output JSONL
+    POST /workers/report-failure          → reports job failure
 """
 
 from __future__ import annotations
@@ -71,6 +72,10 @@ class BackendClient:
         if self._client:
             self._client.headers["Authorization"] = f"Bearer {api_key}"
 
+    def update_worker_id(self, worker_id: str) -> None:
+        """Adopt the backend-assigned worker id after registration."""
+        self._worker_id = worker_id
+
     def _get_client(self) -> httpx.AsyncClient:
         """
         Lazy-initialize the HTTP client with production-grade settings.
@@ -102,9 +107,6 @@ class BackendClient:
         return self._client
 
     # ── Worker Registration (Spec §8) ────────────────────────────
-    # TODO: Ask Akshay to add POST /workers/register to the backend.
-    #       Until then, registration is a no-op — the daemon logs
-    #       the worker info locally and proceeds to polling.
 
     async def register_worker(self, worker_info: WorkerInfo) -> dict:
         """
@@ -114,11 +116,17 @@ class BackendClient:
         models, runtime) before it begins polling for jobs. This lets
         the scheduler know what this worker can handle.
 
+        Registration is authenticated with the org worker API key
+        (spec §8.0/§17) — the key is created in the dashboard and must
+        be configured before the daemon starts. The backend derives the
+        owning organization from the key and returns the assigned
+        worker_id; it never issues API keys.
+
         Args:
             worker_info: Worker registration payload.
-            
+
         Returns:
-            Dictionary containing 'status', 'worker_id', and 'api_key'.
+            Dictionary containing 'status', 'worker_id', and 'message'.
         """
         client = self._get_client()
 
@@ -285,11 +293,13 @@ class BackendClient:
 
     async def report_failure(self, job_id: str, error: str) -> None:
         """
-        Report a job failure to the backend so it can requeue the job.
+        Report a job failure to the backend so it can mark the batch failed.
 
         This is a best-effort call — if it fails, we log a warning
-        but don't crash. The backend's heartbeat timeout will
-        eventually reclaim the job anyway.
+        but don't crash. NOTE: the backend does not yet reclaim jobs
+        on heartbeat timeout (spec §12 requeue is unimplemented), so
+        an unreported failure currently leaves the batch stuck in
+        'in_progress'.
 
         Args:
             job_id: The failed job's identifier.
@@ -321,6 +331,7 @@ class BackendClient:
         try:
             response = await client.post(
                 f"/workers/{self._worker_id}/heartbeat",
+                json=payload,
                 timeout=httpx.Timeout(10.0),
             )
             response.raise_for_status()

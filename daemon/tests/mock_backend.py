@@ -112,19 +112,24 @@ async def register_worker(body: dict):
 
     Stores worker metadata (GPU info, models, runtime) so the
     scheduler knows what this worker can handle (spec §8).
+
+    Mirrors the real backend: authentication uses a pre-existing org
+    worker API key (never issued here), and the response carries the
+    backend-assigned worker_id — no api_key field.
     """
-    worker_id = body.get("worker_id", "unknown")
+    worker_id = f"worker-{uuid.uuid4().hex[:12]}"
     _workers[worker_id] = body
-    api_key = f"mock-key-{uuid.uuid4().hex[:12]}"
     print(
         f"\n✅ Worker registered: {worker_id}\n"
-        f"   API Key: {api_key}\n"
-        f"   (GPU: {body.get('gpu_name', '?')},"
-        f" VRAM: {body.get('vram_gb', '?')}GB,"
-        f" Models: {body.get('models', [])},"
-        f" Runtime: {body.get('runtime', '?')})"
+        f"   (Hostname: {body.get('hostname', '?')},"
+        f" GPUs: {body.get('gpus', [])},"
+        f" Runtimes: {body.get('runtimes', [])})"
     )
-    return JSONResponse(content={"status": "registered", "worker_id": worker_id, "api_key": api_key})
+    return JSONResponse(content={
+        "status": "registered",
+        "worker_id": worker_id,
+        "message": f"Worker '{body.get('hostname', '?')}' registered successfully",
+    })
 
 
 @app.post("/workers/poll")
@@ -241,9 +246,15 @@ async def report_failure(body: dict):
     return JSONResponse(content={"status": "ok"})
 
 
-@app.post("/workers/heartbeat")
-async def receive_heartbeat(body: dict):
-    return JSONResponse(content={"status": "ok"})
+@app.post("/workers/{worker_id}/heartbeat")
+async def receive_heartbeat(worker_id: str, body: dict):
+    """Unified heartbeat — mirrors POST /workers/{worker_id}/heartbeat."""
+    print(
+        f"💓 Heartbeat from {worker_id}: status={body.get('status')}, "
+        f"vram={body.get('vram_available_gb')}/{body.get('vram_total_gb')}GB, "
+        f"loaded_models={body.get('loaded_models')}"
+    )
+    return JSONResponse(content={"status": "ok", "worker_id": worker_id})
 
 @app.post("/workers/progress")
 async def receive_progress(body: dict):

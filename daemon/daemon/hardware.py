@@ -102,22 +102,24 @@ def get_gpu_utilization() -> Dict[str, Any]:
     """
     stats = {
         "utilization": 0.0,
-        "memory_used_gb": 0.0
+        "memory_used_gb": 0.0,
+        "memory_total_gb": 0.0
     }
     try:
         if subprocess.call(["which", "nvidia-smi"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
             csv_out = subprocess.check_output([
-                "nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader,nounits"
+                "nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"
             ]).decode().strip()
-            
+
             # If multiple GPUs, average utilization, sum memory (or just take the first for now)
             lines = [l for l in csv_out.split('\n') if l.strip()]
             if lines:
                 parts = [p.strip() for p in lines[0].split(',')]
-                if len(parts) >= 2:
-                    # e.g., "0", "1024"
+                if len(parts) >= 3:
+                    # e.g., "0", "1024", "24576"
                     stats["utilization"] = float(parts[0])
                     stats["memory_used_gb"] = round(float(parts[1]) / 1024, 2)
+                    stats["memory_total_gb"] = round(float(parts[2]) / 1024, 2)
     except Exception:
         pass
         

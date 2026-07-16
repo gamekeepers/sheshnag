@@ -45,7 +45,6 @@ def _generate_worker_id() -> str:
 
 _ENV_MAP: Dict[str, str] = {
     "worker_id": "DAEMON_WORKER_ID",
-    "provider_id": "DAEMON_PROVIDER_ID",
     "backend_url": "DAEMON_BACKEND_URL",
     "vllm_url": "DAEMON_VLLM_URL",
     "ollama_url": "DAEMON_OLLAMA_URL",
@@ -113,16 +112,16 @@ class DaemonConfig(BaseModel):
         poll_interval:  Seconds between job poll attempts when idle (must be > 0).
         log_level:      Python logging level (DEBUG, INFO, WARNING, ERROR).
         work_dir:       Local directory for job artifacts (inputs, outputs).
-        api_key:        Optional API key for worker authentication (spec §17).
+        api_key:        Org worker API key for authentication (spec §8.0/§17).
+                        Created in the platform dashboard; required to register.
         gpu_name:       Human-readable GPU model name for registration (spec §8).
         vram_gb:        GPU VRAM in gigabytes for registration (spec §8).
         models:         List of model names available on this worker (spec §8).
-        runtime:        Inference runtime type — "vllm" for V1 (spec §8).
+        runtime:        Inference runtime type — "ollama" (default) or "vllm" (spec §8).
         vllm_timeout:   Per-prompt timeout for vLLM inference in seconds.
     """
 
     worker_id: str = Field(default_factory=_generate_worker_id)
-    provider_id: str = ""
     backend_url: str = "http://localhost:8000"
     vllm_url: str = "http://localhost:8100"
     ollama_url: str = "http://localhost:11434"

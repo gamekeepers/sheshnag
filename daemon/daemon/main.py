@@ -92,13 +92,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        "--provider-id",
-        type=str,
-        default=None,
-        help="Unique provider ID who owns this worker",
-    )
-
-    parser.add_argument(
         "--poll-interval",
         type=int,
         default=None,
@@ -133,7 +126,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--api-key",
         type=str,
         default=None,
-        help="API key for worker authentication (Bearer token)",
+        help="Org worker API key (Bearer token) — created in the platform dashboard",
     )
 
     # ── Registration metadata (Spec §8) ──────────────────────────
@@ -164,7 +157,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--runtime",
         type=str,
         default=None,
-        help="Inference runtime type (default: vllm)",
+        help="Inference runtime type (default: ollama)",
     )
 
     # ── Executor tuning ──────────────────────────────────────────
@@ -192,7 +185,6 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
         "vllm_url": args.vllm_url,
         "ollama_url": args.ollama_url,
         "worker_id": args.worker_id,
-        "provider_id": args.provider_id,
         "poll_interval": args.poll_interval,
         "heartbeat_interval": args.heartbeat_interval,
         "log_level": args.log_level,
@@ -223,31 +215,48 @@ async def _run(config: DaemonConfig) -> None:
         2. Register worker with control plane (spec §8)
         3. Start the poll-execute loop
     """
-    # ── Try to load saved credentials ────────────────────────────
+    # ── Resolve the org worker API key (spec §8.0/§17) ───────────
+    # The key is created in the platform dashboard and is a required
+    # input — the backend authenticates every /workers/* call with it
+    # and never issues keys itself.
     reg_manager = RegistrationManager(config.credentials_path)
     saved_key = reg_manager.load_saved_credentials()
-    
+
+    api_key = config.api_key or saved_key
+    if not api_key:
+        logger.error(
+            "No API key configured. Create an org worker API key in the "
+            "platform dashboard and pass it via --api-key, DAEMON_API_KEY, "
+            "or api_key in config.yaml."
+        )
+        sys.exit(1)
+    config.api_key = api_key
+
     # ── Create components ────────────────────────────────────────
     client = BackendClient(
         base_url=config.backend_url,
         worker_id=config.worker_id,
-        api_key=saved_key or config.api_key,
+        api_key=api_key,
     )
-    
+
     # ── Register with platform ───────────────────────────────────
     try:
-        api_key, assigned_worker_id = await reg_manager.register(client, config)
-        client.update_api_key(api_key)
-        config.api_key = api_key
+        assigned_worker_id = await reg_manager.register(client, config)
         config.worker_id = assigned_worker_id
-        client._worker_id = assigned_worker_id
+        client.update_worker_id(assigned_worker_id)
         logger.info(f"Worker registered: {assigned_worker_id}")
     except Exception as exc:
         logger.error(f"Failed to register with platform: {exc}")
-        if not saved_key and not config.api_key:
-            logger.error("No API key available. Exiting.")
+        saved_worker_id = reg_manager.load_saved_worker_id()
+        if not saved_worker_id:
+            logger.error("No previously assigned worker id available. Exiting.")
             sys.exit(1)
-        logger.warning("Continuing with existing API key despite registration failure.")
+        config.worker_id = saved_worker_id
+        client.update_worker_id(saved_worker_id)
+        logger.warning(
+            f"Continuing as previously registered worker "
+            f"'{saved_worker_id}' despite registration failure."
+        )
 
     # ── Executor and Worker ──────────────────────────────────────
     executor = create_executor(config)
@@ -290,7 +299,6 @@ def main() -> None:
     logger.info(f"{'='*60}")
     logger.info(f"  GPU Worker Daemon v{__version__}")
     logger.info(f"  Worker ID:     {config.worker_id}")
-    logger.info(f"  Provider ID:   {config.provider_id}")
     logger.info(f"  Backend URL:   {config.backend_url}")
     logger.info(f"  Ollama URL:    {config.ollama_url}")
     logger.info(f"  vLLM URL:      {config.vllm_url}")
