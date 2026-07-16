@@ -34,13 +34,16 @@ class RegistrationManager:
         logger.info(f"Registering worker {config.worker_id} (Provider: {config.provider_id})")
         result = await client.register_worker(worker_info)
         
-        api_key = result.get("api_key")
+        api_key = result.get("api_key") or config.api_key
         if not api_key:
-            raise ValueError("Registration failed: No API key returned from platform.")
+            raise ValueError("Registration failed: No API key returned from platform and none configured.")
             
         self._save_credentials(api_key, config.worker_id)
         os.environ["DAEMON_API_KEY"] = api_key
-        return api_key
+        
+        # The backend might assign a real UUID worker_id in the response
+        assigned_worker_id = result.get("worker_id", config.worker_id)
+        return api_key, assigned_worker_id
 
     def load_saved_credentials(self) -> Optional[str]:
         """Load API key from the credentials file."""
