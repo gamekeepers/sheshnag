@@ -122,9 +122,34 @@ class BackendClient:
         """
         client = self._get_client()
 
+        payload = {
+            "hostname": worker_info.hardware.hostname if worker_info.hardware else worker_info.worker_id,
+            "os": worker_info.hardware.os if worker_info.hardware else "unknown",
+            "cpu": {"cores": worker_info.hardware.cpu_cores} if worker_info.hardware else None,
+            "ram": {"total_gb": worker_info.hardware.ram_gb} if worker_info.hardware else None,
+            "gpus": [
+                {
+                    "index": gpu.index,
+                    "vendor": "nvidia",
+                    "name": gpu.name,
+                    "vram_gb": gpu.vram_gb,
+                    "driver": gpu.driver_version,
+                    "cuda": gpu.cuda_version,
+                }
+                for gpu in (worker_info.hardware.gpus if worker_info.hardware else [])
+            ],
+            "runtimes": [
+                {
+                    "type": worker_info.runtime,
+                    "endpoint": "localhost",
+                    "models": worker_info.models,
+                }
+            ],
+        }
+
         response = await client.post(
             "/workers/register",
-            json=worker_info.model_dump(),
+            json=payload,
         )
         response.raise_for_status()
         data = response.json()
@@ -291,12 +316,11 @@ class BackendClient:
     # ── Heartbeat and Progress ───────────────────────────────────
     
     async def send_heartbeat(self, payload: dict) -> None:
-        """POST /workers/heartbeat — best-effort, never crash."""
+        """POST /workers/{worker_id}/heartbeat — best-effort, never crash."""
         client = self._get_client()
         try:
             response = await client.post(
-                "/workers/heartbeat",
-                json=payload,
+                f"/workers/{self._worker_id}/heartbeat",
                 timeout=httpx.Timeout(10.0),
             )
             response.raise_for_status()

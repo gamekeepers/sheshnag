@@ -211,6 +211,7 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
 
 
 async def _run(config: DaemonConfig) -> None:
+    logger = get_logger(__name__)
     """
     Async entry point — wires up all components and starts the worker.
 
@@ -235,9 +236,12 @@ async def _run(config: DaemonConfig) -> None:
     
     # ── Register with platform ───────────────────────────────────
     try:
-        api_key = await reg_manager.register(client, config)
+        api_key, assigned_worker_id = await reg_manager.register(client, config)
         client.update_api_key(api_key)
         config.api_key = api_key
+        config.worker_id = assigned_worker_id
+        client._worker_id = assigned_worker_id
+        logger.info(f"Worker registered: {assigned_worker_id}")
     except Exception as exc:
         logger.error(f"Failed to register with platform: {exc}")
         if not saved_key and not config.api_key:
