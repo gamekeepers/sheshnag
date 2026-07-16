@@ -9,7 +9,7 @@ import CursorEffect from '../components/CursorEffect';
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
 export default function LoginPage() {
-  const [mode, setMode] = useState('user'); // 'user', 'provider', or 'admin'
+  const [mode, setMode] = useState('user'); // 'user' or 'admin'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -36,62 +36,37 @@ export default function LoginPage() {
         return;
       }
       localStorage.setItem('mk_token', data.access_token);
-      
+
       try {
         const meRes = await fetch(`${BACKEND}/v1/auth/me`, {
           headers: { 'Authorization': `Bearer ${data.access_token}`, 'ngrok-skip-browser-warning': 'true' },
         });
         const me = await meRes.json();
-        const userRole = me.role || 'user';
+        const platformRole = me.platform_role || me.role || 'user';
 
-        // Check if role matches the selected login mode
-        if (mode === 'user' && userRole !== 'user') {
-          if (userRole === 'admin') {
-            setError('Admin accounts must use the Admin Login link.');
-          } else if (userRole === 'provider') {
-            setError('Provider accounts must use the Provider tab.');
-          } else {
-            setError('Access denied.');
-          }
-          localStorage.removeItem('mk_token');
-          return;
-        }
-        
-        if (mode === 'provider' && userRole !== 'provider') {
-          setError('This account does not have provider access.');
-          localStorage.removeItem('mk_token');
-          return;
-        }
-        
-        if (mode === 'admin' && userRole !== 'admin') {
+        // Admin mode: only allow superadmin
+        if (mode === 'admin' && platformRole !== 'superadmin') {
           setError('This account does not have admin access.');
           localStorage.removeItem('mk_token');
           return;
         }
 
         localStorage.setItem('mk_user', JSON.stringify({
+          id: me.id || '',
           email: me.email || email,
           full_name: me.full_name || email,
-          role: userRole,
+          platform_role: platformRole,
         }));
 
-        if (userRole === 'admin') {
+        if (platformRole === 'superadmin') {
           router.push('/admin');
-        } else if (userRole === 'provider') {
-          router.push('/provider');
         } else {
-          router.push('/jobs');
+          router.push('/dashboard');
         }
       } catch {
-        // Fallback for simple testing or network issue on /me
-        localStorage.setItem('mk_user', JSON.stringify({ email, full_name: email, role: mode }));
-        if (mode === 'admin') {
-          router.push('/admin');
-        } else if (mode === 'provider') {
-          router.push('/provider');
-        } else {
-          router.push('/jobs');
-        }
+        // Fallback
+        localStorage.setItem('mk_user', JSON.stringify({ email, full_name: email, platform_role: 'user' }));
+        router.push('/dashboard');
       }
     } catch {
       setError('Cannot reach server. Please try again.');
@@ -118,32 +93,8 @@ export default function LoginPage() {
       <div style={{ position: 'relative', zIndex: 3, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
         <div style={{ width: '100%', maxWidth: '340px' }}>
 
-          {/* Toggle Tabs */}
-          <div style={{ display: 'flex', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '3px', marginBottom: '20px' }}>
-            <button
-              onClick={() => { setMode('user'); setError(''); }}
-              style={{
-                flex: 1, padding: '7px', fontSize: '12px', borderRadius: '6px', border: 'none', cursor: 'pointer',
-                background: mode === 'user' ? 'rgba(255,255,255,0.12)' : 'transparent',
-                color: mode === 'user' ? '#fff' : 'rgba(255,255,255,0.4)',
-              }}
-            >
-              User
-            </button>
-            <button
-              onClick={() => { setMode('provider'); setError(''); }}
-              style={{
-                flex: 1, padding: '7px', fontSize: '12px', borderRadius: '6px', border: 'none', cursor: 'pointer',
-                background: mode === 'provider' ? 'rgba(255,255,255,0.12)' : 'transparent',
-                color: mode === 'provider' ? '#fff' : 'rgba(255,255,255,0.4)',
-              }}
-            >
-              Provider
-            </button>
-          </div>
-
           <h1 style={{ color: '#fff', fontSize: '21px', fontWeight: 500, textAlign: 'center', marginBottom: '24px' }}>
-            {mode === 'admin' ? 'Admin Login' : mode === 'provider' ? 'Provider Login' : 'Welcome back'}
+            {mode === 'admin' ? 'Admin Login' : 'Welcome back'}
           </h1>
 
           {mode === 'admin' && (
@@ -202,8 +153,8 @@ export default function LoginPage() {
 
           {mode !== 'admin' && (
             <p style={{ textAlign: 'center', fontSize: '13px', color: 'rgba(255,255,255,0.45)', marginTop: '18px' }}>
-              Don't have an account?{' '}
-              <Link href={mode === 'provider' ? '/signup?mode=provider' : '/signup'} style={{ color: '#9bb8e8' }}>Sign up</Link>
+              Don&apos;t have an account?{' '}
+              <Link href="/signup" style={{ color: '#9bb8e8' }}>Sign up</Link>
             </p>
           )}
 
@@ -216,7 +167,7 @@ export default function LoginPage() {
                 fontSize: '12px', color: 'rgba(255,255,255,0.35)',
                 padding: '6px 14px', transition: 'all 0.2s',
               }}>
-                👤 User/Provider Login
+                👤 User Login
               </button>
             ) : (
               <button onClick={() => { setMode('admin'); setError(''); }} style={{
