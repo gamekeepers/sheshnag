@@ -215,7 +215,7 @@ async def _run(config: DaemonConfig) -> None:
         2. Register worker with control plane (spec §8)
         3. Start the poll-execute loop
     """
-    # ── Resolve the org worker API key (spec §8.0/§17) ───────────
+    # ── Resolve the org worker API key  ───────────
     # The key is created in the platform dashboard and is a required
     # input — the backend authenticates every /workers/* call with it
     # and never issues keys itself.

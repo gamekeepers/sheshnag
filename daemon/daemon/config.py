@@ -117,7 +117,7 @@ class DaemonConfig(BaseModel):
         gpu_name:       Human-readable GPU model name for registration (spec §8).
         vram_gb:        GPU VRAM in gigabytes for registration (spec §8).
         models:         List of model names available on this worker (spec §8).
-        runtime:        Inference runtime type — "ollama" (default) or "vllm" (spec §8).
+        runtime:        Inference runtime type — "ollama" (default) or "vllm" .
         vllm_timeout:   Per-prompt timeout for vLLM inference in seconds.
     """
 

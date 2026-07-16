@@ -117,7 +117,7 @@ class BackendClient:
         the scheduler know what this worker can handle.
 
         Registration is authenticated with the org worker API key
-        (spec §8.0/§17) — the key is created in the dashboard and must
+        — the key is created in the dashboard and must
         be configured before the daemon starts. The backend derives the
         owning organization from the key and returns the assigned
         worker_id; it never issues API keys.
