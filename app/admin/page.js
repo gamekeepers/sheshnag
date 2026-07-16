@@ -65,12 +65,12 @@ function StatusPill({ status }) {
 
 /* ── Check if user is superadmin ── */
 function isSuperadmin(user) {
-  return user?.platform_role === 'superadmin' || user?.role === 'superadmin';
+  return user?.platform_role === 'superadmin';
 }
 
 /* ── Get display role ── */
 function getDisplayRole(user) {
-  return user?.platform_role || user?.role || 'user';
+  return user?.platform_role || 'user';
 }
 
 /* ── Map batch → row ── */
@@ -115,7 +115,7 @@ function AdminTable({ headers, cols, rows, renderRow, emptyMsg = 'No data' }) {
 /* ── Edit User Modal ── */
 function EditUserModal({ user, onClose, onSaved }) {
   const [fullName, setFullName] = useState(user.full_name || '');
-  const [role, setRole]         = useState(user.role || 'user');
+  const [platformRole, setPlatformRole] = useState(user.platform_role || 'user');
   const [saving, setSaving]     = useState(false);
   const [err, setErr]           = useState('');
 
@@ -125,7 +125,7 @@ function EditUserModal({ user, onClose, onSaved }) {
       const res = await fetch(`${BACKEND}/v1/users/${user.id}`, {
         method: 'PUT',
         headers: authHeaders(),
-        body: JSON.stringify({ full_name: fullName, role }),
+        body: JSON.stringify({ full_name: fullName, platform_role: platformRole }),
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
@@ -166,7 +166,7 @@ function EditUserModal({ user, onClose, onSaved }) {
 
         <div style={{ marginBottom: '20px' }}>
           <label style={labelStyle}>Role</label>
-          <select value={role} onChange={e => setRole(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+          <select value={platformRole} onChange={e => setPlatformRole(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
             <option value="user">User</option>
             <option value="superadmin">Superadmin</option>
           </select>
@@ -198,7 +198,7 @@ export default function AdminPage() {
   const [backendStatus, setBackendStatus] = useState('checking');
   const [isLoading,     setIsLoading]     = useState(true);
   const [lastRefresh,   setLastRefresh]   = useState(null);
-  const [adminUser,     setAdminUser]     = useState({ name: 'Admin', role: 'superadmin' });
+  const [adminUser,     setAdminUser]     = useState({ name: 'Admin', platform_role: 'superadmin' });
   const [editingUser,   setEditingUser]   = useState(null);
 
   /* ── load admin profile ── */
@@ -207,7 +207,7 @@ export default function AdminPage() {
       const res = await fetch(`${BACKEND}/v1/auth/me`, { headers: authHeaders() });
       if (res.ok) {
         const d = await res.json();
-        setAdminUser({ name: d.full_name || d.email || 'Admin', role: d.role || 'admin' });
+        setAdminUser({ name: d.full_name || d.email || 'Admin', platform_role: d.platform_role || 'superadmin' });
       }
     } catch {}
   }
@@ -320,7 +320,7 @@ export default function AdminPage() {
             </div>
             <div>
               <p style={{ fontSize: '12px', color: '#fff', margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '120px' }}>{adminUser.name}</p>
-              <p style={{ fontSize: '10px', color: '#444', margin: 0, textTransform: 'capitalize' }}>{adminUser.role}</p>
+              <p style={{ fontSize: '10px', color: '#444', margin: 0, textTransform: 'capitalize' }}>{adminUser.platform_role}</p>
             </div>
           </div>
           <button onClick={handleLogout} style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '8px 12px', marginTop: '12px', borderRadius: '6px', border: '1px solid #3a1a1a', cursor: 'pointer', fontSize: '12px', backgroundColor: '#1a0a0a', color: '#f87171' }}>
