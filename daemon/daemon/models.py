@@ -70,15 +70,17 @@ class WorkerInfo(BaseModel):
 
     Attributes:
         worker_id:   Unique identifier for this worker instance.
-        provider_id: The ID of the provider (user) who owns this worker.
         hardware:    Hardware specifications of the worker.
         models:      List of model names available on this worker.
         runtime:     Inference runtime type (e.g., "ollama", "vllm").
         status:      Current worker status ("online", "offline", "busy", "downloading_model").
+
+    The owning organization is derived server-side from the org worker
+    API key used to authenticate registration — there is no provider
+    identity (issue #13).
     """
 
     worker_id: str
-    provider_id: str = ""
     hardware: Optional[HardwareInfo] = None
     models: List[str] = Field(default_factory=list)
     runtime: str = "ollama"

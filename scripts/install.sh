@@ -67,16 +67,18 @@ chown "$DAEMON_USER:$DAEMON_USER" "$DAEMON_DIR"
 echo ""
 echo "[4/6] Configuration"
 read -p "Enter Platform URL (e.g. http://api.example.com): " BACKEND_URL
-read -p "Enter your Provider ID: " PROVIDER_ID
+echo "Create an org worker API key in the platform dashboard (Provider portal → API keys)."
+read -p "Enter your org worker API key (gk-...): " API_KEY
 read -p "Enter unique Worker ID [leave blank to auto-generate]: " WORKER_ID
 
 cat <<EOF > "$DAEMON_DIR/config.yaml"
 backend_url: "$BACKEND_URL"
-provider_id: "$PROVIDER_ID"
+api_key: "$API_KEY"
 worker_id: "$WORKER_ID"
 runtime: "ollama"
 EOF
 chown "$DAEMON_USER:$DAEMON_USER" "$DAEMON_DIR/config.yaml"
+chmod 600 "$DAEMON_DIR/config.yaml"   # contains the API key
 
 echo "[5/6] Creating Python virtual environment..."
 python3 -m venv "$DAEMON_DIR/venv"

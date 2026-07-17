@@ -8,12 +8,15 @@ makes it trivial to:
     - Swap HTTP transport (e.g., gRPC in future)
     - Add auth headers, retries, etc. in one place
 
-API contract (updated to match @akshay's OpenAI batch spec refactor):
-    POST /workers/register      → NOT YET on backend (TODO: ask Akshay)
-    POST /workers/poll           → returns assigned batch or {"job": null}
-    GET  /v1/files/{id}/content  → downloads input JSONL (path from poll)
-    POST /workers/upload-results → multipart upload of output JSONL
-    POST /workers/report-failure → reports job failure
+API contract (all calls authenticated with an org worker API key):
+    POST /workers/register                → registers worker, returns assigned worker_id
+    POST /workers/{worker_id}/heartbeat   → liveness + dynamic capability stats
+    POST /workers/poll                    → returns assigned batch or {"job": null}
+    GET  /v1/files/{id}/content           → downloads input JSONL (path from poll)
+    POST /workers/upload-results          → multipart upload of output JSONL + real counts
+    POST /workers/report-failure          → reports job failure (backend requeues)
+    POST /workers/progress                → live prompt counts every N prompts
+    POST /workers/model-progress          → model download progress
 """
 
 from __future__ import annotations
@@ -71,6 +74,10 @@ class BackendClient:
         if self._client:
             self._client.headers["Authorization"] = f"Bearer {api_key}"
 
+    def update_worker_id(self, worker_id: str) -> None:
+        """Adopt the backend-assigned worker id after registration."""
+        self._worker_id = worker_id
+
     def _get_client(self) -> httpx.AsyncClient:
         """
         Lazy-initialize the HTTP client with production-grade settings.
@@ -102,9 +109,6 @@ class BackendClient:
         return self._client
 
     # ── Worker Registration (Spec §8) ────────────────────────────
-    # TODO: Ask Akshay to add POST /workers/register to the backend.
-    #       Until then, registration is a no-op — the daemon logs
-    #       the worker info locally and proceeds to polling.
 
     async def register_worker(self, worker_info: WorkerInfo) -> dict:
         """
@@ -114,11 +118,17 @@ class BackendClient:
         models, runtime) before it begins polling for jobs. This lets
         the scheduler know what this worker can handle.
 
+        Registration is authenticated with the org worker API key
+        — the key is created in the dashboard and must
+        be configured before the daemon starts. The backend derives the
+        owning organization from the key and returns the assigned
+        worker_id; it never issues API keys.
+
         Args:
             worker_info: Worker registration payload.
-            
+
         Returns:
-            Dictionary containing 'status', 'worker_id', and 'api_key'.
+            Dictionary containing 'status', 'worker_id', and 'message'.
         """
         client = self._get_client()
 
@@ -248,15 +258,25 @@ class BackendClient:
 
     # ── Result Upload ────────────────────────────────────────────
 
-    async def upload_results(self, job_id: str, output_path: str | Path) -> None:
+    async def upload_results(
+        self,
+        job_id: str,
+        output_path: str | Path,
+        completed: int = 0,
+        failed: int = 0,
+    ) -> None:
         """
         Upload the output JSONL file for a completed job.
 
-        Uses multipart/form-data with the job_id and the output file.
+        Uses multipart/form-data with the job_id, this worker's id (the
+        backend verifies the batch is assigned to us), the real
+        completed/failed counts, and the output file.
 
         Args:
             job_id:      The job's unique identifier.
             output_path: Local path to the output JSONL file.
+            completed:   Number of prompts that succeeded.
+            failed:      Number of prompts that failed.
 
         Raises:
             httpx.HTTPError: On upload failure.
@@ -273,7 +293,12 @@ class BackendClient:
         with open(output, "rb") as fh:
             response = await client.post(
                 "/workers/upload-results",
-                data={"job_id": job_id},
+                data={
+                    "job_id": job_id,
+                    "worker_id": self._worker_id,
+                    "completed": str(completed),
+                    "failed": str(failed),
+                },
                 files={"file": ("output.jsonl", fh, "application/jsonl")},
                 timeout=httpx.Timeout(120.0),  # Large file upload timeout
             )
@@ -288,8 +313,9 @@ class BackendClient:
         Report a job failure to the backend so it can requeue the job.
 
         This is a best-effort call — if it fails, we log a warning
-        but don't crash. The backend's heartbeat timeout will
-        eventually reclaim the job anyway.
+        but don't crash. The backend requeues the batch (up to a max
+        attempt count, spec §12), and its heartbeat sweeper will
+        eventually reclaim the job even if this report never arrives.
 
         Args:
             job_id: The failed job's identifier.
@@ -321,10 +347,11 @@ class BackendClient:
         try:
             response = await client.post(
                 f"/workers/{self._worker_id}/heartbeat",
+                json=payload,
                 timeout=httpx.Timeout(10.0),
             )
             response.raise_for_status()
-            logger.debug(f"Heartbeat sent (status={payload.get('status')})")
+            logger.debug(f"Heartbeat sent (activity={payload.get('activity')})")
         except Exception as exc:
             logger.warning(f"Heartbeat failed: {exc}")
 

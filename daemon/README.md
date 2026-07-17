@@ -171,11 +171,17 @@ The daemon expects these endpoints from the backend:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
+| `/workers/register` | POST | Register worker; returns the assigned `worker_id` |
+| `/workers/{worker_id}/heartbeat` | POST | Liveness + dynamic capability stats (VRAM, loaded models) |
 | `/workers/poll` | POST | Poll for available batches |
 | `/v1/files/{id}/content` | GET | Download input JSONL (path from poll response) |
 | `/workers/upload-results` | POST | Upload output JSONL |
 | `/workers/report-failure` | POST | Report job failure |
-| `/workers/register` | POST | Register worker *(TODO: not yet on backend)* |
+
+All endpoints are authenticated with an **org worker API key** (`gk-...`),
+created in the platform dashboard and configured on the daemon via
+`--api-key` / `DAEMON_API_KEY` / `api_key` in `config.yaml`. The backend
+derives the owning organization from the key; it never issues keys.
 
 See [client.py](daemon/client.py) for full request/response details.
 

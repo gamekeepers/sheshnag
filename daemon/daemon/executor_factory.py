@@ -8,12 +8,12 @@ def create_executor(config: DaemonConfig) -> BaseExecutor:
     if config.runtime == "ollama":
         return OllamaExecutor(
             base_url=config.ollama_url,
-            timeout=config.vllm_timeout,  # reuse timeout field
+            timeout=config.inference_timeout,
         )
     elif config.runtime == "vllm":
         return VLLMExecutor(
             base_url=config.vllm_url,
-            timeout=config.vllm_timeout,
+            timeout=config.inference_timeout,
             supported_models=config.models if config.models else None,
         )
     else:
