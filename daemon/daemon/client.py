@@ -14,7 +14,7 @@ API contract (all calls authenticated with an org worker API key):
     POST /workers/poll                    → returns assigned batch or {"job": null}
     GET  /v1/files/{id}/content           → downloads input JSONL (path from poll)
     POST /workers/upload-results          → multipart upload of output JSONL + real counts
-    POST /workers/report-failure          → reports job failure (backend requeues, spec §12)
+    POST /workers/report-failure          → reports job failure (backend requeues)
     POST /workers/progress                → live prompt counts every N prompts
     POST /workers/model-progress          → model download progress
 """

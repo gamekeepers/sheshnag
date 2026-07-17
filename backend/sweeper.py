@@ -1,5 +1,5 @@
 """
-Fault tolerance (spec §12) — requeue in-flight batches and reclaim dead workers.
+Fault tolerance — requeue in-flight batches and reclaim dead workers.
 
 Two entry points:
     requeue_or_fail_batch() — shared by /workers/report-failure and the sweeper:

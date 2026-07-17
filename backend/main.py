@@ -15,7 +15,7 @@ from sweeper import run_sweeper
 Base.metadata.create_all(bind=engine)
 
 # create_all never adds columns to existing tables — patch pre-existing
-# SQLite DBs for the batches.attempts column (spec §12 requeue).
+# SQLite DBs for the batches.attempts column.
 with engine.connect() as _conn:
     _cols = [row[1] for row in _conn.execute(text("PRAGMA table_info(batches)"))]
     if _cols and "attempts" not in _cols:
@@ -42,7 +42,7 @@ app.include_router(workers.router,   prefix="/workers",  tags=["Workers"])
 
 @app.on_event("startup")
 async def start_worker_sweeper():
-    """Reclaim batches from workers whose heartbeats stopped (spec §12)."""
+    """Reclaim batches from workers whose heartbeats stopped"""
     asyncio.create_task(run_sweeper())
 
 

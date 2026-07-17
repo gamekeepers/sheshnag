@@ -23,7 +23,7 @@ router = APIRouter()
 VALID_TRANSITIONS = {
     "validating":  ["validated", "failed"],
     "validated":   ["in_progress"],
-    "in_progress": ["completed", "failed", "validated"],  # "validated" = requeue (spec §12)
+    "in_progress": ["completed", "failed", "validated"],  # "validated" = requeue
     "completed":   [],
     "failed":      [],
 }

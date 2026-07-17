@@ -1,9 +1,9 @@
 """
-Organization-scoped endpoints (spec §14) — dashboard-facing, JWT-authenticated.
+Organization-scoped endpoints — dashboard-facing, JWT-authenticated.
 
 Moved out of the workers router: these used to be reachable only under
-/workers/v1/organizations/… because they were defined inside the router
-mounted at /workers. They now live at /v1/organizations/… .
+/workers/v1/orgs/… because they were defined inside the router
+mounted at /workers. They now live at /v1/orgs/… .
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -39,7 +39,7 @@ def _require_membership(db: Session, user, org_id: str, roles: list | None = Non
     return membership
 
 
-@router.get("/organizations")
+@router.get("/v1/orgs")
 def list_user_organizations(
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -64,7 +64,7 @@ def list_user_organizations(
     return {"object": "list", "data": orgs}
 
 
-@router.get("/organizations/{org_id}/api-keys")
+@router.get("/v1/orgs/{org_id}/api-keys")
 def list_org_api_keys(
     org_id: str,
     user=Depends(get_current_user),
@@ -94,7 +94,7 @@ def list_org_api_keys(
     }
 
 
-@router.post("/organizations/{org_id}/api-keys/regenerate")
+@router.post("/v1/orgs/{org_id}/api-keys/regenerate")
 def regenerate_org_api_key(
     org_id: str,
     user=Depends(get_current_user),
@@ -118,7 +118,7 @@ def regenerate_org_api_key(
     return {"api_key": raw_key}
 
 
-@router.get("/organizations/{org_id}/workers")
+@router.get("/v1/orgs/{org_id}/workers")
 def list_org_workers(
     org_id: str,
     user=Depends(get_current_user),
