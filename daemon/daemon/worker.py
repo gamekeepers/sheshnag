@@ -240,13 +240,16 @@ class Worker:
         # ── Step 4: Write output JSONL ───────────────────────────
         self._write_output(output_path, results)
 
-        # ── Step 5: Upload results ───────────────────────────────
-        logger.info(f"[{job.job_id}] Uploading results...")
-        await self._client.upload_results(job.job_id, output_path)
-
-        # ── Summary ──────────────────────────────────────────────
+        # ── Step 5: Upload results (with real counts) ────────────
         successes = sum(1 for r in results if r.is_success)
         failures = total - successes
+
+        logger.info(f"[{job.job_id}] Uploading results...")
+        await self._client.upload_results(
+            job.job_id, output_path, completed=successes, failed=failures
+        )
+
+        # ── Summary ──────────────────────────────────────────────
         total_tokens = sum(
             r.usage.get("total_tokens", 0) for r in results
         )

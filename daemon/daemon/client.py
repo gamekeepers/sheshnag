@@ -13,8 +13,10 @@ API contract (all calls authenticated with an org worker API key):
     POST /workers/{worker_id}/heartbeat   → liveness + dynamic capability stats
     POST /workers/poll                    → returns assigned batch or {"job": null}
     GET  /v1/files/{id}/content           → downloads input JSONL (path from poll)
-    POST /workers/upload-results          → multipart upload of output JSONL
-    POST /workers/report-failure          → reports job failure
+    POST /workers/upload-results          → multipart upload of output JSONL + real counts
+    POST /workers/report-failure          → reports job failure (backend requeues, spec §12)
+    POST /workers/progress                → live prompt counts every N prompts
+    POST /workers/model-progress          → model download progress
 """
 
 from __future__ import annotations
@@ -256,15 +258,25 @@ class BackendClient:
 
     # ── Result Upload ────────────────────────────────────────────
 
-    async def upload_results(self, job_id: str, output_path: str | Path) -> None:
+    async def upload_results(
+        self,
+        job_id: str,
+        output_path: str | Path,
+        completed: int = 0,
+        failed: int = 0,
+    ) -> None:
         """
         Upload the output JSONL file for a completed job.
 
-        Uses multipart/form-data with the job_id and the output file.
+        Uses multipart/form-data with the job_id, this worker's id (the
+        backend verifies the batch is assigned to us), the real
+        completed/failed counts, and the output file.
 
         Args:
             job_id:      The job's unique identifier.
             output_path: Local path to the output JSONL file.
+            completed:   Number of prompts that succeeded.
+            failed:      Number of prompts that failed.
 
         Raises:
             httpx.HTTPError: On upload failure.
@@ -281,7 +293,12 @@ class BackendClient:
         with open(output, "rb") as fh:
             response = await client.post(
                 "/workers/upload-results",
-                data={"job_id": job_id},
+                data={
+                    "job_id": job_id,
+                    "worker_id": self._worker_id,
+                    "completed": str(completed),
+                    "failed": str(failed),
+                },
                 files={"file": ("output.jsonl", fh, "application/jsonl")},
                 timeout=httpx.Timeout(120.0),  # Large file upload timeout
             )
@@ -293,13 +310,12 @@ class BackendClient:
 
     async def report_failure(self, job_id: str, error: str) -> None:
         """
-        Report a job failure to the backend so it can mark the batch failed.
+        Report a job failure to the backend so it can requeue the job.
 
         This is a best-effort call — if it fails, we log a warning
-        but don't crash. NOTE: the backend does not yet reclaim jobs
-        on heartbeat timeout (spec §12 requeue is unimplemented), so
-        an unreported failure currently leaves the batch stuck in
-        'in_progress'.
+        but don't crash. The backend requeues the batch (up to a max
+        attempt count, spec §12), and its heartbeat sweeper will
+        eventually reclaim the job even if this report never arrives.
 
         Args:
             job_id: The failed job's identifier.

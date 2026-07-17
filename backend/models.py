@@ -181,13 +181,14 @@ class Batch(Base):
     request_counts_completed = Column(Integer, default=0)
     request_counts_failed    = Column(Integer, default=0)
     error_details            = Column(String, nullable=True)
+    attempts                 = Column(Integer, default=0)  # execution attempts (spec §12 requeue)
 
 
 class BatchAssignment(Base):
     __tablename__ = "batch_assignments"
 
     batch_id    = Column(String, primary_key=True)
-    worker_id   = Column(String, nullable=False)
+    worker_id   = Column(String, ForeignKey("workers.id"), nullable=False)
     assigned_at = Column(Integer, default=unix_now)
 
 

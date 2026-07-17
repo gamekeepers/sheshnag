@@ -148,6 +148,24 @@ class WorkerHeartbeatRequest(BaseModel):
     uptime_seconds: int = 0
 
 
+class ProgressReport(BaseModel):
+    """Live batch progress from a worker (sent every N prompts)."""
+    job_id: str
+    worker_id: str
+    completed: int = 0
+    failed: int = 0
+    total: int = 0
+
+
+class ModelDownloadReport(BaseModel):
+    """Model download progress from a worker (Ollama pull callback)."""
+    worker_id: str
+    model_name: str
+    status: str = "downloading"
+    completed: int = 0
+    total: int = 0
+
+
 class ForgotPasswordRequest(BaseModel):
     email: str
 

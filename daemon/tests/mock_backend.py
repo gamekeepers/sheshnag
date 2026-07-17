@@ -152,6 +152,7 @@ async def poll_job(body: dict):
                         "job_id": job["job_id"],
                         "input_file_id": input_file_id,
                         "input_path": f"/v1/files/{input_file_id}/content",
+                        "model": job.get("model"),
                     }
                 }
             )
@@ -176,9 +177,16 @@ async def download_file_content(file_id: str):
 @app.post("/workers/upload-results")
 async def upload_results(
     job_id: str = Form(...),
+    worker_id: Optional[str] = Form(None),
     file: UploadFile = File(...),
+    completed: Optional[int] = Form(None),
+    failed: Optional[int] = Form(None),
 ):
-    """Accept output JSONL upload from worker."""
+    """Accept output JSONL upload from worker.
+
+    Mirrors the real backend contract: the daemon sends its worker_id
+    (ownership check server-side) plus real completed/failed counts.
+    """
     if job_id not in _jobs:
         return JSONResponse(status_code=404, content={"error": "Job not found"})
 
@@ -197,6 +205,7 @@ async def upload_results(
     print(f"{'='*60}")
     print(f"   Output: {output_dest}")
     print(f"   Size: {len(content):,} bytes")
+    print(f"   Worker: {worker_id} — counts: {completed} completed / {failed} failed")
 
     # Parse and display results
     try:
