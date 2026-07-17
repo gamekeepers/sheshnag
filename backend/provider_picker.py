@@ -30,18 +30,21 @@ class ProviderPicker:
     """
     Matches a polling worker to the best available batch.
 
-    Filter: provider VRAM must fit the batch's model.
+    Reads the dynamic capability fields on the Worker row (populated by
+    the unified heartbeat — vram_total_gb, loaded_models).
+
+    Filter: worker VRAM must fit the batch's model.
     Rank:
       1. Prefer batches whose model is already loaded on this worker.
       2. Fall back to oldest compatible batch (FIFO).
     """
 
-    def find_best_batch(self, provider_caps, available_batches):
-        if not provider_caps or not available_batches:
+    def find_best_batch(self, worker, available_batches):
+        if not worker or not available_batches:
             return None
 
-        loaded = self._parse_loaded_models(provider_caps.loaded_models)
-        vram = provider_caps.vram_total_gb or 0
+        loaded = self._parse_loaded_models(worker.loaded_models)
+        vram = worker.vram_total_gb or 0
 
         compatible = []
         for batch in available_batches:

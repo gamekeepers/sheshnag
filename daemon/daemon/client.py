@@ -351,7 +351,7 @@ class BackendClient:
                 timeout=httpx.Timeout(10.0),
             )
             response.raise_for_status()
-            logger.debug(f"Heartbeat sent (status={payload.get('status')})")
+            logger.debug(f"Heartbeat sent (activity={payload.get('activity')})")
         except Exception as exc:
             logger.warning(f"Heartbeat failed: {exc}")
 

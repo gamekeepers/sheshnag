@@ -87,7 +87,9 @@ class HeartbeatManager:
         memory_used = gpu_stats.get("memory_used_gb", 0.0)
         return {
             "worker_id": self._worker_id,
-            "status": self._status,
+            # Activity (idle | busy | downloading_model) — distinct from the
+            # backend-managed liveness status (online/offline), spec §8.1.
+            "activity": self._status,
             "current_job_id": self._current_job_id,
             "progress": self._progress,
             "gpu_utilization": gpu_stats.get("utilization", 0.0),

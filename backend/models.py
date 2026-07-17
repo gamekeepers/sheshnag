@@ -139,7 +139,18 @@ class Worker(Base):
     ram_total_gb   = Column(Float, nullable=True)
     gpus           = Column(Text, default="[]")
     runtimes       = Column(Text, default="[]")
+    # Liveness (spec §8.1): online | offline | draining | error.
+    # Managed server-side (heartbeat arrival / sweeper timeout).
     status         = Column(String, default="online")
+    # What the daemon is doing right now: idle | busy | downloading_model.
+    # Reported by the worker in each heartbeat, separate from liveness.
+    activity       = Column(String, default="idle")
+    # Dynamic capability data, updated on every heartbeat (spec §8.1).
+    # NULL until the first heartbeat arrives — poll uses that to fall
+    # back to registration-advertised models.
+    vram_total_gb     = Column(Float, nullable=True)
+    vram_available_gb = Column(Float, nullable=True)
+    loaded_models     = Column(Text, nullable=True)  # JSON array
     last_heartbeat = Column(Integer, default=unix_now)
     created_at     = Column(Integer, default=unix_now)
 
@@ -203,17 +214,3 @@ class PasswordResetToken(Base):
     expires_at = Column(Integer, nullable=False)
     used       = Column(Boolean, default=False)
     created_at = Column(Integer, default=unix_now)
-
-
-# ─── Legacy (kept for backward compat) ─────────────────────
-
-class ProviderCapability(Base):
-    __tablename__ = "provider_capabilities"
-
-    worker_id         = Column(String, primary_key=True)
-    provider_id       = Column(String, nullable=False)
-    vram_total_gb     = Column(Float, default=0)
-    vram_available_gb = Column(Float, default=0)
-    loaded_models     = Column(String, default="[]")
-    status            = Column(String, default="online")
-    last_heartbeat    = Column(Integer, default=unix_now)

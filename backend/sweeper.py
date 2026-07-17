@@ -12,7 +12,7 @@ Two entry points:
 import asyncio
 import logging
 
-from models import Batch, BatchAssignment, ProviderCapability, Worker, unix_now
+from models import Batch, BatchAssignment, Worker, unix_now
 
 logger = logging.getLogger(__name__)
 
@@ -62,11 +62,6 @@ def sweep_stale_workers(db) -> tuple[int, int]:
     requeued = 0
     for worker in stale_workers:
         worker.status = "offline"
-        caps = db.query(ProviderCapability).filter(
-            ProviderCapability.worker_id == worker.id,
-        ).first()
-        if caps:
-            caps.status = "offline"
 
         assignments = db.query(BatchAssignment).filter(
             BatchAssignment.worker_id == worker.id,

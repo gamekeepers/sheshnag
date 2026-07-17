@@ -2,8 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from database import get_db
 from models import (
-    Batch, BatchAssignment, File as FileModel, Worker,
-    ProviderCapability, unix_now,
+    Batch, BatchAssignment, File as FileModel, Worker, unix_now,
 )
 from schemas import (
     ModelDownloadReport, ProgressReport,
@@ -149,38 +148,20 @@ def worker_heartbeat(
 ):
     """Unified worker heartbeat (spec §8.1).
 
-    Updates the worker's liveness timestamp AND the dynamic capability
-    data (VRAM, loaded models) that the provider picker uses to match
-    batches to workers during /workers/poll.
+    Updates liveness (`status`/`last_heartbeat`), the daemon-reported
+    `activity`, and the dynamic capability data (VRAM, loaded models)
+    that the provider picker matches on during /workers/poll.
     """
     _api_key, org = ctx
 
     worker = _get_org_worker(db, org, worker_id)
 
     worker.status = "online"
+    worker.activity = req.activity
     worker.last_heartbeat = unix_now()
-
-    caps = db.query(ProviderCapability).filter(
-        ProviderCapability.worker_id == worker_id,
-    ).first()
-
-    if caps:
-        caps.vram_total_gb = req.vram_total_gb
-        caps.vram_available_gb = req.vram_available_gb
-        caps.loaded_models = json.dumps(req.loaded_models)
-        caps.status = "online"
-        caps.last_heartbeat = unix_now()
-    else:
-        caps = ProviderCapability(
-            worker_id=worker_id,
-            provider_id=org.id,
-            vram_total_gb=req.vram_total_gb,
-            vram_available_gb=req.vram_available_gb,
-            loaded_models=json.dumps(req.loaded_models),
-            status="online",
-            last_heartbeat=unix_now(),
-        )
-        db.add(caps)
+    worker.vram_total_gb = req.vram_total_gb
+    worker.vram_available_gb = req.vram_available_gb
+    worker.loaded_models = json.dumps(req.loaded_models)
 
     db.commit()
     return {"status": "ok", "worker_id": worker_id}
@@ -197,10 +178,6 @@ def poll_job(
     _api_key, org = ctx
     worker = _get_org_worker(db, org, req.worker_id)
 
-    caps = db.query(ProviderCapability).filter(
-        ProviderCapability.worker_id == req.worker_id,
-    ).first()
-
     available_batches = (
         db.query(Batch)
         .filter(Batch.status == "validated")
@@ -211,8 +188,8 @@ def poll_job(
     if not available_batches:
         return {"job": None}
 
-    if caps:
-        batch = picker.find_best_batch(caps, available_batches)
+    if worker.vram_total_gb is not None:
+        batch = picker.find_best_batch(worker, available_batches)
     else:
         # No heartbeat yet — fall back to the models the worker advertised
         # at registration. Never hand out an arbitrary batch to a worker

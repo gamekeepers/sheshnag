@@ -134,10 +134,11 @@ class TokenOut(BaseModel):
 class WorkerHeartbeatRequest(BaseModel):
     """Unified worker heartbeat (spec §8.1: dynamic properties).
 
-    `status` is the daemon's activity (idle | busy | downloading_model);
-    liveness (`online`/`offline`) is derived server-side from last_heartbeat.
+    `activity` is what the daemon is doing (idle | busy | downloading_model);
+    liveness (`online`/`offline`/…) is a separate vocabulary managed
+    server-side from heartbeat arrival and the sweeper timeout.
     """
-    status: str = "idle"
+    activity: Literal["idle", "busy", "downloading_model"] = "idle"
     current_job_id: Optional[str] = None
     progress: Optional[dict] = None
     gpu_utilization: float = 0.0

@@ -39,7 +39,7 @@ def _require_membership(db: Session, user, org_id: str, roles: list | None = Non
     return membership
 
 
-@router.get("/v1/orgs")
+@router.get("/orgs")
 def list_user_organizations(
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -64,7 +64,7 @@ def list_user_organizations(
     return {"object": "list", "data": orgs}
 
 
-@router.get("/v1/orgs/{org_id}/api-keys")
+@router.get("/orgs/{org_id}/api-keys")
 def list_org_api_keys(
     org_id: str,
     user=Depends(get_current_user),
@@ -94,7 +94,7 @@ def list_org_api_keys(
     }
 
 
-@router.post("/v1/orgs/{org_id}/api-keys/regenerate")
+@router.post("/orgs/{org_id}/api-keys/regenerate")
 def regenerate_org_api_key(
     org_id: str,
     user=Depends(get_current_user),
@@ -118,7 +118,7 @@ def regenerate_org_api_key(
     return {"api_key": raw_key}
 
 
-@router.get("/v1/orgs/{org_id}/workers")
+@router.get("/orgs/{org_id}/workers")
 def list_org_workers(
     org_id: str,
     user=Depends(get_current_user),
@@ -145,6 +145,10 @@ def list_org_workers(
                 "gpus": json.loads(w.gpus) if w.gpus else [],
                 "runtimes": json.loads(w.runtimes) if w.runtimes else [],
                 "status": w.status,
+                "activity": w.activity,
+                "vram_total_gb": w.vram_total_gb,
+                "vram_available_gb": w.vram_available_gb,
+                "loaded_models": json.loads(w.loaded_models) if w.loaded_models else [],
                 "last_heartbeat": w.last_heartbeat,
                 "created_at": w.created_at,
             }

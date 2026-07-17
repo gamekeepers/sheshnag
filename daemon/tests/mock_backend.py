@@ -259,7 +259,7 @@ async def report_failure(body: dict):
 async def receive_heartbeat(worker_id: str, body: dict):
     """Unified heartbeat — mirrors POST /workers/{worker_id}/heartbeat."""
     print(
-        f"💓 Heartbeat from {worker_id}: status={body.get('status')}, "
+        f"💓 Heartbeat from {worker_id}: activity={body.get('activity')}, "
         f"vram={body.get('vram_available_gb')}/{body.get('vram_total_gb')}GB, "
         f"loaded_models={body.get('loaded_models')}"
     )

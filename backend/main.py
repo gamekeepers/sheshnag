@@ -15,12 +15,25 @@ from sweeper import run_sweeper
 Base.metadata.create_all(bind=engine)
 
 # create_all never adds columns to existing tables — patch pre-existing
-# SQLite DBs for the batches.attempts column.
+# SQLite DBs for columns added after their creation.
+_NEW_COLUMNS = {
+    "batches": [("attempts", "INTEGER DEFAULT 0")],
+    "workers": [
+        ("activity", "TEXT DEFAULT 'idle'"),
+        ("vram_total_gb", "REAL"),
+        ("vram_available_gb", "REAL"),
+        ("loaded_models", "TEXT"),
+    ],
+}
 with engine.connect() as _conn:
-    _cols = [row[1] for row in _conn.execute(text("PRAGMA table_info(batches)"))]
-    if _cols and "attempts" not in _cols:
-        _conn.execute(text("ALTER TABLE batches ADD COLUMN attempts INTEGER DEFAULT 0"))
-        _conn.commit()
+    for _table, _columns in _NEW_COLUMNS.items():
+        _cols = [row[1] for row in _conn.execute(text(f"PRAGMA table_info({_table})"))]
+        if not _cols:
+            continue
+        for _name, _ddl in _columns:
+            if _name not in _cols:
+                _conn.execute(text(f"ALTER TABLE {_table} ADD COLUMN {_name} {_ddl}"))
+    _conn.commit()
 
 app = FastAPI(title="Batch AI Compute Platform")
 
