@@ -1,5 +1,13 @@
 # Database Design Rationale
 
+> **V1 implementation note (spec decision 3.3, 2026-07-17):** the Worker
+> Runtimes / Runtime Models / Worker GPUs entities described below are the
+> **post-V1 target**. The V1 backend stores this inventory as JSON text
+> columns on `workers` (`gpus`, `runtimes`, `loaded_models`), updated at
+> registration and by the unified heartbeat. Everything else in this
+> document (users, organizations, memberships, org-scoped API keys,
+> worker ownership) matches the implementation.
+
 ## Design Principles
 
 The platform is built around a few simple principles:

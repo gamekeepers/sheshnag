@@ -23,12 +23,18 @@ Created automatically on first startup:
 
 ## Authentication
 
-Two methods supported:
+Three credentials, strictly separated (spec §8.0/§17):
 
-| Method | Header | Used By |
-|---|---|---|
-| JWT Token | `Authorization: Bearer eyJ...` | Frontend (after login) |
-| API Key | `Authorization: Bearer gk-xxx` | Programmatic access |
+| Credential | Header | Used by | Accepted on |
+|---|---|---|---|
+| JWT token | `Authorization: Bearer eyJ...` | Frontend (after login) | `/v1/*` dashboard endpoints |
+| **Personal** API key | `Authorization: Bearer gk-xxx` | Programmatic user access | `/v1/files`, `/v1/batches` (via `get_human_context`) |
+| **Org worker** API key | `Authorization: Bearer gk-xxx` | Worker daemons | `/workers/*` only (via `get_worker_context`) |
+
+There is no provider role and no per-user key column: every user gets a
+**Personal Org** (with `owner` membership) at signup; worker keys belong to
+organizations and are managed from the dashboard. The backend never issues
+keys during worker registration — it derives the owning org from the key.
 
 ---
 
@@ -38,175 +44,117 @@ Two methods supported:
 
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
-| `POST` | `/v1/auth/signup` | None | Register (user or provider) |
-| `POST` | `/v1/auth/login` | None | Returns JWT token |
-| `GET` | `/v1/auth/me` | Required | Get current user profile |
-| `POST` | `/v1/auth/change-password` | Required | Change password |
-| `POST` | `/v1/auth/api-keys/regenerate` | Required | Regenerate API key (users only) |
+| `POST` | `/v1/auth/signup` | None | Register; creates the user + their Personal Org |
+| `POST` | `/v1/auth/login` | None | Returns JWT (`platform_role`, `must_change_password`) |
+| `GET` | `/v1/auth/me` | JWT | Current user profile + org memberships |
+| `POST` | `/v1/auth/change-password` | JWT | Change password |
+| `POST` | `/v1/auth/api-keys/regenerate` | JWT/personal key | Regenerate the caller's personal API key |
+| `POST` | `/v1/auth/forgot-password` | None | Email a reset token |
+| `POST` | `/v1/auth/reset-password` | None | Redeem a reset token |
+| `GET` | `/v1/admin/users` | superadmin | List all users |
+| `GET` | `/v1/admin/workers` | superadmin | List all workers across orgs |
+| `GET` | `/v1/admin/organizations` | superadmin | List all organizations |
 
 #### POST /v1/auth/signup
 ```json
-// Request
+// Request — no role field; platform_role defaults to "user"
 {
   "email": "user@example.com",
   "password": "secret123",
-  "full_name": "John Doe",
-  "role": "user"          // "user" or "provider" (no admin signup)
+  "full_name": "John Doe"
 }
 
-// Response (200)
+// Response (200) — no api_key; keys are created separately
 {
   "id": "user-abc123",
   "email": "user@example.com",
   "full_name": "John Doe",
-  "role": "user",
-  "api_key": "gk-xxxxxxxxxxxx",  // users only
+  "platform_role": "user",
   "is_active": true,
   "must_change_password": false,
   "created_at": 1780000000
 }
 ```
 
-#### POST /v1/auth/login
-```json
-// Request
-{
-  "email": "user@example.com",
-  "password": "secret123"
-}
+### Personal API keys — `/v1/users/me/api-keys`
 
-// Response (200)
-{
-  "access_token": "eyJhbGciOi...",
-  "token_type": "bearer",
-  "must_change_password": false
-}
-```
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/users/me/api-keys` | Create a personal key (raw key returned **once**) |
+| `GET` | `/v1/users/me/api-keys` | List own keys (prefix only) |
+| `PUT` | `/v1/users/me/api-keys/{key_id}` | Rename / set expiry / revoke |
+| `DELETE` | `/v1/users/me/api-keys/{key_id}` | Revoke |
 
-#### POST /v1/auth/change-password
-```json
-// Request (requires auth)
-{
-  "old_password": "admin",
-  "new_password": "new_secure_password"
-}
+### Organizations — `/v1/orgs` (JWT)
 
-// Response (200)
-{"detail": "Password changed successfully"}
-```
-
----
-
-### Files — `/v1/files` (OpenAI-compatible)
-
-| Method | Endpoint | Auth | Roles |
+| Method | Endpoint | Access | Description |
 |---|---|---|---|
-| `POST` | `/v1/files` | Required | user, admin |
-| `GET` | `/v1/files/{file_id}/content` | Required | owner, admin |
+| `GET` | `/v1/orgs` | member | Orgs the caller belongs to |
+| `GET` | `/v1/orgs/{org_id}/api-keys` | member | List org worker keys (prefix only) |
+| `POST` | `/v1/orgs/{org_id}/api-keys/regenerate` | owner/admin | Rotate the org worker key |
+| `GET` | `/v1/orgs/{org_id}/workers` | member | Org's workers incl. `status`, `activity`, live VRAM, loaded models |
 
-#### POST /v1/files
-```
-Content-Type: multipart/form-data
-Fields:
-  - file: (binary) .jsonl file
-  - purpose: "batch"
-```
+### Files — `/v1/files` (OpenAI-compatible; JWT or personal key)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/files` | Upload a `.jsonl` batch input (multipart: `file`, `purpose="batch"`) |
+| `GET` | `/v1/files/{file_id}/content` | Download raw file (also used by workers for job input) |
+
+### Batches — `/v1/batches` (OpenAI-compatible; JWT or personal key)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/batches` | Create a batch; async JSONL validation kicks off |
+| `GET` | `/v1/batches/{batch_id}/events` | SSE stream of validation events |
+| `GET` | `/v1/batches/{batch_id}` | Batch detail (owner or superadmin) |
+| `GET` | `/v1/batches` | `user` sees own batches; `superadmin` sees all |
+
+> **Model handling:** the model name is extracted from the JSONL during
+> validation (`body.model`, must be consistent across lines).
+> ⚠️ Validation does **not** yet reject models outside the platform's
+> supported list — enforcement is a tracked follow-up (see the
+> `provider_picker.is_model_supported` helper, currently unused).
+
+### Workers — `/workers` (org worker key required)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/workers/register` | Register/re-register; backend assigns `worker_id` |
+| `POST` | `/workers/{worker_id}/heartbeat` | Unified heartbeat: liveness + activity + dynamic capabilities |
+| `POST` | `/workers/poll` | Claim the best-matching validated batch |
+| `POST` | `/workers/progress` | Live prompt counts (every N prompts) |
+| `POST` | `/workers/model-progress` | Model download progress (logged; liveness) |
+| `POST` | `/workers/upload-results` | Upload output JSONL + real completed/failed counts |
+| `POST` | `/workers/report-failure` | Report failure → batch is **requeued** (up to 3 attempts) |
+
+All endpoints verify ownership: the worker must belong to the key's org,
+and result/progress/failure reports must come from the worker the batch is
+assigned to (403 otherwise).
+
+#### POST /workers/{worker_id}/heartbeat
 ```json
-// Response (200)
+// activity: idle | busy | downloading_model (validated).
+// Liveness (workers.status online/offline) is server-managed.
 {
-  "id": "file-abc123",
-  "object": "file",
-  "bytes": 1234,
-  "created_at": 1780000000,
-  "filename": "input.jsonl",
-  "purpose": "batch"
-}
-```
-
-#### GET /v1/files/{file_id}/content
-Returns the raw file as a download.
-
----
-
-### Batches — `/v1/batches` (OpenAI-compatible)
-
-| Method | Endpoint | Auth | Roles |
-|---|---|---|---|
-| `POST` | `/v1/batches` | Required | user, admin |
-| `GET` | `/v1/batches/{batch_id}` | Required | all (filtered) |
-| `GET` | `/v1/batches` | Required | all (filtered) |
-
-#### POST /v1/batches
-```json
-// Request
-{
-  "input_file_id": "file-abc123",
-  "endpoint": "/v1/chat/completions",
-  "completion_window": "24h"
-}
-
-// Response (200)
-{
-  "id": "batch-abc123",
-  "object": "batch",
-  "endpoint": "/v1/chat/completions",
-  "model": "mistral-7b",       // extracted from JSONL
-  "input_file_id": "file-abc123",
-  "completion_window": "24h",
-  "status": "validating",
-  "output_file_id": null,
-  "created_at": 1780000000,
-  "completed_at": null,
-  "request_counts": {
-    "total": 100,
-    "completed": 0,
-    "failed": 0
-  }
-}
-```
-
-> **Note:** Model name is extracted from the first line of the JSONL (`body.model`).
-> Unknown/unsupported models are rejected with `400`.
-
-#### GET /v1/batches (role-based filtering)
-
-| Role | Sees |
-|---|---|
-| **User** | Own batches only (full detail) |
-| **Provider** | All batches — summary only (no `input_file_id`, no prompt content) |
-| **Admin** | All batches (full detail) |
-
----
-
-### Workers — `/workers` (Internal)
-
-| Method | Endpoint | Auth | Roles |
-|---|---|---|---|
-| `POST` | `/workers/heartbeat` | Required | provider, admin |
-| `POST` | `/workers/poll` | Required | provider, admin |
-| `POST` | `/workers/upload-results` | Required | provider, admin |
-| `POST` | `/workers/report-failure` | Required | provider, admin |
-
-#### POST /workers/heartbeat
-```json
-// Request — provider sends machine specs periodically
-{
-  "worker_id": "gpu-box-01",
+  "activity": "busy",
+  "current_job_id": "batch-abc123",
+  "progress": {"total_prompts": 100, "completed_prompts": 40, "failed_prompts": 1},
+  "gpu_utilization": 87.5,
+  "gpu_memory_used_gb": 14.2,
   "vram_total_gb": 24.0,
-  "vram_available_gb": 18.5,
-  "loaded_models": ["mistral-7b", "llama-3-8b"]
+  "vram_available_gb": 9.8,
+  "loaded_models": ["mistral-7b"],
+  "uptime_seconds": 3600
 }
-
-// Response (200)
-{"status": "ok"}
 ```
 
 #### POST /workers/poll
 ```json
 // Request
-{"worker_id": "gpu-box-01"}
+{"worker_id": "worker-abc123"}
 
-// Response (200) — job found
+// Response — job found
 {
   "job": {
     "job_id": "batch-abc123",
@@ -216,91 +164,69 @@ Returns the raw file as a download.
   }
 }
 
-// Response (200) — no compatible job
+// Response — nothing compatible
 {"job": null}
 ```
 
-> **Smart Matching:** The picker filters by VRAM capacity and prefers
-> providers that already have the model loaded.
+> **Matching:** the picker filters by VRAM (from heartbeats) and prefers
+> workers that already have the model loaded. A worker that has never
+> heartbeated only receives batches whose model it advertised at
+> registration — never an arbitrary batch.
 
 #### POST /workers/upload-results
 ```
 Content-Type: multipart/form-data
 Fields:
-  - job_id: "batch-abc123"
-  - file: (binary) output .jsonl
+  - job_id:    "batch-abc123"
+  - worker_id: "worker-abc123"     (must hold the assignment)
+  - completed: 98                  (optional — real success count)
+  - failed:    2                   (optional — real failure count)
+  - file:      (binary) output .jsonl
 ```
 
 #### POST /workers/report-failure
 ```json
-{
-  "job_id": "batch-abc123",
-  "worker_id": "gpu-box-01",
-  "error": "Out of memory"
-}
+// Request
+{"job_id": "batch-abc123", "worker_id": "worker-abc123", "error": "OOM"}
+
+// Response — requeued until attempts hit the max (3), then terminal
+{"status": "validated", "batch_id": "batch-abc123", "attempts": 1, "error": "OOM"}
 ```
+
+---
+
+## Fault Tolerance (spec §12)
+
+- `report-failure` requeues the batch (`status` back to `validated`,
+  `attempts += 1`, assignment voided); after **3** attempts it is marked
+  `failed` terminally.
+- A background **sweeper** (started at app startup, 60s interval) marks
+  workers `offline` after **120s** without a heartbeat and requeues their
+  in-flight batches — a crashed daemon never strands a batch.
+
+See `sweeper.py` for the thresholds.
 
 ---
 
 ## Database Schema
 
-Using **SQLite** with SQLAlchemy ORM.
+SQLite with SQLAlchemy ORM. Tables (see `models.py`):
 
-### Users
-| Column | Type | Notes |
-|---|---|---|
-| id | String | PK, `user-{uuid}` |
-| email | String | Unique |
-| password_hash | String | Bcrypt |
-| full_name | String | |
-| role | String | admin / user / provider |
-| api_key | String | `gk-{random}`, users only |
-| is_active | Boolean | Default true |
-| must_change_password | Boolean | Default false |
-| created_at | Integer | Unix timestamp |
+| Table | Purpose / notable columns |
+|---|---|
+| `users` | `platform_role` (`user`/`superadmin`), `must_change_password` — no role/api_key columns |
+| `organizations` | Ownership boundary; owner derived from memberships |
+| `organization_memberships` | `role`: `owner` / `admin` / `viewer` |
+| `api_keys` | Hashed keys; `key_type`: `worker` (org-scoped) or `personal`; prefix for UI |
+| `workers` | Static specs + `gpus`/`runtimes` JSON blobs; `status` (liveness, server-managed) vs `activity` (daemon-reported); dynamic `vram_total_gb` / `vram_available_gb` / `loaded_models` written by heartbeats |
+| `files` | Uploaded inputs and generated outputs |
+| `batches` | Lifecycle status, request counts, `attempts` (requeue counter) |
+| `batch_assignments` | Which worker holds which batch (FK → `workers.id`) |
+| `password_reset_tokens` | Forgot-password flow |
 
-### Files
-| Column | Type | Notes |
-|---|---|---|
-| id | String | PK, `file-{uuid}` |
-| user_id | String | FK → who uploaded |
-| filename | String | Original filename |
-| purpose | String | batch / batch_output |
-| bytes | Integer | File size |
-| filepath | String | Local storage path |
-| created_at | Integer | Unix timestamp |
-
-### Batches
-| Column | Type | Notes |
-|---|---|---|
-| id | String | PK, `batch-{uuid}` |
-| user_id | String | FK → who submitted |
-| endpoint | String | /v1/chat/completions |
-| model | String | Extracted from JSONL |
-| input_file_id | String | FK → files |
-| status | String | validating → in_progress → completed/failed |
-| output_file_id | String | FK → files (nullable) |
-| request_counts_total | Integer | |
-| request_counts_completed | Integer | |
-| request_counts_failed | Integer | |
-
-### Provider Capabilities
-| Column | Type | Notes |
-|---|---|---|
-| worker_id | String | PK, machine identifier |
-| provider_id | String | FK → users |
-| vram_total_gb | Float | Total GPU VRAM |
-| vram_available_gb | Float | Available VRAM |
-| loaded_models | String | JSON array of model names |
-| status | String | online / offline |
-| last_heartbeat | Integer | Unix timestamp |
-
-### Batch Assignments
-| Column | Type | Notes |
-|---|---|---|
-| batch_id | String | PK, FK → batches |
-| worker_id | String | Which worker took it |
-| assigned_at | Integer | Unix timestamp |
+> GPU/runtime/model inventory is stored as JSON columns on `workers` for
+> V1; the normalized `worker_runtimes` / `runtime_models` / `worker_gpus`
+> tables in spec §8.2–8.4 are the post-V1 target.
 
 ---
 
@@ -322,22 +248,21 @@ Using **SQLite** with SQLAlchemy ORM.
 ## Batch Status Lifecycle
 
 ```
-validating → in_progress → completed
-                         → failed
+validating → validated → in_progress → completed
+     ↓            ↑            ↓
+   failed         └────────────┘ requeue (failure/offline worker,
+                                 max 3 attempts) → failed
 ```
 
 ---
 
 ## Migration
 
-Currently using SQLAlchemy `Base.metadata.create_all()` which auto-creates
-tables on startup. **No formal migration tool (Alembic) is configured yet.**
-
-For dev: delete `jobs.db` and restart the server to recreate tables with
-new schema.
-
-For production: Alembic should be added for proper schema migrations.
-This is tracked as a future improvement.
+`Base.metadata.create_all()` creates tables on startup, plus a small
+startup guard in `main.py` that `ALTER TABLE`s columns added after a
+table already exists (e.g. `batches.attempts`, the `workers` activity and
+capability columns). **No formal migration tool (Alembic) yet** — for dev,
+deleting `jobs.db` and restarting also works.
 
 ---
 
@@ -345,18 +270,24 @@ This is tracked as a future improvement.
 
 ```
 backend/
-├── main.py               # App entry, CORS, default admin, router mounts
+├── main.py                # App entry, CORS, column guard, sweeper + admin startup
 ├── database.py            # SQLite engine + session
-├── models.py              # SQLAlchemy models (User, File, Batch, etc.)
+├── models.py              # SQLAlchemy models
 ├── schemas.py             # Pydantic request/response models
-├── auth.py                # JWT, password hashing, API keys, middleware
-├── provider_picker.py     # Modular job-to-provider matching
-├── requirements.txt       # Python dependencies
-├── .gitignore             # Excludes DB, uploads, cache
-└── routers/
-    ├── __init__.py
-    ├── auth.py            # /v1/auth/* endpoints
-    ├── files.py           # /v1/files endpoints
-    ├── batches.py         # /v1/batches endpoints
-    └── workers.py         # /workers/* endpoints (internal)
+├── auth.py                # JWT, hashing, key contexts (worker/personal/human)
+├── provider_picker.py     # Job-to-worker matching (VRAM + loaded models)
+├── sweeper.py             # Requeue logic + stale-worker sweeper (spec §12)
+├── rate_limit.py          # Key-creation rate limiting
+├── requirements.txt
+├── routers/
+│   ├── auth.py            # /v1/auth/*, /v1/admin/*
+│   ├── users.py           # /v1/users/me/api-keys (personal keys)
+│   ├── organizations.py   # /v1/orgs/* (org keys, org workers)
+│   ├── files.py           # /v1/files
+│   ├── batches.py         # /v1/batches (+ SSE validation events)
+│   └── workers.py         # /workers/* (daemon-facing)
+└── services/
+    ├── batch_validator.py # Async JSONL validation
+    ├── sse_manager.py     # Validation event stream
+    └── email_service.py   # Password-reset mail
 ```
