@@ -54,11 +54,11 @@ log_level: "INFO"
 #   - "meta-llama/Llama-3-8b-instruct"
 
 # Inference runtime type
-# runtime: "vllm"
+# runtime: "ollama"   # or "vllm"
 
 # ─────────────────────────────────────────────────────────────
 # Advanced Tuning
 # ─────────────────────────────────────────────────────────────
 
-# vLLM inference timeout per prompt (seconds)
-# vllm_timeout: 300.0
+# Inference timeout per prompt, any runtime (seconds)
+# inference_timeout: 300.0

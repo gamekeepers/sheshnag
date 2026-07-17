@@ -163,10 +163,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── Executor tuning ──────────────────────────────────────────
 
     parser.add_argument(
-        "--vllm-timeout",
+        "--inference-timeout",
         type=float,
         default=None,
-        help="Per-prompt vLLM inference timeout in seconds (default: 300.0)",
+        help="Per-prompt inference timeout in seconds (default: 300.0)",
     )
 
     return parser
@@ -194,7 +194,7 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
         "vram_gb": args.vram_gb,
         "models": args.models,
         "runtime": args.runtime,
-        "vllm_timeout": args.vllm_timeout,
+        "inference_timeout": args.inference_timeout,
     }
 
     # Filter out None values — DaemonConfig.load() also does this,
