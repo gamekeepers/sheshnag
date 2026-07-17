@@ -5,35 +5,15 @@ import asyncio
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
 from database import engine, Base
 from routers import files, batches, workers, auth, users, organizations
 from models import User, Organization, OrganizationMembership
 from auth import hash_password
+from migrations import run_startup_migrations
 from sweeper import run_sweeper
 
 Base.metadata.create_all(bind=engine)
-
-# create_all never adds columns to existing tables — patch pre-existing
-# SQLite DBs for columns added after their creation.
-_NEW_COLUMNS = {
-    "batches": [("attempts", "INTEGER DEFAULT 0")],
-    "workers": [
-        ("activity", "TEXT DEFAULT 'idle'"),
-        ("vram_total_gb", "REAL"),
-        ("vram_available_gb", "REAL"),
-        ("loaded_models", "TEXT"),
-    ],
-}
-with engine.connect() as _conn:
-    for _table, _columns in _NEW_COLUMNS.items():
-        _cols = [row[1] for row in _conn.execute(text(f"PRAGMA table_info({_table})"))]
-        if not _cols:
-            continue
-        for _name, _ddl in _columns:
-            if _name not in _cols:
-                _conn.execute(text(f"ALTER TABLE {_table} ADD COLUMN {_name} {_ddl}"))
-    _conn.commit()
+run_startup_migrations(engine)
 
 app = FastAPI(title="Batch AI Compute Platform")
 

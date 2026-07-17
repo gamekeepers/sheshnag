@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from database import get_db
 from models import (
-    Batch, BatchAssignment, File as FileModel, Worker, unix_now,
+    Batch, BatchAssignment, File as FileModel, Worker,
+    WorkerGpu, WorkerRuntime, RuntimeModel, unix_now,
 )
 from schemas import (
     ModelDownloadReport, ProgressReport,
@@ -13,7 +14,7 @@ from typing import Optional
 from auth import get_worker_context
 from provider_picker import picker
 from sweeper import MAX_BATCH_ATTEMPTS, requeue_or_fail_batch
-import shutil, os, json, logging
+import shutil, os, logging
 
 logger = logging.getLogger(__name__)
 
@@ -98,17 +99,42 @@ def register_worker(
         Worker.hostname == req.hostname,
     ).first()
 
-    gpus_json = json.dumps([g.model_dump() for g in req.gpus])
-    runtimes_json = json.dumps([r.model_dump() for r in req.runtimes])
     cpu_cores = req.cpu.get("cores") if req.cpu else None
     ram_gb = req.ram.get("total_gb") if req.ram else None
+
+    def _gpu_rows():
+        return [
+            WorkerGpu(
+                gpu_index=g.index, vendor=g.vendor, name=g.name,
+                vram_gb=g.vram_gb, driver=g.driver, cuda=g.cuda,
+            )
+            for g in req.gpus
+        ]
+
+    def _runtime_rows():
+        return [
+            WorkerRuntime(
+                engine=r.type,
+                base_url=r.endpoint,
+                models=[
+                    RuntimeModel(name=m, runtime_model_id=m)
+                    for m in r.models
+                ],
+            )
+            for r in req.runtimes
+        ]
 
     if existing:
         existing.os = req.os
         existing.cpu_cores = cpu_cores
         existing.ram_total_gb = ram_gb
-        existing.gpus = gpus_json
-        existing.runtimes = runtimes_json
+        # Replace-all: clear + flush first so the old rows' DELETEs hit the
+        # DB before the new INSERTs (unique constraints would trip otherwise)
+        existing.gpus = []
+        existing.runtimes = []
+        db.flush()
+        existing.gpus = _gpu_rows()
+        existing.runtimes = _runtime_rows()
         existing.status = "online"
         existing.last_heartbeat = unix_now()
         db.commit()
@@ -125,8 +151,8 @@ def register_worker(
         os=req.os,
         cpu_cores=cpu_cores,
         ram_total_gb=ram_gb,
-        gpus=gpus_json,
-        runtimes=runtimes_json,
+        gpus=_gpu_rows(),
+        runtimes=_runtime_rows(),
     )
     db.add(worker)
     db.commit()
@@ -161,7 +187,25 @@ def worker_heartbeat(
     worker.last_heartbeat = unix_now()
     worker.vram_total_gb = req.vram_total_gb
     worker.vram_available_gb = req.vram_available_gb
-    worker.loaded_models = json.dumps(req.loaded_models)
+
+    # Map reported loaded models onto runtime_models.loaded flags.
+    reported = set(req.loaded_models)
+    known = set()
+    for runtime in worker.runtimes:
+        for model in runtime.models:
+            was_loaded = model.loaded
+            model.loaded = model.name in reported
+            if model.loaded != was_loaded:
+                model.updated_at = unix_now()
+            known.add(model.name)
+    # A loaded model we've never seen (e.g. pulled on the fly): record it.
+    # The daemon runs a single runtime, so attach to the first one.
+    missing = reported - known
+    if missing and worker.runtimes:
+        for name in missing:
+            worker.runtimes[0].models.append(
+                RuntimeModel(name=name, runtime_model_id=name, loaded=True)
+            )
 
     db.commit()
     return {"status": "ok", "worker_id": worker_id}
@@ -194,11 +238,7 @@ def poll_job(
         # No heartbeat yet — fall back to the models the worker advertised
         # at registration. Never hand out an arbitrary batch to a worker
         # whose capabilities are unknown.
-        try:
-            runtimes = json.loads(worker.runtimes or "[]")
-        except json.JSONDecodeError:
-            runtimes = []
-        advertised = {m for r in runtimes for m in r.get("models", [])}
+        advertised = worker.advertised_model_names()
         batch = next(
             (b for b in available_batches if b.model and b.model in advertised),
             None,

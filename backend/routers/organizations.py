@@ -15,7 +15,6 @@ from models import (
 from auth import (
     get_current_user, generate_api_key, hash_api_key, get_api_key_prefix,
 )
-import json
 
 router = APIRouter()
 
@@ -142,13 +141,25 @@ def list_org_workers(
                 "os": w.os,
                 "cpu_cores": w.cpu_cores,
                 "ram_total_gb": w.ram_total_gb,
-                "gpus": json.loads(w.gpus) if w.gpus else [],
-                "runtimes": json.loads(w.runtimes) if w.runtimes else [],
+                "gpus": [
+                    {
+                        "index": g.gpu_index, "vendor": g.vendor, "name": g.name,
+                        "vram_gb": g.vram_gb, "driver": g.driver, "cuda": g.cuda,
+                    }
+                    for g in w.gpus
+                ],
+                "runtimes": [
+                    {
+                        "type": rt.engine, "endpoint": rt.base_url,
+                        "models": [m.name for m in rt.models],
+                    }
+                    for rt in w.runtimes
+                ],
                 "status": w.status,
                 "activity": w.activity,
                 "vram_total_gb": w.vram_total_gb,
                 "vram_available_gb": w.vram_available_gb,
-                "loaded_models": json.loads(w.loaded_models) if w.loaded_models else [],
+                "loaded_models": w.loaded_model_names(),
                 "last_heartbeat": w.last_heartbeat,
                 "created_at": w.created_at,
             }

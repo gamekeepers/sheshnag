@@ -1,0 +1,147 @@
+"""
+Startup migrations for pre-existing SQLite databases.
+
+`Base.metadata.create_all()` only creates missing tables — it never adds
+columns to existing tables, backfills data, or drops anything. Everything
+of that kind lives here and runs once at app startup, idempotently.
+
+Current steps:
+1. Add columns introduced after a table already shipped.
+2. Backfill the normalized inventory tables (worker_runtimes,
+   runtime_models, worker_gpus — spec §8.2–8.4) from the legacy JSON
+   columns on workers, then drop those columns.
+3. Drop the long-orphaned provider_capabilities table.
+"""
+import json
+import logging
+import uuid
+
+from sqlalchemy import text
+
+logger = logging.getLogger(__name__)
+
+# Columns added after their table first shipped: table -> [(name, ddl)]
+_NEW_COLUMNS = {
+    "batches": [("attempts", "INTEGER DEFAULT 0")],
+    "workers": [
+        ("activity", "TEXT DEFAULT 'idle'"),
+        ("vram_total_gb", "REAL"),
+        ("vram_available_gb", "REAL"),
+    ],
+}
+
+# Legacy JSON columns on workers, replaced by the normalized tables.
+_LEGACY_WORKER_COLUMNS = ("gpus", "runtimes", "loaded_models")
+
+
+def _columns(conn, table: str) -> list:
+    return [row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))]
+
+
+def _add_missing_columns(conn) -> None:
+    for table, columns in _NEW_COLUMNS.items():
+        existing = _columns(conn, table)
+        if not existing:
+            continue
+        for name, ddl in columns:
+            if name not in existing:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+
+
+def _backfill_inventory(conn) -> None:
+    """Move workers.gpus/runtimes/loaded_models JSON into the normalized
+    tables, then drop the JSON columns.
+
+    Only runs when the legacy columns still exist. Raw SQL throughout —
+    the ORM models no longer know about the old columns.
+    """
+    worker_cols = _columns(conn, "workers")
+    legacy = [c for c in _LEGACY_WORKER_COLUMNS if c in worker_cols]
+    if not legacy:
+        return
+
+    def new_id(prefix):
+        return f"{prefix}-{uuid.uuid4().hex[:24]}"
+
+    select_cols = ", ".join(["id"] + legacy)
+    rows = conn.execute(text(f"SELECT {select_cols} FROM workers")).fetchall()
+    migrated = 0
+    for row in rows:
+        data = dict(zip(["id"] + legacy, row))
+        worker_id = data["id"]
+
+        def parse(col):
+            try:
+                return json.loads(data.get(col) or "[]")
+            except (json.JSONDecodeError, TypeError):
+                return []
+
+        loaded = set(parse("loaded_models"))
+
+        for gpu in parse("gpus"):
+            if not isinstance(gpu, dict):
+                continue
+            conn.execute(
+                text(
+                    "INSERT OR IGNORE INTO worker_gpus "
+                    "(id, worker_id, gpu_index, vendor, name, vram_gb, driver, cuda, updated_at) "
+                    "VALUES (:id, :wid, :idx, :vendor, :name, :vram, :driver, :cuda, unixepoch())"
+                ),
+                {
+                    "id": new_id("gpu"), "wid": worker_id,
+                    "idx": gpu.get("index", 0), "vendor": gpu.get("vendor"),
+                    "name": gpu.get("name"), "vram": gpu.get("vram_gb"),
+                    "driver": gpu.get("driver"), "cuda": gpu.get("cuda"),
+                },
+            )
+
+        for rt in parse("runtimes"):
+            if not isinstance(rt, dict):
+                continue
+            rt_id = new_id("wrt")
+            conn.execute(
+                text(
+                    "INSERT OR IGNORE INTO worker_runtimes "
+                    "(id, worker_id, engine, base_url, api_protocol, status, created_at, updated_at) "
+                    "VALUES (:id, :wid, :engine, :url, 'openai-compatible', 'ready', unixepoch(), unixepoch())"
+                ),
+                {
+                    "id": rt_id, "wid": worker_id,
+                    "engine": rt.get("type", "ollama"),
+                    "url": rt.get("endpoint", ""),
+                },
+            )
+            for model in rt.get("models", []):
+                if not isinstance(model, str):
+                    continue
+                conn.execute(
+                    text(
+                        "INSERT OR IGNORE INTO runtime_models "
+                        "(id, runtime_id, name, runtime_model_id, status, loaded, created_at, updated_at) "
+                        "VALUES (:id, :rt, :name, :name, 'available', :loaded, unixepoch(), unixepoch())"
+                    ),
+                    {
+                        "id": new_id("rtm"), "rt": rt_id,
+                        "name": model, "loaded": model in loaded,
+                    },
+                )
+        migrated += 1
+
+    for col in legacy:
+        try:
+            conn.execute(text(f"ALTER TABLE workers DROP COLUMN {col}"))
+        except Exception:
+            # SQLite < 3.35 can't drop columns — orphaned columns are harmless.
+            logger.warning("Could not drop legacy column workers.%s", col)
+
+    if migrated:
+        logger.info("Backfilled inventory tables for %d workers", migrated)
+
+
+def run_startup_migrations(engine) -> None:
+    """Run all idempotent schema/data migrations. Call after create_all."""
+    with engine.connect() as conn:
+        _add_missing_columns(conn)
+        _backfill_inventory(conn)
+        conn.execute(text("DROP TABLE IF EXISTS provider_capabilities"))
+        conn.commit()
