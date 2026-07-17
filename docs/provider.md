@@ -1,3 +1,11 @@
+> **⚠️ SUPERSEDED (2026-07-17).** This note predates issue #13 / PR #20,
+> which eliminated the separate Provider identity: organizations own
+> workers, and org-scoped worker API keys authenticate daemons. See
+> [revised_db_schema.md](revised_db_schema.md) for the current design and
+> [v1-spec.md](v1-spec.md) §8 for the authoritative spec. The registration
+> payload example below is still accurate; the provider concept and
+> `provider/` API prefixes are not.
+
 ## Concept map
 Organization: is the user/organization with resources at it"s disposal.  Keep it minimalistic for now. LAter on might add invite provider functionality in organization.  
 Provider: is a user/organization with resources at it"s disposal.    

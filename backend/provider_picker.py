@@ -4,7 +4,6 @@ Provider Picker — Modular job-to-provider matching.
 Replace this class to upgrade matching logic in the future
 (pricing, geo-proximity, reliability scores, etc.)
 """
-import json
 
 MODEL_VRAM_REQUIREMENTS = {
     "mistral-7b":          16,
@@ -30,8 +29,8 @@ class ProviderPicker:
     """
     Matches a polling worker to the best available batch.
 
-    Reads the dynamic capability fields on the Worker row (populated by
-    the unified heartbeat — vram_total_gb, loaded_models).
+    Reads the worker's aggregate VRAM (from heartbeats) and the loaded
+    flags on its runtime_models rows.
 
     Filter: worker VRAM must fit the batch's model.
     Rank:
@@ -43,7 +42,7 @@ class ProviderPicker:
         if not worker or not available_batches:
             return None
 
-        loaded = self._parse_loaded_models(worker.loaded_models)
+        loaded = worker.loaded_model_names()
         vram = worker.vram_total_gb or 0
 
         compatible = []
@@ -60,14 +59,6 @@ class ProviderPicker:
             return already_loaded[0]
 
         return compatible[0]
-
-    def _parse_loaded_models(self, loaded_models_str: str | None) -> list:
-        if not loaded_models_str:
-            return []
-        try:
-            return json.loads(loaded_models_str)
-        except (json.JSONDecodeError, TypeError):
-            return []
 
 
 picker = ProviderPicker()
