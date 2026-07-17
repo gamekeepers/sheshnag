@@ -354,15 +354,17 @@ CREATE INDEX idx_workers_api_key ON workers(api_key_id);
 CREATE INDEX idx_workers_status           ON workers(status);
 ```
 
-> **V1 implementation note (decision 3.3, 2026-07-17):** the normalized
-> inventory tables below (§8.2 `worker_runtimes`, §8.3 `runtime_models`,
-> §8.4 `worker_gpus`) are the **post-V1 target schema**. V1 stores this
-> data as JSON text columns on `workers` (`runtimes`, `gpus`,
-> `loaded_models`) — good enough while a worker count is small and no
-> query needs to join on individual models/GPUs. The former
-> `provider_capabilities` side-table is gone: its dynamic fields
-> (`vram_total_gb`, `vram_available_gb`, `loaded_models`) now live
-> directly on `workers` (§8.1), updated by the unified heartbeat.
+> **Implementation note (2026-07-17):** the normalized inventory tables
+> below (§8.2 `worker_runtimes`, §8.3 `runtime_models`, §8.4
+> `worker_gpus`) are **implemented** — the earlier V1 JSON-blob columns
+> on `workers` (`runtimes`, `gpus`, `loaded_models`) were migrated into
+> them and dropped (startup migration backfills pre-existing DBs).
+> Implementation deltas from the DDL below: string PKs (`wrt-…`,
+> `rtm-…`, `gpu-…`) and unix-int timestamps per repo convention;
+> `runtime_models` gains a `loaded` boolean (in-VRAM now, updated by
+> each heartbeat) alongside `status` (on-disk availability). Aggregate
+> `vram_total_gb`/`vram_available_gb` stay on `workers` (§8.1) since
+> the daemon reports machine totals, not per-GPU stats.
 
 ## 8.2 Worker Runtimes
 
@@ -406,10 +408,12 @@ the scheduler for matching:
 ```sql
 CREATE TABLE runtime_models (
     id                  TEXT PRIMARY KEY,             -- uuid
+    runtime_id          TEXT NOT NULL REFERENCES worker_runtimes(runtime_id)
+                            ON DELETE CASCADE,        -- owning runtime (fixed 2026-07-17: was missing)
 
     name                 TEXT NOT NULL,                 -- display name, e.g. 'llama3:8b' or 'mistralai/Mistral-7B-v0.1'
 
-    runtime               TEXT NOT NULL CHECK (runtime IN ('ollama','huggingface')),
+    runtime               TEXT NOT NULL CHECK (runtime IN ('ollama','vllm','tgi','transformers')),
     runtime_model_id       TEXT NOT NULL,                 -- exact id the provider API expects
     revision                TEXT,                          -- tag / commit hash / branch
 

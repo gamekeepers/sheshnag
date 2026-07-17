@@ -218,15 +218,19 @@ SQLite with SQLAlchemy ORM. Tables (see `models.py`):
 | `organizations` | Ownership boundary; owner derived from memberships |
 | `organization_memberships` | `role`: `owner` / `admin` / `viewer` |
 | `api_keys` | Hashed keys; `key_type`: `worker` (org-scoped) or `personal`; prefix for UI |
-| `workers` | Static specs + `gpus`/`runtimes` JSON blobs; `status` (liveness, server-managed) vs `activity` (daemon-reported); dynamic `vram_total_gb` / `vram_available_gb` / `loaded_models` written by heartbeats |
+| `workers` | Static specs; `status` (liveness, server-managed) vs `activity` (daemon-reported); aggregate `vram_total_gb` / `vram_available_gb` from heartbeats |
+| `worker_runtimes` | Inference engines a worker exposes (spec §8.2): engine, base_url, status |
+| `runtime_models` | Models per runtime (spec §8.3): `status` (on-disk) + `loaded` (in VRAM, heartbeat-updated) |
+| `worker_gpus` | Physical GPUs per worker (spec §8.4): vendor, name, vram_gb, driver, cuda |
 | `files` | Uploaded inputs and generated outputs |
 | `batches` | Lifecycle status, request counts, `attempts` (requeue counter) |
 | `batch_assignments` | Which worker holds which batch (FK → `workers.id`) |
 | `password_reset_tokens` | Forgot-password flow |
 
-> GPU/runtime/model inventory is stored as JSON columns on `workers` for
-> V1; the normalized `worker_runtimes` / `runtime_models` / `worker_gpus`
-> tables in spec §8.2–8.4 are the post-V1 target.
+> Inventory is fully normalized per spec §8.2–8.4. Pre-existing DBs that
+> used the old JSON columns on `workers` are backfilled automatically at
+> startup (`migrations.py`), which also drops the legacy columns and the
+> orphaned `provider_capabilities` table.
 
 ---
 
@@ -258,11 +262,12 @@ validating → validated → in_progress → completed
 
 ## Migration
 
-`Base.metadata.create_all()` creates tables on startup, plus a small
-startup guard in `main.py` that `ALTER TABLE`s columns added after a
-table already exists (e.g. `batches.attempts`, the `workers` activity and
-capability columns). **No formal migration tool (Alembic) yet** — for dev,
-deleting `jobs.db` and restarting also works.
+`Base.metadata.create_all()` creates tables on startup, then
+`migrations.py` runs idempotent startup migrations: column guards for
+columns added after a table shipped (e.g. `batches.attempts`), the
+JSON→rows inventory backfill, legacy column drops, and removal of the
+orphaned `provider_capabilities` table. **No formal migration tool
+(Alembic) yet** — for dev, deleting `jobs.db` and restarting also works.
 
 ---
 
@@ -276,6 +281,7 @@ backend/
 ├── schemas.py             # Pydantic request/response models
 ├── auth.py                # JWT, hashing, key contexts (worker/personal/human)
 ├── provider_picker.py     # Job-to-worker matching (VRAM + loaded models)
+├── migrations.py          # Idempotent startup migrations (backfills, column guards)
 ├── sweeper.py             # Requeue logic + stale-worker sweeper (spec §12)
 ├── rate_limit.py          # Key-creation rate limiting
 ├── requirements.txt

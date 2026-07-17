@@ -1,12 +1,11 @@
 # Database Design Rationale
 
-> **V1 implementation note (spec decision 3.3, 2026-07-17):** the Worker
-> Runtimes / Runtime Models / Worker GPUs entities described below are the
-> **post-V1 target**. The V1 backend stores this inventory as JSON text
-> columns on `workers` (`gpus`, `runtimes`, `loaded_models`), updated at
-> registration and by the unified heartbeat. Everything else in this
-> document (users, organizations, memberships, org-scoped API keys,
-> worker ownership) matches the implementation.
+> **Implementation note (2026-07-17):** the Worker Runtimes / Runtime
+> Models / Worker GPUs entities described below are **implemented** as
+> the `worker_runtimes`, `runtime_models`, and `worker_gpus` tables
+> (`backend/models.py`). The earlier V1 JSON columns on `workers` were
+> backfilled into them and dropped by a startup migration
+> (`backend/migrations.py`). This document matches the implementation.
 
 ## Design Principles
 
