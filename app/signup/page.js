@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import ParticleField from '../components/ParticleField';
 import CursorEffect from '../components/CursorEffect';
+import InteractiveMoon from '../components/InteractiveMoon';
+import confetti from 'canvas-confetti';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
@@ -16,6 +18,7 @@ export default function SignupPage() {
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isPasswordFocused, setIsPasswordFocused] = useState(false);
   const router = useRouter();
 
   async function handleSubmit() {
@@ -57,6 +60,14 @@ export default function SignupPage() {
       });
       const loginData = await loginRes.json();
       if (loginRes.ok && loginData.access_token) {
+        // Trigger confetti on success
+        confetti({
+          particleCount: 100,
+          spread: 70,
+          origin: { y: 0.6 },
+          colors: ['#fff', '#cfdbfa', '#8896d3', '#302b5e']
+        });
+
         localStorage.setItem('mk_token', loginData.access_token);
 
         // Fetch full user profile
@@ -130,10 +141,9 @@ export default function SignupPage() {
       {/* Body */}
       <div style={{ position: 'relative', zIndex: 3, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
         <div style={{ width: '100%', maxWidth: '360px' }}>
+          
+          <InteractiveMoon isPasswordFocused={isPasswordFocused} />
 
-          <h1 style={{ color: '#fff', fontSize: '22px', fontWeight: 500, textAlign: 'center', marginBottom: '24px' }}>
-            Create an account
-          </h1>
 
           {/* Name Fields */}
           <div style={{ display: 'flex', gap: '12px', marginBottom: '14px' }}>
@@ -178,6 +188,8 @@ export default function SignupPage() {
               type="password"
               value={password}
               onChange={e => setPassword(e.target.value)}
+              onFocus={() => setIsPasswordFocused(true)}
+              onBlur={() => setIsPasswordFocused(false)}
               autoComplete="new-password"
               style={inputStyle}
             />
@@ -190,6 +202,8 @@ export default function SignupPage() {
               type="password"
               value={confirm}
               onChange={e => setConfirm(e.target.value)}
+              onFocus={() => setIsPasswordFocused(true)}
+              onBlur={() => setIsPasswordFocused(false)}
               autoComplete="new-password"
               style={inputStyle}
             />
