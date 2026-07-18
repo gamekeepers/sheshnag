@@ -38,6 +38,17 @@ def get_model_vram(db, model_id: str):
     return entry.vram_gb if entry else None
 
 
+def _norm_digest(d):
+    """Canonicalise a digest for comparison. Ollama reports a bare hex digest
+    via /api/tags while curated catalogue entries may carry a `sha256:`
+    prefix — strip it (and lowercase) so the same artifact compares equal
+    regardless of which path wrote it."""
+    if not d:
+        return None
+    d = str(d).strip().lower()
+    return d.split(":", 1)[1] if ":" in d else d
+
+
 def _hosts(worker_models, runtime_model_id: str, catalog_digest) -> bool:
     """Does the worker host this catalogue artifact?
 
@@ -47,10 +58,12 @@ def _hosts(worker_models, runtime_model_id: str, catalog_digest) -> bool:
     daemon, un-pinned catalogue entry, non-Ollama runtime), fall back to
     name equality so mixed-version fleets keep scheduling.
     """
+    cat = _norm_digest(catalog_digest)
     for name, digest in worker_models:
         if name != runtime_model_id:
             continue
-        if catalog_digest and digest and catalog_digest != digest:
+        wd = _norm_digest(digest)
+        if cat and wd and cat != wd:
             continue  # same tag, different artifact — reject
         return True
     return False
