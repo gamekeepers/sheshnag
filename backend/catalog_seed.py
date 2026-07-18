@@ -1,76 +1,85 @@
 """
-Seed the model catalogue (tier-1, platform-curated) on startup.
+Seed / sync the model catalogue from the manifest at startup.
 
-Idempotent: only inserts rows whose (runtime, runtime_model_id) is not
-already present, so re-runs and admin-added entries are never clobbered.
+Source of truth is `catalog/models.yaml` (version-controlled). On startup:
+  - new `id`s are inserted,
+  - existing `id`s have their manifest-managed fields updated (edit the
+    YAML, restart to apply),
+  - entries NOT in the manifest are left untouched — so admin-added or
+    org-private entries are never clobbered.
 
-Digests are left NULL for now — the daemon does not yet report per-model
-digests, so availability matching falls back to runtime_model_id (see
-provider_picker). Fill `digest` here once digest reporting lands to get
-the full reproducibility guard.
-
-`runtime_model_id` is the exact string the runtime expects — Ollama tags
-here. `id` is a stable, human-readable platform slug (safe to expose as
-the value users put in `body.model`).
+`digest` is intentionally often null in the manifest — fill it via
+`python -m scripts.capture_catalog` (reads a live Ollama) to switch an
+entry from name-matching to the strict digest reproducibility guard.
 """
 import logging
+import os
 
 from database import SessionLocal
 from models import ModelCatalog
 
 logger = logging.getLogger(__name__)
 
-# id (slug) → catalogue attributes. Seeded from the former
-# MODEL_VRAM_REQUIREMENTS, re-keyed to real Ollama tags. `digest` is left
-# NULL — the true digest is only known after a pull; matching falls back to
-# runtime_model_id until a heartbeat reports the digest. `source_*` /
-# homepage carry provenance (where the artifact came from) for the
-# dashboard and future HF/vLLM pulls.
-def _ollama(name):
-    return {"source_type": "ollama-library", "source_ref": name.split(":")[0],
-            "source_revision": None,
-            "homepage_url": f"https://ollama.com/library/{name.split(':')[0]}"}
+_MANIFEST = os.path.join(os.path.dirname(__file__), "catalog", "models.yaml")
 
-_SEED = [
-    {"id": "mistral-7b-instruct-q4-ollama", "display_name": "Mistral 7B Instruct — Q4_K_M (Ollama)",
-     "runtime": "ollama", "runtime_model_id": "mistral:7b", "quantization": "Q4_K_M",
-     "vram_gb": 16, "size_gb": 4.4, "task_type": "chat", "parameter_size": "7B",
-     "context_length": 32768, **_ollama("mistral:7b")},
-    {"id": "llama3-8b-instruct-q4-ollama", "display_name": "Llama 3 8B Instruct — Q4_K_M (Ollama)",
-     "runtime": "ollama", "runtime_model_id": "llama3:8b", "quantization": "Q4_K_M",
-     "vram_gb": 18, "size_gb": 4.7, "task_type": "chat", "parameter_size": "8B",
-     "context_length": 8192, **_ollama("llama3:8b")},
-    {"id": "llama3.1-8b-instruct-q4-ollama", "display_name": "Llama 3.1 8B Instruct — Q4_K_M (Ollama)",
-     "runtime": "ollama", "runtime_model_id": "llama3.1:8b", "quantization": "Q4_K_M",
-     "vram_gb": 18, "size_gb": 4.9, "task_type": "chat", "parameter_size": "8B",
-     "context_length": 131072, **_ollama("llama3.1:8b")},
-    {"id": "llama3-70b-instruct-q4-ollama", "display_name": "Llama 3 70B Instruct — Q4_K_M (Ollama)",
-     "runtime": "ollama", "runtime_model_id": "llama3:70b", "quantization": "Q4_K_M",
-     "vram_gb": 80, "size_gb": 40.0, "task_type": "chat", "parameter_size": "70B",
-     "context_length": 8192, **_ollama("llama3:70b")},
-    {"id": "qwen2-7b-instruct-q4-ollama", "display_name": "Qwen2 7B Instruct — Q4_K_M (Ollama)",
-     "runtime": "ollama", "runtime_model_id": "qwen2:7b", "quantization": "Q4_K_M",
-     "vram_gb": 16, "size_gb": 4.4, "task_type": "chat", "parameter_size": "7B",
-     "context_length": 32768, **_ollama("qwen2:7b")},
-]
+# Fields the manifest owns — updated on re-seed. `id` is the key (not
+# updated); `created_at`/`enabled`/`status`/`org_id` are lifecycle fields
+# managed elsewhere (admin / lifecycle), so the manifest doesn't touch them.
+_MANAGED_FIELDS = (
+    "display_name", "runtime", "runtime_model_id", "digest", "quantization",
+    "parameter_size", "context_length", "vram_gb", "size_gb", "task_type",
+    "source_type", "source_ref", "source_revision", "homepage_url",
+)
+
+
+def _load_manifest() -> list:
+    try:
+        import yaml
+    except ImportError:
+        logger.warning("PyYAML not installed — skipping catalogue seed")
+        return []
+    if not os.path.exists(_MANIFEST):
+        logger.warning("Catalogue manifest not found at %s — skipping seed", _MANIFEST)
+        return []
+    with open(_MANIFEST) as f:
+        data = yaml.safe_load(f) or []
+    if not isinstance(data, list):
+        logger.error("Catalogue manifest must be a list of entries — skipping seed")
+        return []
+    return data
 
 
 def seed_model_catalog() -> None:
-    """Insert missing tier-1 catalogue entries. Safe to call every startup."""
+    """Upsert catalogue entries from the manifest. Safe to call every startup."""
+    entries = _load_manifest()
+    if not entries:
+        return
+
     db = SessionLocal()
     try:
-        added = 0
-        for entry in _SEED:
-            exists = db.query(ModelCatalog).filter(
-                ModelCatalog.runtime == entry["runtime"],
-                ModelCatalog.runtime_model_id == entry["runtime_model_id"],
-            ).first()
-            if exists:
+        inserted = updated = 0
+        for entry in entries:
+            mid = entry.get("id")
+            if not mid:
+                logger.warning("Catalogue entry missing 'id' — skipped: %r", entry)
                 continue
-            db.add(ModelCatalog(**entry))
-            added += 1
-        if added:
+            fields = {k: entry.get(k) for k in _MANAGED_FIELDS}
+
+            existing = db.query(ModelCatalog).filter(ModelCatalog.id == mid).first()
+            if existing is None:
+                db.add(ModelCatalog(id=mid, **fields))
+                inserted += 1
+            else:
+                changed = False
+                for k, v in fields.items():
+                    if getattr(existing, k) != v:
+                        setattr(existing, k, v)
+                        changed = True
+                if changed:
+                    updated += 1
+
+        if inserted or updated:
             db.commit()
-            logger.info("Seeded %d model_catalog entries", added)
+            logger.info("Model catalogue synced: %d inserted, %d updated", inserted, updated)
     finally:
         db.close()

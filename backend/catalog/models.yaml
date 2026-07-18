@@ -1,0 +1,94 @@
+# Model catalogue manifest — the curated, pinned models users may select
+# for a batch (source of truth; version-controlled = curation audit trail).
+#
+# Loaded and upserted into `model_catalog` at startup by catalog_seed.py:
+#   - new `id`s are inserted
+#   - existing `id`s have their fields updated (edit here, restart to apply)
+#   - entries NOT listed here are left untouched (admin/org-private stay)
+#
+# `digest` is the reproducibility pin — leave null and the scheduler
+# name-matches; fill it (via `python -m scripts.capture_catalog`, which
+# reads a live Ollama) to enable the strict same-tag/different-digest guard.
+#
+# `id` is a stable platform slug — what the user puts in body.model. Never
+# reuse an id for a different artifact; deprecate instead.
+
+- id: mistral-7b-instruct-q4-ollama
+  display_name: "Mistral 7B Instruct — Q4_K_M (Ollama)"
+  runtime: ollama
+  runtime_model_id: "mistral:7b"
+  digest: null
+  quantization: Q4_K_M
+  parameter_size: "7B"
+  context_length: 32768
+  vram_gb: 16
+  size_gb: 4.4
+  task_type: chat
+  source_type: ollama-library
+  source_ref: mistral
+  source_revision: null
+  homepage_url: "https://ollama.com/library/mistral"
+
+- id: llama3-8b-instruct-q4-ollama
+  display_name: "Llama 3 8B Instruct — Q4_K_M (Ollama)"
+  runtime: ollama
+  runtime_model_id: "llama3:8b"
+  digest: null
+  quantization: Q4_K_M
+  parameter_size: "8B"
+  context_length: 8192
+  vram_gb: 18
+  size_gb: 4.7
+  task_type: chat
+  source_type: ollama-library
+  source_ref: llama3
+  source_revision: null
+  homepage_url: "https://ollama.com/library/llama3"
+
+- id: llama3.1-8b-instruct-q4-ollama
+  display_name: "Llama 3.1 8B Instruct — Q4_K_M (Ollama)"
+  runtime: ollama
+  runtime_model_id: "llama3.1:8b"
+  digest: null
+  quantization: Q4_K_M
+  parameter_size: "8B"
+  context_length: 131072
+  vram_gb: 18
+  size_gb: 4.9
+  task_type: chat
+  source_type: ollama-library
+  source_ref: llama3.1
+  source_revision: null
+  homepage_url: "https://ollama.com/library/llama3.1"
+
+- id: llama3-70b-instruct-q4-ollama
+  display_name: "Llama 3 70B Instruct — Q4_K_M (Ollama)"
+  runtime: ollama
+  runtime_model_id: "llama3:70b"
+  digest: null
+  quantization: Q4_K_M
+  parameter_size: "70B"
+  context_length: 8192
+  vram_gb: 80
+  size_gb: 40.0
+  task_type: chat
+  source_type: ollama-library
+  source_ref: llama3
+  source_revision: null
+  homepage_url: "https://ollama.com/library/llama3"
+
+- id: qwen2-7b-instruct-q4-ollama
+  display_name: "Qwen2 7B Instruct — Q4_K_M (Ollama)"
+  runtime: ollama
+  runtime_model_id: "qwen2:7b"
+  digest: null
+  quantization: Q4_K_M
+  parameter_size: "7B"
+  context_length: 32768
+  vram_gb: 16
+  size_gb: 4.4
+  task_type: chat
+  source_type: ollama-library
+  source_ref: qwen2
+  source_revision: null
+  homepage_url: "https://ollama.com/library/qwen2"
