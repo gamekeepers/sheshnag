@@ -12,7 +12,7 @@ from schemas import (
 from pydantic import BaseModel
 from typing import Optional
 from auth import get_worker_context
-from provider_picker import picker
+from provider_picker import picker, get_catalog_entry
 from sweeper import MAX_BATCH_ATTEMPTS, requeue_or_fail_batch
 import shutil, os, logging
 
@@ -232,17 +232,9 @@ def poll_job(
     if not available_batches:
         return {"job": None}
 
-    if worker.vram_total_gb is not None:
-        batch = picker.find_best_batch(worker, available_batches)
-    else:
-        # No heartbeat yet — fall back to the models the worker advertised
-        # at registration. Never hand out an arbitrary batch to a worker
-        # whose capabilities are unknown.
-        advertised = worker.advertised_model_names()
-        batch = next(
-            (b for b in available_batches if b.model and b.model in advertised),
-            None,
-        )
+    # Catalogue-aware matching (VRAM fit + hosts the artifact), handling
+    # both the heartbeated and never-heartbeated worker inside the picker.
+    batch = picker.find_best_batch(db, worker, available_batches)
 
     if not batch:
         return {"job": None}
@@ -259,12 +251,16 @@ def poll_job(
     db.commit()
     db.refresh(batch)
 
+    # The daemon runs the runtime's own model id, not our catalogue slug.
+    entry = get_catalog_entry(db, batch.model)
+    runtime_model_id = entry.runtime_model_id if entry else batch.model
+
     return {
         "job": {
             "job_id":        batch.id,
             "input_file_id": batch.input_file_id,
             "input_path":    f"/v1/files/{batch.input_file_id}/content",
-            "model":         batch.model,
+            "model":         runtime_model_id,
         }
     }
 

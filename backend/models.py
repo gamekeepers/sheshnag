@@ -48,6 +48,10 @@ def generate_gpu_id():
     return f"gpu-{uuid.uuid4().hex[:24]}"
 
 
+def generate_catalog_id():
+    return f"mdl-{uuid.uuid4().hex[:24]}"
+
+
 def unix_now():
     return int(datetime.now(timezone.utc).timestamp())
 
@@ -269,6 +273,40 @@ class WorkerGpu(Base):
     updated_at = Column(Integer, default=unix_now)
 
     worker = relationship("Worker", back_populates="gpus")
+
+
+# ─── Model Catalogue ────────────────────────────────────────
+
+class ModelCatalog(Base):
+    """A curated, pinned model the user may select for a batch.
+
+    Identity is curated (admin/seed), not derived from what workers
+    registered: `id` is a stable platform slug the user puts in
+    `body.model`; `runtime_model_id` (the raw `mistral:7b` / HF repo id)
+    is an internal detail. Each row is ONE concrete artifact — weights +
+    quantization + runtime — so a batch bound to it never silently swaps
+    precision or runtime (reproducibility).
+
+    `digest` is the reproducibility anchor and the intended join key
+    against a worker's advertised models; until the daemon reports
+    digests, availability is matched on `runtime_model_id` (see
+    provider_picker). `org_id` NULL = public; reserved for org-private
+    entries (tier 2, not wired yet).
+    """
+    __tablename__ = "model_catalog"
+
+    id               = Column(String, primary_key=True, default=generate_catalog_id)
+    display_name     = Column(String, nullable=False)
+    runtime          = Column(String, nullable=False)   # ollama | vllm
+    runtime_model_id = Column(String, nullable=False)   # exact runtime string, internal
+    digest           = Column(String, nullable=True)    # reproducibility pin / join key
+    quantization     = Column(String, nullable=True)
+    vram_gb          = Column(Float, nullable=True)     # scheduling requirement
+    size_gb          = Column(Float, nullable=True)     # disk (feeds download size cap)
+    org_id           = Column(String, ForeignKey("organizations.id"), nullable=True)  # NULL = public
+    status           = Column(String, default="active")  # active | requested | deprecated
+    enabled          = Column(Boolean, default=True)
+    created_at       = Column(Integer, default=unix_now)
 
 
 # ─── Files & Batches ────────────────────────────────────────
