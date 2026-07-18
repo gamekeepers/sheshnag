@@ -79,7 +79,18 @@ class OllamaExecutor(BaseExecutor):
                 async for line in response.aiter_lines():
                     if not line:
                         continue
-                    progress = json.loads(line)
+                    try:
+                        progress = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    # Ollama reports failures as {"error": ...} events in a
+                    # 200 stream (bad model name, disk full, registry errors)
+                    # — raise_for_status never sees them.
+                    if "error" in progress:
+                        logger.error(
+                            f"Ollama pull failed for {model_name}: {progress['error']}"
+                        )
+                        return False
                     if progress_callback:
                         await progress_callback(progress)
             return True

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import json
 import logging
@@ -31,7 +32,7 @@ class RegistrationManager:
         worker's hardware/models on the backend.
         """
         logger.info("Detecting hardware for registration...")
-        hardware = detect_hardware()
+        hardware = await asyncio.to_thread(detect_hardware)
 
         worker_info = WorkerInfo(
             worker_id=config.worker_id,

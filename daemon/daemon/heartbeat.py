@@ -82,7 +82,10 @@ class HeartbeatManager:
             return []
 
     async def _build_payload(self):
-        gpu_stats = get_gpu_utilization()
+        # Off the event loop: nvidia-smi is a subprocess with a hard
+        # timeout — a wedged driver may cost this worker thread 5s, but
+        # the poll/execute loop keeps running.
+        gpu_stats = await asyncio.to_thread(get_gpu_utilization)
         memory_total = gpu_stats.get("memory_total_gb", 0.0)
         memory_used = gpu_stats.get("memory_used_gb", 0.0)
         return {
