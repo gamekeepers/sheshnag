@@ -1,3 +1,10 @@
+> **📜 HISTORICAL (Week-1 plan).** Kept for context. The "assumed"
+> contracts below have since changed: poll returns `input_file_id` +
+> `input_path` (input downloads via `GET /v1/files/{id}/content`, not
+> `/jobs/{id}/input`); auth, heartbeats, progress reporting, and an
+> Ollama executor — all "out of scope" here — are implemented. See
+> [daemon/README.md](daemon/README.md) for the current contract.
+
 # Week 1 — Worker Daemon Implementation Plan
 
 ## Scope

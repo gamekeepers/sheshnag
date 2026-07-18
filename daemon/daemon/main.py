@@ -30,12 +30,12 @@ import sys
 from daemon import __version__
 from daemon.client import BackendClient
 from daemon.config import DaemonConfig
-from daemon.executors.vllm import VLLMExecutor
+from daemon.executor_factory import create_executor
 from daemon.log import get_logger, setup_logging
 from daemon.models import WorkerInfo
+from daemon.registration import RegistrationManager
 from daemon.worker import Worker
 
-logger = get_logger(__name__)
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser."""
@@ -76,6 +76,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="vLLM server URL (default: http://localhost:8100)",
     )
+    
+    parser.add_argument(
+        "--ollama-url",
+        type=str,
+        default=None,
+        help="Ollama server URL (default: http://localhost:11434)",
+    )
 
     parser.add_argument(
         "--worker-id",
@@ -89,6 +96,13 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Seconds between poll attempts (default: 5)",
+    )
+    
+    parser.add_argument(
+        "--heartbeat-interval",
+        type=int,
+        default=None,
+        help="Seconds between heartbeats (default: 30)",
     )
 
     parser.add_argument(
@@ -112,7 +126,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--api-key",
         type=str,
         default=None,
-        help="API key for worker authentication (Bearer token)",
+        help="Org worker API key (Bearer token) — created in the platform dashboard",
     )
 
     # ── Registration metadata (Spec §8) ──────────────────────────
@@ -143,16 +157,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--runtime",
         type=str,
         default=None,
-        help="Inference runtime type (default: vllm)",
+        help="Inference runtime type (default: ollama)",
     )
 
     # ── Executor tuning ──────────────────────────────────────────
 
     parser.add_argument(
-        "--vllm-timeout",
+        "--inference-timeout",
         type=float,
         default=None,
-        help="Per-prompt vLLM inference timeout in seconds (default: 300.0)",
+        help="Per-prompt inference timeout in seconds (default: 300.0)",
     )
 
     return parser
@@ -166,12 +180,13 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
     This dict is passed to DaemonConfig.load(cli_overrides=...)
     so all precedence logic lives in one place.
     """
-    # Map CLI arg names → config field names
     mapping = {
         "backend_url": args.backend_url,
         "vllm_url": args.vllm_url,
+        "ollama_url": args.ollama_url,
         "worker_id": args.worker_id,
         "poll_interval": args.poll_interval,
+        "heartbeat_interval": args.heartbeat_interval,
         "log_level": args.log_level,
         "work_dir": args.work_dir,
         "api_key": args.api_key,
@@ -179,7 +194,7 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
         "vram_gb": args.vram_gb,
         "models": args.models,
         "runtime": args.runtime,
-        "vllm_timeout": args.vllm_timeout,
+        "inference_timeout": args.inference_timeout,
     }
 
     # Filter out None values — DaemonConfig.load() also does this,
@@ -188,6 +203,7 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
 
 
 async def _run(config: DaemonConfig) -> None:
+    logger = get_logger(__name__)
     """
     Async entry point — wires up all components and starts the worker.
 
@@ -199,44 +215,57 @@ async def _run(config: DaemonConfig) -> None:
         2. Register worker with control plane (spec §8)
         3. Start the poll-execute loop
     """
+    # ── Resolve the org worker API key  ───────────
+    # The key is created in the platform dashboard and is a required
+    # input — the backend authenticates every /workers/* call with it
+    # and never issues keys itself.
+    reg_manager = RegistrationManager(config.credentials_path)
+    saved_key = reg_manager.load_saved_credentials()
+
+    api_key = config.api_key or saved_key
+    if not api_key:
+        logger.error(
+            "No API key configured. Create an org worker API key in the "
+            "platform dashboard and pass it via --api-key, DAEMON_API_KEY, "
+            "or api_key in config.yaml."
+        )
+        sys.exit(1)
+    config.api_key = api_key
+
     # ── Create components ────────────────────────────────────────
     client = BackendClient(
         base_url=config.backend_url,
         worker_id=config.worker_id,
-        api_key=config.api_key,
+        api_key=api_key,
     )
 
-    executor = VLLMExecutor(
-        base_url=config.vllm_url,
-        timeout=config.vllm_timeout,
-        supported_models=config.models if config.models else None,
-    )
+    # ── Register with platform ───────────────────────────────────
+    try:
+        assigned_worker_id = await reg_manager.register(client, config)
+        config.worker_id = assigned_worker_id
+        client.update_worker_id(assigned_worker_id)
+        logger.info(f"Worker registered: {assigned_worker_id}")
+    except Exception as exc:
+        logger.error(f"Failed to register with platform: {exc}")
+        saved_worker_id = reg_manager.load_saved_worker_id()
+        if not saved_worker_id:
+            logger.error("No previously assigned worker id available. Exiting.")
+            sys.exit(1)
+        config.worker_id = saved_worker_id
+        client.update_worker_id(saved_worker_id)
+        logger.warning(
+            f"Continuing as previously registered worker "
+            f"'{saved_worker_id}' despite registration failure."
+        )
+
+    # ── Executor and Worker ──────────────────────────────────────
+    executor = create_executor(config)
 
     worker = Worker(
         config=config,
         client=client,
         executor=executor,
     )
-
-    # ── Register with control plane (Spec §8) ────────────────────
-    worker_info = WorkerInfo(
-        worker_id=config.worker_id,
-        gpu_name=config.gpu_name,
-        vram_gb=config.vram_gb,
-        models=config.models,
-        runtime=config.runtime,
-        status="online",
-    )
-
-    try:
-        await client.register_worker(worker_info)
-    except Exception as exc:
-        # Registration failure is not fatal — the worker can still
-        # attempt to poll. The backend may already know this worker
-        # or may accept unregistered workers in dev mode.
-        logger.warning(
-            f"Worker registration failed (continuing anyway): {exc}"
-        )
 
     # ── Run ──────────────────────────────────────────────────────
     try:
@@ -271,14 +300,14 @@ def main() -> None:
     logger.info(f"  GPU Worker Daemon v{__version__}")
     logger.info(f"  Worker ID:     {config.worker_id}")
     logger.info(f"  Backend URL:   {config.backend_url}")
+    logger.info(f"  Ollama URL:    {config.ollama_url}")
     logger.info(f"  vLLM URL:      {config.vllm_url}")
     logger.info(f"  Poll interval: {config.poll_interval}s")
+    logger.info(f"  Heartbeat:     {config.heartbeat_interval}s")
     logger.info(f"  Work dir:      {config.work_dir}")
     logger.info(f"  Auth:          {auth_status}")
-    logger.info(f"  GPU:           {config.gpu_name} ({config.vram_gb}GB)")
     logger.info(f"  Models:        {models_str}")
     logger.info(f"  Runtime:       {config.runtime}")
-    logger.info(f"  vLLM timeout:  {config.vllm_timeout}s")
     logger.info(f"{'='*60}")
 
     # Run the async event loop

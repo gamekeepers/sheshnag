@@ -3,21 +3,27 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import (
     Batch, BatchAssignment, File as FileModel, Worker,
-    ProviderCapability, Organization, OrganizationMembership, ApiKey, unix_now, get_org_owner,
+    WorkerGpu, WorkerRuntime, RuntimeModel, unix_now,
 )
-from schemas import HeartbeatRequest, WorkerRegisterRequest
+from schemas import (
+    ModelDownloadReport, ProgressReport,
+    WorkerHeartbeatRequest, WorkerRegisterRequest,
+)
 from pydantic import BaseModel
 from typing import Optional
-from auth import get_current_user, generate_api_key, hash_api_key, get_api_key_prefix, get_worker_context
+from auth import get_worker_context
 from provider_picker import picker
-import shutil, os, json
+from sweeper import MAX_BATCH_ATTEMPTS, requeue_or_fail_batch
+import shutil, os, logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 VALID_TRANSITIONS = {
     "validating":  ["validated", "failed"],
     "validated":   ["in_progress"],
-    "in_progress": ["completed", "failed"],
+    "in_progress": ["completed", "failed", "validated"],  # "validated" = requeue
     "completed":   [],
     "failed":      [],
 }
@@ -43,6 +49,38 @@ class FailureReport(BaseModel):
     error: Optional[str] = None
 
 
+def _get_org_worker(db: Session, org, worker_id: str) -> Worker:
+    """Resolve a worker that belongs to the calling key's org, else 404.
+
+    Every worker endpoint must scope by org — otherwise any org's key
+    could act on any worker (spec §17).
+    """
+    worker = db.query(Worker).filter(
+        Worker.id == worker_id,
+        Worker.org_id == org.id,
+    ).first()
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+    return worker
+
+
+def _get_assigned_batch(db: Session, job_id: str, worker_id: str) -> Batch:
+    """Resolve a batch currently assigned to this worker, else 404/403."""
+    batch = db.query(Batch).filter(Batch.id == job_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    assignment = db.query(BatchAssignment).filter(
+        BatchAssignment.batch_id == job_id,
+    ).first()
+    if not assignment or assignment.worker_id != worker_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Batch is not assigned to this worker",
+        )
+    return batch
+
+
 # ─── Worker Registration & Heartbeat ───────────────────────
 
 @router.post("/register")
@@ -61,17 +99,42 @@ def register_worker(
         Worker.hostname == req.hostname,
     ).first()
 
-    gpus_json = json.dumps([g.model_dump() for g in req.gpus])
-    runtimes_json = json.dumps([r.model_dump() for r in req.runtimes])
     cpu_cores = req.cpu.get("cores") if req.cpu else None
     ram_gb = req.ram.get("total_gb") if req.ram else None
+
+    def _gpu_rows():
+        return [
+            WorkerGpu(
+                gpu_index=g.index, vendor=g.vendor, name=g.name,
+                vram_gb=g.vram_gb, driver=g.driver, cuda=g.cuda,
+            )
+            for g in req.gpus
+        ]
+
+    def _runtime_rows():
+        return [
+            WorkerRuntime(
+                engine=r.type,
+                base_url=r.endpoint,
+                models=[
+                    RuntimeModel(name=m, runtime_model_id=m)
+                    for m in r.models
+                ],
+            )
+            for r in req.runtimes
+        ]
 
     if existing:
         existing.os = req.os
         existing.cpu_cores = cpu_cores
         existing.ram_total_gb = ram_gb
-        existing.gpus = gpus_json
-        existing.runtimes = runtimes_json
+        # Replace-all: clear + flush first so the old rows' DELETEs hit the
+        # DB before the new INSERTs (unique constraints would trip otherwise)
+        existing.gpus = []
+        existing.runtimes = []
+        db.flush()
+        existing.gpus = _gpu_rows()
+        existing.runtimes = _runtime_rows()
         existing.status = "online"
         existing.last_heartbeat = unix_now()
         db.commit()
@@ -88,8 +151,8 @@ def register_worker(
         os=req.os,
         cpu_cores=cpu_cores,
         ram_total_gb=ram_gb,
-        gpus=gpus_json,
-        runtimes=runtimes_json,
+        gpus=_gpu_rows(),
+        runtimes=_runtime_rows(),
     )
     db.add(worker)
     db.commit()
@@ -105,57 +168,47 @@ def register_worker(
 @router.post("/{worker_id}/heartbeat")
 def worker_heartbeat(
     worker_id: str,
-    _ctx=Depends(get_worker_context),
-    db: Session = Depends(get_db),
-):
-    """Worker heartbeat — updates status and timestamp."""
-    worker = db.query(Worker).filter(Worker.id == worker_id).first()
-    if not worker:
-        raise HTTPException(status_code=404, detail="Worker not found")
-
-    worker.status = "online"
-    worker.last_heartbeat = unix_now()
-    db.commit()
-    return {"status": "ok", "worker_id": worker_id}
-
-
-# ─── Legacy heartbeat (ProviderCapability compat) ──────────
-
-@router.post("/heartbeat")
-def heartbeat(
-    req: HeartbeatRequest,
+    req: WorkerHeartbeatRequest,
     ctx=Depends(get_worker_context),
     db: Session = Depends(get_db),
 ):
-    """Legacy heartbeat (ProviderCapability compat)."""
+    """Unified worker heartbeat (spec §8.1).
+
+    Updates liveness (`status`/`last_heartbeat`), the daemon-reported
+    `activity`, and the dynamic capability data (VRAM, loaded models)
+    that the provider picker matches on during /workers/poll.
+    """
     _api_key, org = ctx
 
-    caps = db.query(ProviderCapability).filter(
-        ProviderCapability.worker_id == req.worker_id,
-    ).first()
+    worker = _get_org_worker(db, org, worker_id)
 
-    org_id = org.id
+    worker.status = "online"
+    worker.activity = req.activity
+    worker.last_heartbeat = unix_now()
+    worker.vram_total_gb = req.vram_total_gb
+    worker.vram_available_gb = req.vram_available_gb
 
-    if caps:
-        caps.vram_total_gb = req.vram_total_gb
-        caps.vram_available_gb = req.vram_available_gb
-        caps.loaded_models = json.dumps(req.loaded_models)
-        caps.status = "online"
-        caps.last_heartbeat = unix_now()
-    else:
-        caps = ProviderCapability(
-            worker_id=req.worker_id,
-            provider_id=org_id,
-            vram_total_gb=req.vram_total_gb,
-            vram_available_gb=req.vram_available_gb,
-            loaded_models=json.dumps(req.loaded_models),
-            status="online",
-            last_heartbeat=unix_now(),
-        )
-        db.add(caps)
+    # Map reported loaded models onto runtime_models.loaded flags.
+    reported = set(req.loaded_models)
+    known = set()
+    for runtime in worker.runtimes:
+        for model in runtime.models:
+            was_loaded = model.loaded
+            model.loaded = model.name in reported
+            if model.loaded != was_loaded:
+                model.updated_at = unix_now()
+            known.add(model.name)
+    # A loaded model we've never seen (e.g. pulled on the fly): record it.
+    # The daemon runs a single runtime, so attach to the first one.
+    missing = reported - known
+    if missing and worker.runtimes:
+        for name in missing:
+            worker.runtimes[0].models.append(
+                RuntimeModel(name=name, runtime_model_id=name, loaded=True)
+            )
 
     db.commit()
-    return {"status": "ok"}
+    return {"status": "ok", "worker_id": worker_id}
 
 
 # ─── Job Polling & Results ─────────────────────────────────
@@ -163,12 +216,11 @@ def heartbeat(
 @router.post("/poll")
 def poll_job(
     req: PollRequest,
-    _ctx=Depends(get_worker_context),
+    ctx=Depends(get_worker_context),
     db: Session = Depends(get_db),
 ):
-    caps = db.query(ProviderCapability).filter(
-        ProviderCapability.worker_id == req.worker_id,
-    ).first()
+    _api_key, org = ctx
+    worker = _get_org_worker(db, org, req.worker_id)
 
     available_batches = (
         db.query(Batch)
@@ -180,10 +232,17 @@ def poll_job(
     if not available_batches:
         return {"job": None}
 
-    if caps:
-        batch = picker.find_best_batch(caps, available_batches)
+    if worker.vram_total_gb is not None:
+        batch = picker.find_best_batch(worker, available_batches)
     else:
-        batch = available_batches[0] if available_batches else None
+        # No heartbeat yet — fall back to the models the worker advertised
+        # at registration. Never hand out an arbitrary batch to a worker
+        # whose capabilities are unknown.
+        advertised = worker.advertised_model_names()
+        batch = next(
+            (b for b in available_batches if b.model and b.model in advertised),
+            None,
+        )
 
     if not batch:
         return {"job": None}
@@ -210,16 +269,65 @@ def poll_job(
     }
 
 
+@router.post("/progress")
+def report_progress(
+    req: ProgressReport,
+    ctx=Depends(get_worker_context),
+    db: Session = Depends(get_db),
+):
+    """Live progress from a worker (every N prompts) — spec §11.
+
+    Keeps the batch's request counts current so the dashboard shows
+    real progress instead of 0 until completion.
+    """
+    _api_key, org = ctx
+    _get_org_worker(db, org, req.worker_id)
+    batch = _get_assigned_batch(db, req.job_id, req.worker_id)
+
+    batch.request_counts_completed = req.completed
+    batch.request_counts_failed = req.failed
+    db.commit()
+
+    return {"status": "ok", "batch_id": batch.id}
+
+
+@router.post("/model-progress")
+def report_model_download(
+    req: ModelDownloadReport,
+    ctx=Depends(get_worker_context),
+    db: Session = Depends(get_db),
+):
+    """Model download progress from a worker.
+
+    Recorded as liveness only for now — whether on-the-fly downloads
+    stay (and get a first-class worker status) is an open spec decision.
+    """
+    _api_key, org = ctx
+    worker = _get_org_worker(db, org, req.worker_id)
+
+    worker.last_heartbeat = unix_now()
+    db.commit()
+
+    logger.info(
+        "Worker %s downloading model %s: %s (%d/%d)",
+        req.worker_id, req.model_name, req.status, req.completed, req.total,
+    )
+    return {"status": "ok", "worker_id": req.worker_id}
+
+
 @router.post("/upload-results")
 def upload_results(
     job_id: str = Form(...),
+    worker_id: str = Form(...),
     file: UploadFile = File(...),
-    _ctx=Depends(get_worker_context),
+    completed: Optional[int] = Form(None),
+    failed: Optional[int] = Form(None),
+    ctx=Depends(get_worker_context),
     db: Session = Depends(get_db),
 ):
-    batch = db.query(Batch).filter(Batch.id == job_id).first()
-    if not batch:
-        raise HTTPException(status_code=404, detail="Batch not found")
+    _api_key, org = ctx
+    _get_org_worker(db, org, worker_id)
+    batch = _get_assigned_batch(db, job_id, worker_id)
 
     validate_transition(batch.status, "completed")
 
@@ -243,7 +351,12 @@ def upload_results(
     batch.output_file_id = output_file.id
     batch.status = "completed"
     batch.completed_at = unix_now()
-    batch.request_counts_completed = batch.request_counts_total
+    # Real counts from the daemon; if absent, keep whatever the live
+    # /workers/progress reports accumulated — never assume 100% success.
+    if completed is not None:
+        batch.request_counts_completed = completed
+    if failed is not None:
+        batch.request_counts_failed = failed
 
     db.commit()
     db.refresh(batch)
@@ -258,158 +371,28 @@ def upload_results(
 @router.post("/report-failure")
 def report_failure(
     req: FailureReport,
-    _ctx=Depends(get_worker_context),
+    ctx=Depends(get_worker_context),
     db: Session = Depends(get_db),
 ):
-    batch = db.query(Batch).filter(Batch.id == req.job_id).first()
-    if not batch:
-        raise HTTPException(status_code=404, detail="Batch not found")
+    """Worker reports a job failure — requeue until MAX_BATCH_ATTEMPTS (spec §12)."""
+    _api_key, org = ctx
+    _get_org_worker(db, org, req.worker_id)
+    batch = _get_assigned_batch(db, req.job_id, req.worker_id)
 
-    validate_transition(batch.status, "failed")
-    batch.status = "failed"
-    batch.completed_at = unix_now()
-    batch.request_counts_failed = batch.request_counts_total
+    target = (
+        "failed"
+        if (batch.attempts or 0) + 1 >= MAX_BATCH_ATTEMPTS
+        else "validated"
+    )
+    validate_transition(batch.status, target)
+    outcome = requeue_or_fail_batch(db, batch, error=req.error)
 
     db.commit()
     db.refresh(batch)
 
     return {
-        "status":   "failed",
+        "status":   outcome,
         "batch_id": batch.id,
+        "attempts": batch.attempts,
         "error":    req.error,
-    }
-
-
-# ─── Organization-Scoped Endpoints ─────────────────────────
-
-@router.get("/v1/organizations")
-def list_user_organizations(
-    user=Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """List organizations the current user belongs to."""
-    memberships = db.query(OrganizationMembership).filter(
-        OrganizationMembership.user_id == user.id
-    ).all()
-
-    orgs = []
-    for m in memberships:
-        org = db.query(Organization).filter(Organization.id == m.org_id).first()
-        if org:
-            orgs.append({
-                "id": org.id,
-                "name": org.name,
-                "role": m.role,
-                "derived_owner_id": get_org_owner(db, org.id),
-                "created_at": org.created_at,
-            })
-
-    return {"object": "list", "data": orgs}
-
-
-@router.get("/v1/organizations/{org_id}/api-keys")
-def list_org_api_keys(
-    org_id: str,
-    user=Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """List worker API keys for an organization. Must be a member."""
-    membership = db.query(OrganizationMembership).filter(
-        OrganizationMembership.org_id == org_id,
-        OrganizationMembership.user_id == user.id,
-    ).first()
-
-    if not membership and user.platform_role != "superadmin":
-        raise HTTPException(status_code=403, detail="Not a member of this organization")
-
-    keys = db.query(ApiKey).filter(
-        ApiKey.org_id == org_id,
-        ApiKey.key_type == "worker",
-    ).order_by(ApiKey.created_at.desc()).all()
-    return {
-        "object": "list",
-        "data": [
-            {
-                "id": k.id,
-                "key_prefix": k.key_prefix,
-                "name": k.name,
-                "status": k.status,
-                "last_used_at": k.last_used_at,
-                "expires_at": k.expires_at,
-                "created_at": k.created_at,
-            }
-            for k in keys
-        ],
-    }
-
-
-@router.post("/v1/organizations/{org_id}/api-keys/regenerate")
-def regenerate_org_api_key(
-    org_id: str,
-    user=Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Regenerate a worker API key for an organization. Must be owner or admin."""
-    membership = db.query(OrganizationMembership).filter(
-        OrganizationMembership.org_id == org_id,
-        OrganizationMembership.user_id == user.id,
-        OrganizationMembership.role.in_(["owner", "admin"]),
-    ).first()
-
-    if not membership and user.platform_role != "superadmin":
-        raise HTTPException(status_code=403, detail="Only org owner/admin can regenerate keys")
-
-    api_key_entry = db.query(ApiKey).filter(
-        ApiKey.org_id == org_id,
-        ApiKey.key_type == "worker",
-    ).first()
-    if not api_key_entry:
-        raise HTTPException(status_code=404, detail="No worker API key found for this org")
-
-    raw_key = generate_api_key()
-    api_key_entry.key_prefix = get_api_key_prefix(raw_key)
-    api_key_entry.key_hash = hash_api_key(raw_key)
-    db.commit()
-    db.refresh(api_key_entry)
-    return {"api_key": raw_key}
-
-
-@router.get("/v1/organizations/{org_id}/workers")
-def list_org_workers(
-    org_id: str,
-    user=Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """List workers belonging to an organization. Must be a member."""
-    membership = db.query(OrganizationMembership).filter(
-        OrganizationMembership.org_id == org_id,
-        OrganizationMembership.user_id == user.id,
-    ).first()
-
-    if not membership and user.platform_role != "superadmin":
-        raise HTTPException(status_code=403, detail="Not a member of this organization")
-
-    workers = (
-        db.query(Worker)
-        .filter(Worker.org_id == org_id)
-        .order_by(Worker.created_at.desc())
-        .all()
-    )
-    return {
-        "object": "list",
-        "data": [
-            {
-                "id": w.id,
-                "hostname": w.hostname,
-                "os": w.os,
-                "cpu_cores": w.cpu_cores,
-                "ram_total_gb": w.ram_total_gb,
-                "gpus": json.loads(w.gpus) if w.gpus else [],
-                "runtimes": json.loads(w.runtimes) if w.runtimes else [],
-                "status": w.status,
-                "last_heartbeat": w.last_heartbeat,
-                "created_at": w.created_at,
-            }
-            for w in workers
-        ],
     }

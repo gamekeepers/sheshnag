@@ -15,7 +15,6 @@ from auth import (
 # get_current_user is JWT-only
 # get_human_context accepts JWT or personal API key
 from services.email_service import send_password_reset_email
-import json
 import secrets
 import uuid
 
@@ -198,9 +197,22 @@ def list_all_workers(
                 "os": w.os,
                 "cpu_cores": w.cpu_cores,
                 "ram_total_gb": w.ram_total_gb,
-                "gpus": json.loads(w.gpus) if w.gpus else [],
-                "runtimes": json.loads(w.runtimes) if w.runtimes else [],
+                "gpus": [
+                    {
+                        "index": g.gpu_index, "vendor": g.vendor, "name": g.name,
+                        "vram_gb": g.vram_gb, "driver": g.driver, "cuda": g.cuda,
+                    }
+                    for g in w.gpus
+                ],
+                "runtimes": [
+                    {
+                        "type": rt.engine, "endpoint": rt.base_url,
+                        "models": [m.name for m in rt.models],
+                    }
+                    for rt in w.runtimes
+                ],
                 "status": w.status,
+                "activity": w.activity,
                 "last_heartbeat": w.last_heartbeat,
             }
             for w in workers

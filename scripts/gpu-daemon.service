@@ -1,0 +1,19 @@
+# systemd USER unit — install to ~/.config/systemd/user/ and manage with
+# `systemctl --user`. Rootless by design: the daemon lives entirely under
+# ~/.gpu-daemon (see scripts/install.sh). %h expands to the user's home.
+[Unit]
+Description=MoonKnight GPU Worker Daemon
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.gpu-daemon/src/daemon
+ExecStart=%h/.gpu-daemon/venv/bin/python -m daemon.main --config %h/.gpu-daemon/config.yaml
+Environment=PATH=%h/.gpu-daemon/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=10
+EnvironmentFile=-%h/.gpu-daemon/.env
+
+[Install]
+WantedBy=default.target

@@ -45,32 +45,39 @@ app = FastAPI(title="Mock Control Plane", version="0.1.0")
 # ── In-memory state ──────────────────────────────────────────
 
 _jobs: dict = {}
+_files: dict = {}  # Simulates /v1/files table
 _outputs: dict = {}
 _workers: dict = {}
 
 
 def _seed_job() -> None:
     """Create a single test job from the sample input file."""
-    job_id = f"job-{uuid.uuid4().hex[:8]}"
+    job_id = f"batch-{uuid.uuid4().hex[:8]}"
+    input_file_id = f"file-{uuid.uuid4().hex[:12]}"
 
     # Copy input file to storage
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     input_dest = STORAGE_DIR / f"{job_id}_input.jsonl"
     shutil.copy(SAMPLE_INPUT, input_dest)
 
+    # Store file mapping (simulates the /v1/files table)
+    _files[input_file_id] = {
+        "id": input_file_id,
+        "filepath": str(input_dest),
+        "filename": f"{job_id}_input.jsonl",
+    }
+
     _jobs[job_id] = {
         "job_id": job_id,
-        "model": "mistralai/Mistral-7B-Instruct-v0.2",
-        "status": "queued",
-        "max_tokens": 512,
-        "temperature": 0.7,
+        "input_file_id": input_file_id,
+        "status": "validating",
         "input_path": str(input_dest),
         "output_path": None,
         "created_at": datetime.utcnow().isoformat(),
         "worker_id": None,
     }
-    print(f"\n✅ Seeded test job: {job_id}")
-    print(f"   Input: {input_dest}")
+    print(f"\n✅ Seeded test batch: {job_id}")
+    print(f"   Input file: {input_file_id} → {input_dest}")
     print(f"   Prompts: {sum(1 for _ in open(input_dest))}")
 
 
@@ -105,67 +112,81 @@ async def register_worker(body: dict):
 
     Stores worker metadata (GPU info, models, runtime) so the
     scheduler knows what this worker can handle (spec §8).
+
+    Mirrors the real backend: authentication uses a pre-existing org
+    worker API key (never issued here), and the response carries the
+    backend-assigned worker_id — no api_key field.
     """
-    worker_id = body.get("worker_id", "unknown")
+    worker_id = f"worker-{uuid.uuid4().hex[:12]}"
     _workers[worker_id] = body
     print(
-        f"\n✅ Worker registered: {worker_id}"
-        f" (GPU: {body.get('gpu_name', '?')},"
-        f" VRAM: {body.get('vram_gb', '?')}GB,"
-        f" Models: {body.get('models', [])},"
-        f" Runtime: {body.get('runtime', '?')})"
+        f"\n✅ Worker registered: {worker_id}\n"
+        f"   (Hostname: {body.get('hostname', '?')},"
+        f" GPUs: {body.get('gpus', [])},"
+        f" Runtimes: {body.get('runtimes', [])})"
     )
-    return JSONResponse(content={"status": "registered", "worker_id": worker_id})
+    return JSONResponse(content={
+        "status": "registered",
+        "worker_id": worker_id,
+        "message": f"Worker '{body.get('hostname', '?')}' registered successfully",
+    })
 
 
 @app.post("/workers/poll")
 async def poll_job(body: dict):
     """
-    Worker polls for a job.
-    Returns the first queued job, or 204 if none available.
+    Worker polls for a batch.
+    Returns the first validating batch, or {"job": null} if none available.
     """
     worker_id = body.get("worker_id", "unknown")
 
     for job_id, job in _jobs.items():
-        if job["status"] == "queued":
-            job["status"] = "running"
+        if job["status"] == "validating":
+            job["status"] = "in_progress"
             job["worker_id"] = worker_id
-            print(f"\n📋 Job {job_id} assigned to worker {worker_id}")
+            input_file_id = job["input_file_id"]
+            print(f"\n📋 Batch {job_id} assigned to worker {worker_id}")
             return JSONResponse(
                 content={
                     "job": {
                         "job_id": job["job_id"],
-                        "model": job["model"],
-                        "status": "running",
-                        "max_tokens": job["max_tokens"],
-                        "temperature": job["temperature"],
+                        "input_file_id": input_file_id,
+                        "input_path": f"/v1/files/{input_file_id}/content",
+                        "model": job.get("model"),
                     }
                 }
             )
 
-    return Response(status_code=204)
+    return JSONResponse(content={"job": None})
 
 
-@app.get("/jobs/{job_id}/input")
-async def download_input(job_id: str):
-    """Serve the input JSONL file for a job."""
-    if job_id not in _jobs:
-        return JSONResponse(status_code=404, content={"error": "Job not found"})
+@app.get("/v1/files/{file_id}/content")
+async def download_file_content(file_id: str):
+    """Serve a file by its file ID (mirrors Akshay's /v1/files/{id}/content)."""
+    if file_id not in _files:
+        return JSONResponse(status_code=404, content={"error": "File not found"})
 
-    input_path = _jobs[job_id]["input_path"]
-    if not Path(input_path).exists():
-        return JSONResponse(status_code=404, content={"error": "Input file missing"})
+    filepath = _files[file_id]["filepath"]
+    if not Path(filepath).exists():
+        return JSONResponse(status_code=404, content={"error": "File data missing"})
 
-    print(f"\n📥 Worker downloading input for job {job_id}")
-    return FileResponse(input_path, media_type="application/jsonl")
+    print(f"\n📥 Worker downloading file {file_id}")
+    return FileResponse(filepath, media_type="application/jsonl")
 
 
 @app.post("/workers/upload-results")
 async def upload_results(
     job_id: str = Form(...),
+    worker_id: Optional[str] = Form(None),
     file: UploadFile = File(...),
+    completed: Optional[int] = Form(None),
+    failed: Optional[int] = Form(None),
 ):
-    """Accept output JSONL upload from worker."""
+    """Accept output JSONL upload from worker.
+
+    Mirrors the real backend contract: the daemon sends its worker_id
+    (ownership check server-side) plus real completed/failed counts.
+    """
     if job_id not in _jobs:
         return JSONResponse(status_code=404, content={"error": "Job not found"})
 
@@ -184,6 +205,7 @@ async def upload_results(
     print(f"{'='*60}")
     print(f"   Output: {output_dest}")
     print(f"   Size: {len(content):,} bytes")
+    print(f"   Worker: {worker_id} — counts: {completed} completed / {failed} failed")
 
     # Parse and display results
     try:
@@ -210,27 +232,46 @@ async def upload_results(
     return JSONResponse(content={"status": "ok"})
 
 
-@app.post("/jobs/{job_id}/fail")
-async def report_failure(job_id: str, body: dict):
+@app.post("/workers/report-failure")
+async def report_failure(body: dict):
     """
     Worker reports a job failure.
 
-    Updates the job status to "failed" and stores the error message
+    Updates the batch status to "failed" and stores the error message
     so the backend can decide whether to requeue or notify the user.
     """
-    if job_id not in _jobs:
-        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    job_id = body.get("job_id")
+    if not job_id or job_id not in _jobs:
+        return JSONResponse(status_code=404, content={"error": "Batch not found"})
 
     error_msg = body.get("error", "unknown")
     worker_id = body.get("worker_id", "unknown")
     _jobs[job_id]["status"] = "failed"
     _jobs[job_id]["error"] = error_msg
 
-    print(f"\n❌ Job {job_id} FAILED (worker: {worker_id})")
+    print(f"\n❌ Batch {job_id} FAILED (worker: {worker_id})")
     print(f"   Error: {error_msg[:200]}")
 
     return JSONResponse(content={"status": "ok"})
 
+
+@app.post("/workers/{worker_id}/heartbeat")
+async def receive_heartbeat(worker_id: str, body: dict):
+    """Unified heartbeat — mirrors POST /workers/{worker_id}/heartbeat."""
+    print(
+        f"💓 Heartbeat from {worker_id}: activity={body.get('activity')}, "
+        f"vram={body.get('vram_available_gb')}/{body.get('vram_total_gb')}GB, "
+        f"loaded_models={body.get('loaded_models')}"
+    )
+    return JSONResponse(content={"status": "ok", "worker_id": worker_id})
+
+@app.post("/workers/progress")
+async def receive_progress(body: dict):
+    return JSONResponse(content={"status": "ok"})
+
+@app.post("/workers/model-progress")
+async def receive_model_progress(body: dict):
+    return JSONResponse(content={"status": "ok"})
 
 # ── User APIs (for completeness) ────────────────────────────
 

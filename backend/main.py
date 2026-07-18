@@ -1,14 +1,19 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import asyncio
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
-from routers import files, batches, workers, auth, users
+from routers import files, batches, workers, auth, users, organizations
 from models import User, Organization, OrganizationMembership
 from auth import hash_password
+from migrations import run_startup_migrations
+from sweeper import run_sweeper
 
 Base.metadata.create_all(bind=engine)
+run_startup_migrations(engine)
 
 app = FastAPI(title="Batch AI Compute Platform")
 
@@ -24,7 +29,14 @@ app.include_router(auth.router,      prefix="/v1",      tags=["Auth"])
 app.include_router(files.router,     prefix="/v1",      tags=["Files"])
 app.include_router(batches.router,   prefix="/v1",      tags=["Batches"])
 app.include_router(users.router,     prefix="/v1",      tags=["Users"])
+app.include_router(organizations.router, prefix="/v1",  tags=["Organizations"])
 app.include_router(workers.router,   prefix="/workers",  tags=["Workers"])
+
+
+@app.on_event("startup")
+async def start_worker_sweeper():
+    """Reclaim batches from workers whose heartbeats stopped"""
+    asyncio.create_task(run_sweeper())
 
 
 @app.on_event("startup")

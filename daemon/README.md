@@ -1,35 +1,37 @@
 # GPU Worker Daemon
 
-A lightweight polling daemon that connects to the central control plane, claims batch inference jobs, executes them via vLLM, and uploads results.
+A lightweight polling daemon that connects to the central control plane, claims batch inference jobs, executes them via a local runtime (**Ollama** by default, or **vLLM**), and uploads results — reporting heartbeats, capability stats, and live progress along the way.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Worker Daemon                        │
-│                                                         │
-│  ┌──────────┐    ┌──────────┐    ┌─────────────────┐   │
-│  │  Config   │───▶│  Worker  │◀───│ BackendClient   │   │
-│  └──────────┘    │  (loop)  │    │ (HTTP to API)   │   │
-│                  └────┬─────┘    └────────┬────────┘   │
-│                       │                   │             │
-│                       ▼                   │             │
-│              ┌──────────────┐             │             │
-│              │ BaseExecutor │             │             │
-│              │   (ABC)      │             │             │
-│              └──────┬───────┘             │             │
-│                     │                     │             │
-│              ┌──────▼───────┐             │             │
-│              │ VLLMExecutor │             │             │
-│              │ (OpenAI API) │             │             │
-│              └──────────────┘             │             │
-└─────────────────────────────────────────────────────────┘
-         │                          │
-         ▼                          ▼
-  ┌──────────────┐         ┌──────────────┐
-  │  vLLM Server │         │   Backend    │
-  │  (localhost)  │         │  (FastAPI)   │
-  └──────────────┘         └──────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                        Worker Daemon                         │
+│                                                              │
+│  ┌────────┐   ┌──────────┐   ┌───────────────┐               │
+│  │ Config  │──▶│  Worker  │◀──│ BackendClient │               │
+│  └────────┘   │  (loop)  │   │ (HTTP to API) │               │
+│               └──┬───┬───┘   └───────┬───────┘               │
+│                  │   │               │                       │
+│   ┌──────────────┘   └────────┐      │                       │
+│   ▼                          ▼      │                       │
+│ ┌───────────────┐   ┌──────────────┐ │                       │
+│ │ HeartbeatMgr  │   │ BaseExecutor │ │                       │
+│ │ (30s, stats)  │   │    (ABC)     │ │                       │
+│ └───────────────┘   └──────┬───────┘ │                       │
+│                    ┌───────┴────────┐│                       │
+│                    ▼                ▼│                       │
+│           ┌────────────────┐ ┌──────────────┐                │
+│           │ OllamaExecutor │ │ VLLMExecutor │                │
+│           │   (default)    │ │ (OpenAI API) │                │
+│           └────────────────┘ └──────────────┘                │
+└──────────────────────────────────────────────────────────────┘
+          │                                  │
+          ▼                                  ▼
+   ┌──────────────┐                  ┌──────────────┐
+   │ Ollama/vLLM  │                  │   Backend    │
+   │ (localhost)  │                  │  (FastAPI)   │
+   └──────────────┘                  └──────────────┘
 ```
 
 ## Design Principles
@@ -37,76 +39,73 @@ A lightweight polling daemon that connects to the central control plane, claims 
 | Principle | Implementation |
 |-----------|---------------|
 | **Open/Closed** | Add new runtimes by subclassing `BaseExecutor` — zero changes to `Worker` |
-| **Single Responsibility** | Each module owns one concern: config, HTTP, execution, orchestration |
-| **Dependency Inversion** | `Worker` depends on `BaseExecutor` abstraction, not concrete `VLLMExecutor` |
-| **Strategy Pattern** | Executor is injected at construction — swap runtimes without code changes |
+| **Single Responsibility** | Each module owns one concern: config, HTTP, execution, heartbeats, registration, orchestration |
+| **Dependency Inversion** | `Worker` depends on `BaseExecutor`; the concrete executor is chosen by `executor_factory` from `runtime` config |
+| **Strategy Pattern** | Executor injected at construction — swap runtimes without code changes |
 
 ## Quick Start
 
 ### Prerequisites
 
 - Python 3.10+
-- A running vLLM server (or mock backend for testing)
+- A running **Ollama** (default) or **vLLM** server
+- An **org worker API key** (`gk-...`), created in the platform dashboard
 
 ### Install
 
 ```bash
 cd daemon
-pip install -e .
+pip install -r requirements.txt
 ```
 
-For dev dependencies (testing, mock servers):
-```bash
-pip install -e ".[dev]"
-```
+Or use the guided installer from the repo root: `scripts/install.sh` —
+**rootless by design**: no sudo at any step, everything under
+`~/.gpu-daemon/` (code, venv, config, user-local Ollama), services via
+`systemctl --user` with linger so they survive logout. Prompts for the
+API key (or reads `BACKEND_URL`/`API_KEY`/`WORKER_ID` env vars for
+non-interactive installs).
 
-### Test WITHOUT vLLM (mock mode)
-
-This runs the daemon against a mock backend and a mock vLLM to verify the full flow:
+### Test WITHOUT a real backend (mock mode)
 
 **Terminal 1 — Mock Backend:**
 ```bash
+pip install fastapi uvicorn python-multipart
 cd daemon
 python -m tests.mock_backend
 ```
 
-**Terminal 2 — Mock vLLM (optional — or use a real vLLM server):**
+**Terminal 2 — Runtime (either):**
 ```bash
-# If you have vLLM installed:
+ollama serve                     # default runtime, port 11434
+# or
 vllm serve mistralai/Mistral-7B-Instruct-v0.2 --port 8100
-
-# If not, the daemon will log errors for each prompt but still
-# demonstrate the full poll→download→execute→upload flow
 ```
 
 **Terminal 3 — Daemon:**
 ```bash
 cd daemon
-gpu-daemon --config config.yaml
-# or: python -m daemon.main --config config.yaml
+python -m daemon.main --config config.yaml --api-key gk-anything-for-mock
 ```
 
-### Test WITH real vLLM
+### Run against the real backend
 
 ```bash
-# Terminal 1: Start vLLM
-vllm serve mistralai/Mistral-7B-Instruct-v0.2 --port 8100
-
-# Terminal 2: Start the real backend (when @nirav3690 has it ready)
-# cd backend && uvicorn app.main:app --port 8000
-
-# Terminal 3: Start daemon
 cd daemon
-gpu-daemon \
+python -m daemon.main \
   --backend-url http://localhost:8000 \
-  --vllm-url http://localhost:8100
+  --api-key gk-your-org-worker-key
 ```
+
+The daemon exits with an error if no API key is configured. On successful
+registration the backend assigns a `worker_id`, persisted (with the key)
+in `~/.gpu-daemon/credentials`; if a later re-registration fails, the
+daemon falls back to the saved id.
 
 ## Configuration
 
-Configuration is loaded with this precedence (highest → lowest):
-1. **CLI arguments** (`--backend-url`, `--vllm-url`, etc.)
-2. **Environment variables** (`DAEMON_BACKEND_URL`, `DAEMON_VLLM_URL`, etc.)
+Precedence (highest → lowest):
+1. **CLI arguments**
+2. **Environment variables** (`DAEMON_*`)
 3. **YAML config file** (`--config config.yaml`)
 4. **Defaults**
 
@@ -114,84 +113,87 @@ Configuration is loaded with this precedence (highest → lowest):
 
 ```yaml
 backend_url: "http://localhost:8000"
+api_key: "gk-your-org-worker-key"
+runtime: "ollama"                  # or "vllm"
+ollama_url: "http://localhost:11434"
 vllm_url: "http://localhost:8100"
 poll_interval: 5
+heartbeat_interval: 30
+inference_timeout: 300.0
 log_level: "INFO"
-# worker_id: "my-gpu-01"  # auto-generated if omitted
+# worker_id is assigned by the backend at registration
 ```
 
-### Environment Variables
+### CLI arguments / environment variables
 
-```bash
-export DAEMON_BACKEND_URL="http://api.example.com"
-export DAEMON_VLLM_URL="http://localhost:8100"
-export DAEMON_WORKER_ID="gpu-worker-01"
-export DAEMON_POLL_INTERVAL=10
-export DAEMON_LOG_LEVEL=DEBUG
-```
-
-### CLI Arguments
-
-```bash
-python -m daemon.main --help
-
-# All options:
-#   -c, --config        Path to YAML config file
-#   --backend-url       Control plane API URL
-#   --vllm-url          vLLM server URL
-#   --worker-id         Unique worker ID
-#   --poll-interval     Seconds between polls
-#   --log-level         DEBUG|INFO|WARNING|ERROR
-#   --work-dir          Job artifacts directory
-```
+| CLI flag | Env var | Meaning |
+|---|---|---|
+| `-c, --config` | — | Path to YAML config file |
+| `--backend-url` | `DAEMON_BACKEND_URL` | Control plane API URL |
+| `--api-key` | `DAEMON_API_KEY` | Org worker API key (required) |
+| `--runtime` | `DAEMON_RUNTIME` | `ollama` (default) or `vllm` |
+| `--ollama-url` | `DAEMON_OLLAMA_URL` | Ollama server URL |
+| `--vllm-url` | `DAEMON_VLLM_URL` | vLLM server URL |
+| `--worker-id` | `DAEMON_WORKER_ID` | Override (normally backend-assigned) |
+| `--poll-interval` | `DAEMON_POLL_INTERVAL` | Seconds between polls |
+| `--heartbeat-interval` | `DAEMON_HEARTBEAT_INTERVAL` | Seconds between heartbeats |
+| `--inference-timeout` | `DAEMON_INFERENCE_TIMEOUT` | Per-prompt timeout (s), any runtime |
+| `--models` | — | Models advertised at registration |
+| `--gpu-name` / `--vram-gb` | `DAEMON_GPU_NAME` / `DAEMON_VRAM_GB` | Registration metadata overrides |
+| `--log-level` | `DAEMON_LOG_LEVEL` | DEBUG / INFO / WARNING / ERROR |
+| `--work-dir` | `DAEMON_WORK_DIR` | Job artifacts directory |
 
 ## Project Structure
 
 ```
 daemon/
-├── daemon/                  # Python package
+├── daemon/
 │   ├── __init__.py          # Version
-│   ├── config.py            # Configuration management
-│   ├── models.py            # Pydantic data models
+│   ├── config.py            # DaemonConfig — YAML + env + CLI precedence
+│   ├── models.py            # Job, PromptRequest, CompletionResult, WorkerInfo
 │   ├── log.py               # Logging setup
-│   ├── client.py            # Backend HTTP client
-│   ├── worker.py            # Main poll-execute loop
-│   ├── executors/           # Runtime backends (Strategy pattern)
-│   │   ├── __init__.py
-│   │   ├── base.py          # Abstract base executor
-│   │   └── vllm.py          # vLLM implementation
+│   ├── client.py            # BackendClient — all control-plane HTTP
+│   ├── worker.py            # Poll → download → execute → upload loop
+│   ├── heartbeat.py         # HeartbeatManager (activity + capability stats)
+│   ├── hardware.py          # GPU/CPU/RAM inspection (nvidia-smi etc.)
+│   ├── registration.py      # Registration + credential persistence
+│   ├── model_manager.py     # Ollama model pulls (on-the-fly downloads)
+│   ├── executor_factory.py  # runtime config → executor instance
+│   ├── executors/
+│   │   ├── base.py          # BaseExecutor ABC
+│   │   ├── ollama.py        # OllamaExecutor (default)
+│   │   └── vllm.py          # VLLMExecutor (OpenAI-compatible)
 │   └── main.py              # CLI entry point
 ├── tests/
-│   ├── __init__.py
-│   ├── sample_input.jsonl   # Test fixture
-│   └── mock_backend.py      # Mock control plane server
-├── config.yaml              # Default config
-├── requirements.txt         # Dependencies
-└── README.md                # This file
+│   ├── sample_input.jsonl
+│   ├── mock_backend.py      # Mock control plane (mirrors real contract)
+│   └── mock_vllm.py         # Mock inference server
+├── config.yaml
+├── requirements.txt
+└── README.md
 ```
 
 ## API Contract (with Backend)
 
-The daemon expects these endpoints from the backend:
-
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/workers/poll` | POST | Poll for available jobs |
-| `/jobs/{id}/input` | GET | Download input JSONL |
-| `/workers/upload-results` | POST | Upload output JSONL |
+| `/workers/register` | POST | Register; backend assigns and returns `worker_id` |
+| `/workers/{worker_id}/heartbeat` | POST | Liveness + `activity` (idle/busy/downloading_model) + VRAM/loaded-model stats |
+| `/workers/poll` | POST | Poll for available batches |
+| `/v1/files/{id}/content` | GET | Download input JSONL (path from poll response) |
+| `/workers/progress` | POST | Live prompt counts every 10 prompts |
+| `/workers/model-progress` | POST | Model download progress (Ollama pulls) |
+| `/workers/upload-results` | POST | Upload output JSONL + `worker_id` + real completed/failed counts |
+| `/workers/report-failure` | POST | Report failure — backend requeues (max 3 attempts) |
+
+All endpoints are authenticated with an **org worker API key** (`gk-...`),
+created in the platform dashboard and configured via `--api-key` /
+`DAEMON_API_KEY` / `api_key` in `config.yaml`. The backend derives the
+owning organization from the key; it never issues keys. If the daemon
+stops heartbeating, the backend's sweeper marks the worker offline and
+requeues its in-flight batch.
 
 See [client.py](daemon/client.py) for full request/response details.
-
-## Week 2+ Roadmap
-
-The codebase is designed to support these additions without refactoring:
-
-- **Heartbeats** → Add `heartbeat_loop()` in Worker, config already has `heartbeat_interval`
-- **Checkpointing** → Save partial results in `_run_prompts()`, config has `checkpoint_interval`
-- **New runtimes** → Subclass `BaseExecutor` (e.g., `OllamaExecutor`, `TGIExecutor`)
-- **GPU metrics** → Add `gpu.py` module, report in heartbeat
-- **Docker runtime** → Wrap executor in container management
-- **Auth** → Add API key header in `BackendClient._get_client()`
 
 ## License
 

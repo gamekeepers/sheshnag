@@ -131,11 +131,40 @@ class TokenOut(BaseModel):
     must_change_password: bool = False
 
 
-class HeartbeatRequest(BaseModel):
-    worker_id: str
-    vram_total_gb: float
-    vram_available_gb: float = 0
+class WorkerHeartbeatRequest(BaseModel):
+    """Unified worker heartbeat (spec §8.1: dynamic properties).
+
+    `activity` is what the daemon is doing (idle | busy | downloading_model);
+    liveness (`online`/`offline`/…) is a separate vocabulary managed
+    server-side from heartbeat arrival and the sweeper timeout.
+    """
+    activity: Literal["idle", "busy", "downloading_model"] = "idle"
+    current_job_id: Optional[str] = None
+    progress: Optional[dict] = None
+    gpu_utilization: float = 0.0
+    gpu_memory_used_gb: float = 0.0
+    vram_total_gb: float = 0.0
+    vram_available_gb: float = 0.0
     loaded_models: List[str] = []
+    uptime_seconds: int = 0
+
+
+class ProgressReport(BaseModel):
+    """Live batch progress from a worker (sent every N prompts)."""
+    job_id: str
+    worker_id: str
+    completed: int = 0
+    failed: int = 0
+    total: int = 0
+
+
+class ModelDownloadReport(BaseModel):
+    """Model download progress from a worker (Ollama pull callback)."""
+    worker_id: str
+    model_name: str
+    status: str = "downloading"
+    completed: int = 0
+    total: int = 0
 
 
 class ForgotPasswordRequest(BaseModel):
