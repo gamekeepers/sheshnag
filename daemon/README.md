@@ -58,8 +58,12 @@ cd daemon
 pip install -r requirements.txt
 ```
 
-Or use the guided installer from the repo root: `scripts/install.sh`
-(prompts for the API key, writes a config, registers the worker).
+Or use the guided installer from the repo root: `scripts/install.sh` —
+**rootless by design**: no sudo at any step, everything under
+`~/.gpu-daemon/` (code, venv, config, user-local Ollama), services via
+`systemctl --user` with linger so they survive logout. Prompts for the
+API key (or reads `BACKEND_URL`/`API_KEY`/`WORKER_ID` env vars for
+non-interactive installs).
 
 ### Test WITHOUT a real backend (mock mode)
 

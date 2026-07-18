@@ -47,7 +47,11 @@ class ModelManager:
             )
         
         success = await self._executor.pull_model(model_name, progress_callback)
-        if success:
-            self._available_models.add(model_name)
-            
-        return success
+        if not success:
+            return False
+
+        # Never trust the pull's return value alone — re-verify against
+        # the runtime's own inventory (catches partial downloads and any
+        # error mode the stream didn't surface).
+        await self.refresh_models()
+        return model_name in self._available_models

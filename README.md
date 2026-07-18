@@ -42,4 +42,4 @@ cd daemon && pip install -r requirements.txt
 python -m daemon.main --backend-url http://localhost:8000 --api-key gk-...
 ```
 
-Or the guided installer: `scripts/install.sh`.
+Or the guided installer: `scripts/install.sh` (rootless — no sudo needed; installs to `~/.gpu-daemon` with `systemctl --user` services).
