@@ -110,11 +110,17 @@ keys during worker registration — it derives the owning org from the key.
 | `GET` | `/v1/batches/{batch_id}` | Batch detail (owner or superadmin) |
 | `GET` | `/v1/batches` | `user` sees own batches; `superadmin` sees all |
 
-> **Model handling:** the model name is extracted from the JSONL during
-> validation (`body.model`, must be consistent across lines).
-> ⚠️ Validation does **not** yet reject models outside the platform's
-> supported list — enforcement is a tracked follow-up (see the
-> `provider_picker.is_model_supported` helper, currently unused).
+> **Model handling:** `body.model` is a **model catalogue id** (a platform
+> slug from `GET /v1/models`), not a raw runtime string. It must be
+> consistent across all JSONL lines, and validation **rejects** any
+> `body.model` not in the catalogue (`unsupported_model`). See
+> [Model catalogue](#model-catalogue--v1models).
+
+### Models — `/v1/models` (OpenAI-compatible; JWT or personal key)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/v1/models` | Selectable catalogue entries (public + caller's org) |
 
 ### Workers — `/workers` (org worker key required)
 
@@ -220,8 +226,9 @@ SQLite with SQLAlchemy ORM. Tables (see `models.py`):
 | `api_keys` | Hashed keys; `key_type`: `worker` (org-scoped) or `personal`; prefix for UI |
 | `workers` | Static specs; `status` (liveness, server-managed) vs `activity` (daemon-reported); aggregate `vram_total_gb` / `vram_available_gb` from heartbeats |
 | `worker_runtimes` | Inference engines a worker exposes (spec §8.2): engine, base_url, status |
-| `runtime_models` | Models per runtime (spec §8.3): `status` (on-disk) + `loaded` (in VRAM, heartbeat-updated) |
+| `runtime_models` | Per-worker availability rows (spec §8.3): `name`, `runtime_model_id`, `digest`, `status` (on-disk) + `loaded` (in VRAM, heartbeat-updated). Lean by design — descriptive metadata lives on `model_catalog`. |
 | `worker_gpus` | Physical GPUs per worker (spec §8.4): vendor, name, vram_gb, driver, cuda |
+| `model_catalog` | Curated, pinned models users select for a batch (identity). See [Model catalogue](#model-catalogue--v1models). |
 | `files` | Uploaded inputs and generated outputs |
 | `batches` | Lifecycle status, request counts, `attempts` (requeue counter) |
 | `batch_assignments` | Which worker holds which batch (FK → `workers.id`) |
@@ -234,18 +241,31 @@ SQLite with SQLAlchemy ORM. Tables (see `models.py`):
 
 ---
 
-## Supported Models (VRAM Requirements)
+## Model catalogue — `/v1/models`
 
-| Model | VRAM Required |
-|---|---|
-| mistral-7b | 16 GB |
-| mistral-7b-instruct | 16 GB |
-| llama-3-8b | 18 GB |
-| llama-3.1-8b | 18 GB |
-| llama-3-70b | 80 GB |
-| qwen2-7b | 16 GB |
+`body.model` is a **catalogue id** (a stable platform slug), not a raw
+runtime tag. Each `model_catalog` row is **one pinned artifact** — weights +
+quantization + runtime — so a batch never silently swaps precision or
+runtime (reproducibility). The raw runtime string (`mistral:7b`, an HF repo
+id) lives only in `runtime_model_id`; the backend hands the daemon that at
+poll time. See **[docs/model_catalogue.md](../docs/model_catalogue.md)** for
+the full design, scheduling, and curation runbook.
 
-> Edit `provider_picker.py` → `MODEL_VRAM_REQUIREMENTS` to add/change models.
+**`model_catalog` columns:** `id` (slug, = `body.model`), `display_name`,
+`runtime`, `runtime_model_id`, `digest` (reproducibility pin / match key),
+`quantization`, `parameter_size`, `context_length`, `vram_gb` (scheduling
+requirement), `size_gb`, `task_type`, `source_*`/`homepage_url` (provenance),
+`org_id` (NULL = public), `status`, `enabled`.
+
+**Scheduling** (`provider_picker.py`): `poll` resolves `batch.model` → entry,
+then matches a worker that fits `vram_gb` **and** hosts `runtime_model_id`,
+enforcing digest equality when both sides carry a digest (same tag +
+different digest ⇒ not matched); prefers a worker already serving it.
+
+**Curation:** entries are seeded from `backend/catalog/models.yaml` at startup
+(upserted). Fill real digests + metadata from a live Ollama with
+`python -m scripts.capture_catalog` (see the runbook). Validation rejects a
+`body.model` not in the catalogue (`unsupported_model`).
 
 ---
 

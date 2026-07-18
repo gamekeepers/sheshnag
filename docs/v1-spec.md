@@ -92,6 +92,26 @@ Example:
 {"custom_id":"992cf771154688b001a856c9f1166cde566e389f","method":"POST","url":"\/v1\/chat\/completions","body":{"model":"some-open-source-model","messages":[{"role":"user","content":"where do you live?"}],"max_tokens":1000}}
 ```
 
+## 5.2 Model identity — the catalogue (decision, 2026-07-18)
+
+`body.model` is a **model catalogue id** (a stable platform slug), **not** a
+free-form or raw runtime string. Users select from a curated catalogue
+(`GET /v1/models`); validation rejects any id not in the catalogue.
+
+- Each catalogue entry is **one pinned artifact** — weights + quantization +
+  runtime. A quantized Ollama build and an fp16 HF build of "the same" model
+  are **separate entries**, never merged, so a batch never silently swaps
+  precision or runtime (reproducibility — *artifact*, not bit-exact).
+- **Identity is curated; availability is derived from registrations.** The
+  catalogue is not the union of what workers advertise (runtime tags float;
+  worker metadata is untrusted). Workers feed availability, matched by
+  **digest**; the tag alone never establishes identity.
+- The raw runtime string lives only in `runtime_model_id` (internal); the
+  scheduler hands it to the daemon at poll time. See §8.3 and
+  `docs/model_catalogue.md`.
+- **Onboarding** a new model = adding a pinned catalogue entry (curated /
+  org-private / request→promote) — never an "run an uncatalogued model" path.
+
 ---
 
 # 6. System Architecture
@@ -402,6 +422,15 @@ even though V1 scheduling/execution only targets vLLM.
 
 ## 8.3 Runtime Models
 
+> **Implementation note (2026-07-18):** `runtime_models` is the per-worker
+> **availability** layer — kept lean (`name`, `runtime_model_id`, `digest`,
+> `loaded`, `status`). The descriptive/curated metadata below
+> (`task_type`, `parameter_count`, `quantization`, `context_length`,
+> `size_bytes`) was moved to the **`model_catalog`** table (curated once,
+> not replicated per worker). `body.model` is a `model_catalog` id;
+> registrations feed availability, matched to catalogue entries by
+> `digest`. See §5.2 and `docs/model_catalogue.md`.
+
 Each runtime hosts one or more models with capability metadata used by
 the scheduler for matching:
 
@@ -534,6 +563,13 @@ Therefore:
 Initial simplified approach:
 - checkpoint after every N prompts
 
+> **Status (2026-07-18):** worker timeout + requeue **are implemented**
+> (sweeper marks a silent worker offline after 120s and requeues its
+> in-flight batch; terminal failure after 3 attempts). Checkpointing /
+> resume-from-partial is **NOT** implemented — a requeued batch restarts
+> from prompt 0; progress is reported (`request_counts_*`) but partial
+> results are not persisted. Tracked in [[Moonknight - Batch resumability and checkpointing]].
+
 ---
 
 # 13. Storage
@@ -556,22 +592,38 @@ Used for:
 
 ## User APIs
 
-### Submit Job
+The batch surface is **OpenAI-compatible** (files + batches), not a bare
+`/jobs` resource — a batch references an uploaded input file and produces
+an output file, all under `/v1`. Updated 2026-07-18 to match the
+implementation.
+
+### Upload Input File
 
 ```http
-POST /jobs
+POST /v1/files          # multipart: file=<jsonl>, purpose="batch"
 ```
 
-### Get Job Status
+### Submit Batch
 
 ```http
-GET /jobs/{id}
+POST /v1/batches        # { input_file_id, endpoint, completion_window }
+```
+
+Returns a batch at `status: "validating"`; async validation moves it to
+`validated` (schedulable) or `failed`.
+
+### Get Batch Status
+
+```http
+GET /v1/batches/{id}
+GET /v1/batches                 # list caller's batches
+GET /v1/batches/{id}/events     # SSE stream of validation status
 ```
 
 ### Download Outputs
 
 ```http
-GET /jobs/{id}/outputs
+GET /v1/files/{output_file_id}/content   # output_file_id from the batch object
 ```
 
 ---
