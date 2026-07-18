@@ -8,16 +8,29 @@ manifest so seeded entries get a pinned digest (enabling the strict
 same-tag/different-digest reproducibility guard) plus quantization, size,
 parameter size, and context length.
 
-Usage:
-    ollama pull mistral:7b llama3:8b            # ensure the artifacts exist
-    python -m scripts.capture_catalog \
-        --ollama http://localhost:11434 \
-        --manifest backend/catalog/models.yaml \
-        [--only mistral:7b llama3:8b]           # default: every ollama entry
+Two modes:
 
-Matches manifest entries by `runtime_model_id`; only rewrites fields it can
-derive, and only for entries whose model is present in Ollama. Never adds or
-removes entries — curation of *which* models exist stays in the manifest.
+  ENRICH (default) — fill derivable fields on entries already in the
+  manifest. Curation of *which* models exist stays a human allow-list.
+
+      python -m scripts.capture_catalog \
+          --ollama http://localhost:11434 \
+          --manifest backend/catalog/models.yaml \
+          [--only mistral:7b llama3:8b]        # default: every ollama entry
+
+  DISCOVER (--discover) — for models present in Ollama but NOT yet in the
+  manifest, append staged stubs (`enabled: false`, `vram_gb: null`) with
+  everything Ollama can derive pre-filled. The seeder ignores disabled
+  entries, so nothing becomes user-selectable until a human reviews the
+  stub, sets `vram_gb` (NOT derivable from Ollama — it's the VRAM the
+  model needs to run, the field scheduling filters on) and `display_name`,
+  tidies the `id`, and flips `enabled: true`.
+
+      python -m scripts.capture_catalog --discover \
+          --ollama http://localhost:11434 \
+          --manifest backend/catalog/models.yaml
+
+Never removes entries; curation-by-omission is avoided by design.
 """
 import argparse
 import sys
@@ -63,19 +76,17 @@ def fetch_context_length(base_url: str, model: str):
     return None
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Enrich the model catalogue manifest from a live Ollama")
-    ap.add_argument("--ollama", default="http://localhost:11434")
-    ap.add_argument("--manifest", default="backend/catalog/models.yaml")
-    ap.add_argument("--only", nargs="*", help="runtime_model_ids to capture (default: all ollama entries)")
-    args = ap.parse_args()
+def _slug(rmid: str) -> str:
+    """Draft a catalogue id from a runtime model id, e.g. mistral:7b ->
+    mistral-7b-ollama. Human should tidy it before enabling."""
+    base = rmid.replace(":", "-").replace("/", "-").replace(".", "-").lower()
+    return f"{base}-ollama"
 
-    with open(args.manifest) as f:
-        entries = yaml.safe_load(f) or []
 
-    tags = fetch_tags(args.ollama)
+def _enrich(entries, tags, args) -> int:
+    """Fill derivable fields on manifest entries already present. Returns
+    the number of entries changed."""
     want = set(args.only) if args.only else None
-
     changed = 0
     for e in entries:
         if e.get("runtime") != "ollama":
@@ -98,16 +109,75 @@ def main():
         if ctx:
             updates["context_length"] = ctx
 
+        entry_changed = False
         for k, v in updates.items():
             if v is not None and e.get(k) != v:
                 e[k] = v
-                changed = True
+                entry_changed = True
+        if entry_changed:
+            changed += 1
         print(f"  captured {e['id']}: digest={t['digest']} quant={updates['quantization']} ctx={updates.get('context_length')}")
+    return changed
+
+
+def _discover(entries, tags, args) -> int:
+    """Append staged (`enabled: false`) stubs for models present in Ollama
+    but not yet in the manifest. Returns the number of stubs added.
+
+    Stubs carry everything Ollama can derive; `vram_gb` is left null (NOT
+    derivable — the operator must set the model's VRAM requirement) and
+    `enabled` is false so the seeder ignores them until promoted.
+    """
+    known_rmids = {e.get("runtime_model_id") for e in entries if e.get("runtime") == "ollama"}
+    added = 0
+    for rmid, t in sorted(tags.items()):
+        if rmid in known_rmids:
+            continue
+        ctx = fetch_context_length(args.ollama, rmid)
+        entries.append({
+            "id": _slug(rmid),
+            "display_name": f"TODO: {rmid}",
+            "runtime": "ollama",
+            "runtime_model_id": rmid,
+            "digest": t["digest"],
+            "quantization": t["quantization"],
+            "parameter_size": t["parameter_size"],
+            "context_length": ctx,
+            "vram_gb": None,   # TODO(operator): set the model's VRAM requirement
+            "size_gb": t["size_gb"],
+            "task_type": "chat",
+            "source_type": "ollama-library",
+            "source_ref": rmid.split(":")[0],
+            "source_revision": None,
+            "homepage_url": f"https://ollama.com/library/{rmid.split(':')[0]}",
+            "enabled": False,   # staged — review, set vram_gb, then flip to true
+        })
+        added += 1
+        print(f"  discovered {rmid} -> staged as '{_slug(rmid)}' (enabled:false, set vram_gb)")
+    return added
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Enrich / discover the model catalogue manifest from a live Ollama")
+    ap.add_argument("--ollama", default="http://localhost:11434")
+    ap.add_argument("--manifest", default="backend/catalog/models.yaml")
+    ap.add_argument("--only", nargs="*", help="ENRICH: runtime_model_ids to capture (default: all ollama entries)")
+    ap.add_argument("--discover", action="store_true",
+                    help="Append staged stubs (enabled:false) for Ollama models not yet in the manifest")
+    args = ap.parse_args()
+
+    with open(args.manifest) as f:
+        entries = yaml.safe_load(f) or []
+
+    tags = fetch_tags(args.ollama)
+    changed = _discover(entries, tags, args) if args.discover else _enrich(entries, tags, args)
 
     if changed:
         with open(args.manifest, "w") as f:
             yaml.safe_dump(entries, f, sort_keys=False, default_flow_style=False, allow_unicode=True)
-        print(f"\nUpdated {args.manifest}. Commit it, then restart the backend to sync.")
+        note = ("Review staged (enabled:false) entries: set vram_gb + display_name, then flip enabled:true."
+                if args.discover else "Commit it, then restart the backend to sync.")
+        print(f"\nUpdated {args.manifest}. {note}")
     else:
         print("\nNo changes.")
 

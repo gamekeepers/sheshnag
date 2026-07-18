@@ -23,8 +23,9 @@ logger = logging.getLogger(__name__)
 _MANIFEST = os.path.join(os.path.dirname(__file__), "catalog", "models.yaml")
 
 # Fields the manifest owns — updated on re-seed. `id` is the key (not
-# updated); `created_at`/`enabled`/`status`/`org_id` are lifecycle fields
-# managed elsewhere (admin / lifecycle), so the manifest doesn't touch them.
+# updated); `created_at`/`status`/`org_id` are managed elsewhere. `enabled`
+# is handled separately (default True unless the entry explicitly sets it
+# false — how discover-staged stubs stay inactive until promoted).
 _MANAGED_FIELDS = (
     "display_name", "runtime", "runtime_model_id", "digest", "quantization",
     "parameter_size", "context_length", "vram_gb", "size_gb", "task_type",
@@ -64,6 +65,9 @@ def seed_model_catalog() -> None:
                 logger.warning("Catalogue entry missing 'id' — skipped: %r", entry)
                 continue
             fields = {k: entry.get(k) for k in _MANAGED_FIELDS}
+            # Default enabled=True unless the entry explicitly disables it
+            # (discover-staged stubs set enabled:false to stay inactive).
+            fields["enabled"] = bool(entry.get("enabled", True))
 
             existing = db.query(ModelCatalog).filter(ModelCatalog.id == mid).first()
             if existing is None:
