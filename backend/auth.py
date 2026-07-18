@@ -160,6 +160,46 @@ def get_worker_context(
     return (api_key_entry, org)
 
 
+# ─── 2b. get_file_read_context — human OR worker ───────────
+
+def get_file_read_context(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+):
+    """Authenticate a file-content read by EITHER a human (JWT / personal
+    key) OR an org worker key — the daemon downloads job input with its
+    worker key. Returns ('user', User) or ('worker', Organization); the
+    endpoint applies the matching authorization.
+    """
+    from models import ApiKey, Organization
+
+    token = credentials.credentials
+
+    if not token.startswith("gk-"):
+        return ("user", _resolve_jwt(token, db))
+
+    token_hash = hash_api_key(token)
+    entry = db.query(ApiKey).filter(
+        ApiKey.key_hash == token_hash,
+        ApiKey.status == "active",
+    ).first()
+    if not entry:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    if entry.expires_at is not None and entry.expires_at < int(datetime.now(timezone.utc).timestamp()):
+        raise HTTPException(status_code=401, detail="API key has expired")
+    entry.last_used_at = int(datetime.now(timezone.utc).timestamp())
+
+    if entry.key_type == "worker":
+        org = db.query(Organization).filter(Organization.id == entry.org_id).first()
+        if not org:
+            raise HTTPException(status_code=401, detail="Organization not found for this worker key")
+        return ("worker", org)
+
+    # personal key → resolve as the owning user
+    _entry, user = _resolve_personal_api_key(token, db)
+    return ("user", user)
+
+
 # ─── 3. get_personal_context — Personal API key only ──────
 
 def get_personal_context(
