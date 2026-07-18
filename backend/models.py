@@ -227,7 +227,10 @@ class WorkerRuntime(Base):
 
 
 class RuntimeModel(Base):
-    """A model hosted by a worker runtime (spec §8.3).
+    """A model hosted by a worker runtime — the per-worker *availability*
+    row. Lean by design: scheduling only needs name/digest match + loaded
+    state. Descriptive/curated metadata (quantization, params, context,
+    task type, size) lives on `ModelCatalog`, not replicated here.
 
     `loaded` (in VRAM right now) is transient heartbeat state; `status`
     tracks on-disk availability.
@@ -244,14 +247,6 @@ class RuntimeModel(Base):
     name             = Column(String, nullable=False)
     runtime_model_id = Column(String, nullable=True)  # exact id the runtime expects
     digest           = Column(String, nullable=True)  # artifact digest (reproducibility join key)
-    revision         = Column(String, nullable=True)
-    task_type        = Column(String, nullable=True)
-    parameter_count  = Column(Integer, nullable=True)
-    quantization     = Column(String, nullable=True)
-    context_length   = Column(Integer, nullable=True)
-    size_bytes       = Column(Integer, nullable=True)
-    license          = Column(String, nullable=True)
-    local_path       = Column(String, nullable=True)
     status     = Column(String, default="available")  # available | downloading | not_downloaded | error
     loaded     = Column(Boolean, default=False)
     last_used_at = Column(Integer, nullable=True)
@@ -312,6 +307,11 @@ class ModelCatalog(Base):
     quantization     = Column(String, nullable=True)
     vram_gb          = Column(Float, nullable=True)     # scheduling requirement
     size_gb          = Column(Float, nullable=True)     # disk (feeds download size cap)
+    # Descriptive metadata (curated, one place) — moved off the per-worker
+    # runtime_models rows. For the Models tab / picker, not scheduling.
+    task_type        = Column(String, nullable=True)    # chat | text-generation | embedding | vision
+    parameter_size   = Column(String, nullable=True)    # human-readable, e.g. '7B'
+    context_length   = Column(Integer, nullable=True)
     # Provenance (where the artifact came from / how to fetch it) — distinct
     # from identity (`digest`). source_ref + source_revision is the pull
     # reference (HF repo+commit, or Ollama library path); homepage_url is the
