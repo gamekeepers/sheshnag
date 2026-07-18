@@ -23,11 +23,13 @@ class HeartbeatManager:
         worker_id: str,
         interval: int = 30,
         get_loaded_models: Optional[Callable[[], Awaitable[List[str]]]] = None,
+        get_loaded_model_digests: Optional[Callable[[], Awaitable[Dict]]] = None,
     ):
         self._client = client
         self._worker_id = worker_id
         self._interval = interval
         self._get_loaded_models = get_loaded_models
+        self._get_loaded_model_digests = get_loaded_model_digests
         self._running = False
         self._task: Optional[asyncio.Task] = None
 
@@ -81,6 +83,16 @@ class HeartbeatManager:
             logger.debug(f"Could not fetch loaded models for heartbeat: {e}")
             return []
 
+    async def _fetch_loaded_model_digests(self) -> Dict:
+        """Best-effort name → digest map for loaded models."""
+        if self._get_loaded_model_digests is None:
+            return {}
+        try:
+            return dict(await self._get_loaded_model_digests())
+        except Exception as e:
+            logger.debug(f"Could not fetch model digests for heartbeat: {e}")
+            return {}
+
     async def _build_payload(self):
         # Off the event loop: nvidia-smi is a subprocess with a hard
         # timeout — a wedged driver may cost this worker thread 5s, but
@@ -100,6 +112,7 @@ class HeartbeatManager:
             "vram_total_gb": memory_total,
             "vram_available_gb": round(max(memory_total - memory_used, 0.0), 2),
             "loaded_models": await self._fetch_loaded_models(),
+            "loaded_model_digests": await self._fetch_loaded_model_digests(),
             "uptime_seconds": int(time.time() - self._start_time),
             "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }

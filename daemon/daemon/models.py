@@ -83,6 +83,7 @@ class WorkerInfo(BaseModel):
     worker_id: str
     hardware: Optional[HardwareInfo] = None
     models: List[str] = Field(default_factory=list)
+    model_digests: Dict[str, Any] = Field(default_factory=dict)  # name → digest
     runtime: str = "ollama"
     status: str = "online"
 

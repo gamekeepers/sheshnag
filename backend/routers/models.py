@@ -53,6 +53,10 @@ def list_models(
             "quantization": e.quantization,
             "vram_gb": e.vram_gb,
             "size_gb": e.size_gb,
+            "source_type": e.source_type,
+            "source_ref": e.source_ref,
+            "source_revision": e.source_revision,
+            "homepage_url": e.homepage_url,
             "created_at": e.created_at,
         })
 

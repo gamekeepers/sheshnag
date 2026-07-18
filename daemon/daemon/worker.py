@@ -75,6 +75,7 @@ class Worker:
             worker_id=config.worker_id,
             interval=config.heartbeat_interval,
             get_loaded_models=self._get_loaded_models,
+            get_loaded_model_digests=self._get_loaded_model_digests,
         )
 
         self._model_manager = None
@@ -99,6 +100,20 @@ class Worker:
         if hasattr(self._executor, "list_models"):
             return await self._executor.list_models()
         return list(self._config.models)
+
+    async def _get_loaded_model_digests(self) -> dict:
+        """name → digest map for loaded models (reproducibility pins).
+
+        Empty for runtimes that can't report digests; the backend then
+        falls back to name matching.
+        """
+        if hasattr(self._executor, "list_models_detailed"):
+            return {
+                m["name"]: m.get("digest")
+                for m in await self._executor.list_models_detailed()
+                if m.get("name")
+            }
+        return {}
 
     # ── Public API ───────────────────────────────────────────────
 

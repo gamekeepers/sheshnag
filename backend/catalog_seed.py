@@ -21,23 +21,32 @@ from models import ModelCatalog
 logger = logging.getLogger(__name__)
 
 # id (slug) → catalogue attributes. Seeded from the former
-# MODEL_VRAM_REQUIREMENTS, re-keyed to real Ollama tags.
+# MODEL_VRAM_REQUIREMENTS, re-keyed to real Ollama tags. `digest` is left
+# NULL — the true digest is only known after a pull; matching falls back to
+# runtime_model_id until a heartbeat reports the digest. `source_*` /
+# homepage carry provenance (where the artifact came from) for the
+# dashboard and future HF/vLLM pulls.
+def _ollama(name):
+    return {"source_type": "ollama-library", "source_ref": name.split(":")[0],
+            "source_revision": None,
+            "homepage_url": f"https://ollama.com/library/{name.split(':')[0]}"}
+
 _SEED = [
     {"id": "mistral-7b-instruct-q4-ollama", "display_name": "Mistral 7B Instruct — Q4_K_M (Ollama)",
      "runtime": "ollama", "runtime_model_id": "mistral:7b", "quantization": "Q4_K_M",
-     "vram_gb": 16, "size_gb": 4.4},
+     "vram_gb": 16, "size_gb": 4.4, **_ollama("mistral:7b")},
     {"id": "llama3-8b-instruct-q4-ollama", "display_name": "Llama 3 8B Instruct — Q4_K_M (Ollama)",
      "runtime": "ollama", "runtime_model_id": "llama3:8b", "quantization": "Q4_K_M",
-     "vram_gb": 18, "size_gb": 4.7},
+     "vram_gb": 18, "size_gb": 4.7, **_ollama("llama3:8b")},
     {"id": "llama3.1-8b-instruct-q4-ollama", "display_name": "Llama 3.1 8B Instruct — Q4_K_M (Ollama)",
      "runtime": "ollama", "runtime_model_id": "llama3.1:8b", "quantization": "Q4_K_M",
-     "vram_gb": 18, "size_gb": 4.9},
+     "vram_gb": 18, "size_gb": 4.9, **_ollama("llama3.1:8b")},
     {"id": "llama3-70b-instruct-q4-ollama", "display_name": "Llama 3 70B Instruct — Q4_K_M (Ollama)",
      "runtime": "ollama", "runtime_model_id": "llama3:70b", "quantization": "Q4_K_M",
-     "vram_gb": 80, "size_gb": 40.0},
+     "vram_gb": 80, "size_gb": 40.0, **_ollama("llama3:70b")},
     {"id": "qwen2-7b-instruct-q4-ollama", "display_name": "Qwen2 7B Instruct — Q4_K_M (Ollama)",
      "runtime": "ollama", "runtime_model_id": "qwen2:7b", "quantization": "Q4_K_M",
-     "vram_gb": 16, "size_gb": 4.4},
+     "vram_gb": 16, "size_gb": 4.4, **_ollama("qwen2:7b")},
 ]
 
 

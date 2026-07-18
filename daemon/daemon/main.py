@@ -238,10 +238,24 @@ async def _run(config: DaemonConfig) -> None:
         worker_id=config.worker_id,
         api_key=api_key,
     )
+    # Executor built before registration so we can advertise per-model
+    # digests (the reproducibility pins) at register time, not only via
+    # heartbeats. Best-effort — empty if the runtime isn't reachable yet.
+    executor = create_executor(config)
+    model_digests = {}
+    if hasattr(executor, "list_models_detailed"):
+        try:
+            model_digests = {
+                m["name"]: m.get("digest")
+                for m in await executor.list_models_detailed()
+                if m.get("name")
+            }
+        except Exception as exc:
+            logger.debug(f"Could not query model digests at registration: {exc}")
 
     # ── Register with platform ───────────────────────────────────
     try:
-        assigned_worker_id = await reg_manager.register(client, config)
+        assigned_worker_id = await reg_manager.register(client, config, model_digests)
         config.worker_id = assigned_worker_id
         client.update_worker_id(assigned_worker_id)
         logger.info(f"Worker registered: {assigned_worker_id}")
@@ -258,9 +272,7 @@ async def _run(config: DaemonConfig) -> None:
             f"'{saved_worker_id}' despite registration failure."
         )
 
-    # ── Executor and Worker ──────────────────────────────────────
-    executor = create_executor(config)
-
+    # ── Worker (executor already built above) ────────────────────
     worker = Worker(
         config=config,
         client=client,

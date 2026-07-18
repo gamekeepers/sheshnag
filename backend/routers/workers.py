@@ -117,7 +117,10 @@ def register_worker(
                 engine=r.type,
                 base_url=r.endpoint,
                 models=[
-                    RuntimeModel(name=m, runtime_model_id=m)
+                    RuntimeModel(
+                        name=m, runtime_model_id=m,
+                        digest=(r.model_digests or {}).get(m),
+                    )
                     for m in r.models
                 ],
             )
@@ -188,13 +191,17 @@ def worker_heartbeat(
     worker.vram_total_gb = req.vram_total_gb
     worker.vram_available_gb = req.vram_available_gb
 
-    # Map reported loaded models onto runtime_models.loaded flags.
+    # Map reported loaded models onto runtime_models.loaded flags, and
+    # record the digest of each loaded model (the reproducibility pin).
     reported = set(req.loaded_models)
+    digests = req.loaded_model_digests or {}
     known = set()
     for runtime in worker.runtimes:
         for model in runtime.models:
             was_loaded = model.loaded
             model.loaded = model.name in reported
+            if model.name in digests and digests[model.name]:
+                model.digest = digests[model.name]
             if model.loaded != was_loaded:
                 model.updated_at = unix_now()
             known.add(model.name)
@@ -204,7 +211,10 @@ def worker_heartbeat(
     if missing and worker.runtimes:
         for name in missing:
             worker.runtimes[0].models.append(
-                RuntimeModel(name=name, runtime_model_id=name, loaded=True)
+                RuntimeModel(
+                    name=name, runtime_model_id=name,
+                    digest=digests.get(name), loaded=True,
+                )
             )
 
     db.commit()

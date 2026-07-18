@@ -99,13 +99,25 @@ class OllamaExecutor(BaseExecutor):
             return False
             
     async def list_models(self) -> List[str]:
-        """List locally available models via GET /api/tags."""
+        """List locally available model names via GET /api/tags."""
+        return [m["name"] for m in await self.list_models_detailed()]
+
+    async def list_models_detailed(self) -> List[dict]:
+        """List local models with their digests via GET /api/tags.
+
+        Returns [{"name": ..., "digest": ...}]. The digest is the
+        artifact's reproducibility anchor (see the model catalogue).
+        """
         client = self._get_client()
         try:
             response = await client.get("/api/tags", timeout=10.0)
             response.raise_for_status()
             data = response.json()
-            return [m["name"] for m in data.get("models", [])]
+            return [
+                {"name": m["name"], "digest": m.get("digest")}
+                for m in data.get("models", [])
+                if m.get("name")
+            ]
         except Exception as e:
             logger.error(f"Failed to list models: {e}")
             return []

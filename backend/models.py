@@ -190,6 +190,14 @@ class Worker(Base):
         """All model names this worker's runtimes host."""
         return {m.name for rt in self.runtimes for m in rt.models}
 
+    def advertised_models(self) -> list:
+        """(name, digest) pairs this worker's runtimes host."""
+        return [(m.name, m.digest) for rt in self.runtimes for m in rt.models]
+
+    def loaded_models(self) -> list:
+        """(name, digest) pairs currently loaded in VRAM."""
+        return [(m.name, m.digest) for rt in self.runtimes for m in rt.models if m.loaded]
+
 
 class WorkerRuntime(Base):
     """An inference engine a worker exposes (spec §8.2)."""
@@ -235,6 +243,7 @@ class RuntimeModel(Base):
     )
     name             = Column(String, nullable=False)
     runtime_model_id = Column(String, nullable=True)  # exact id the runtime expects
+    digest           = Column(String, nullable=True)  # artifact digest (reproducibility join key)
     revision         = Column(String, nullable=True)
     task_type        = Column(String, nullable=True)
     parameter_count  = Column(Integer, nullable=True)
@@ -299,10 +308,18 @@ class ModelCatalog(Base):
     display_name     = Column(String, nullable=False)
     runtime          = Column(String, nullable=False)   # ollama | vllm
     runtime_model_id = Column(String, nullable=False)   # exact runtime string, internal
-    digest           = Column(String, nullable=True)    # reproducibility pin / join key
+    digest           = Column(String, nullable=True)    # reproducibility pin / join key (identity)
     quantization     = Column(String, nullable=True)
     vram_gb          = Column(Float, nullable=True)     # scheduling requirement
     size_gb          = Column(Float, nullable=True)     # disk (feeds download size cap)
+    # Provenance (where the artifact came from / how to fetch it) — distinct
+    # from identity (`digest`). source_ref + source_revision is the pull
+    # reference (HF repo+commit, or Ollama library path); homepage_url is the
+    # human-facing model card. Metadata only, never a matching key.
+    source_type      = Column(String, nullable=True)    # 'ollama-library' | 'huggingface'
+    source_ref       = Column(String, nullable=True)    # HF repo id / ollama library path
+    source_revision  = Column(String, nullable=True)    # HF commit/tag; NULL for ollama
+    homepage_url     = Column(String, nullable=True)    # model-card link for the dashboard
     org_id           = Column(String, ForeignKey("organizations.id"), nullable=True)  # NULL = public
     status           = Column(String, default="active")  # active | requested | deprecated
     enabled          = Column(Boolean, default=True)

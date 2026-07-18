@@ -28,6 +28,13 @@ _NEW_COLUMNS = {
         ("vram_total_gb", "REAL"),
         ("vram_available_gb", "REAL"),
     ],
+    "runtime_models": [("digest", "TEXT")],
+    "model_catalog": [
+        ("source_type", "TEXT"),
+        ("source_ref", "TEXT"),
+        ("source_revision", "TEXT"),
+        ("homepage_url", "TEXT"),
+    ],
 }
 
 # Legacy JSON columns on workers, replaced by the normalized tables.

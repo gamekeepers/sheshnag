@@ -38,12 +38,30 @@ def get_model_vram(db, model_id: str):
     return entry.vram_gb if entry else None
 
 
+def _hosts(worker_models, runtime_model_id: str, catalog_digest) -> bool:
+    """Does the worker host this catalogue artifact?
+
+    Matches on runtime_model_id, then enforces digest equality **only when
+    both sides carry a digest** (the reproducibility guard: same tag +
+    different digest ⇒ not a match). If either digest is missing (older
+    daemon, un-pinned catalogue entry, non-Ollama runtime), fall back to
+    name equality so mixed-version fleets keep scheduling.
+    """
+    for name, digest in worker_models:
+        if name != runtime_model_id:
+            continue
+        if catalog_digest and digest and catalog_digest != digest:
+            continue  # same tag, different artifact — reject
+        return True
+    return False
+
+
 class ProviderPicker:
     """
     Matches a polling worker to the best available batch.
 
     Filter: worker must fit the batch model's VRAM (when known) AND host
-    the model's runtime artifact.
+    the model's runtime artifact (name + digest when both known).
     Rank:
       1. Prefer batches whose model is already loaded (in VRAM) here.
       2. Fall back to oldest compatible batch (FIFO).
@@ -53,9 +71,9 @@ class ProviderPicker:
         if not worker or not available_batches:
             return None
 
-        loaded = set(worker.loaded_model_names())      # runtime ids in VRAM
-        advertised = worker.advertised_model_names()   # runtime ids hosted
-        vram = worker.vram_total_gb                     # None until first heartbeat
+        loaded = worker.loaded_models()          # (name, digest) in VRAM
+        advertised = worker.advertised_models()  # (name, digest) hosted
+        vram = worker.vram_total_gb              # None until first heartbeat
 
         loaded_matches = []
         other_matches = []
@@ -69,11 +87,10 @@ class ProviderPicker:
             if vram is not None and vram < required:
                 continue
 
-            rmid = entry.runtime_model_id
-            if rmid not in advertised:
+            if not _hosts(advertised, entry.runtime_model_id, entry.digest):
                 continue  # worker can't serve this artifact
 
-            if rmid in loaded:
+            if _hosts(loaded, entry.runtime_model_id, entry.digest):
                 loaded_matches.append(batch)
             else:
                 other_matches.append(batch)
