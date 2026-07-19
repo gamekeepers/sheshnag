@@ -47,6 +47,7 @@ _ENV_MAP: Dict[str, str] = {
     "worker_id": "DAEMON_WORKER_ID",
     "backend_url": "DAEMON_BACKEND_URL",
     "vllm_url": "DAEMON_VLLM_URL",
+    "ollama_url": "DAEMON_OLLAMA_URL",
     "poll_interval": "DAEMON_POLL_INTERVAL",
     "log_level": "DAEMON_LOG_LEVEL",
     "work_dir": "DAEMON_WORK_DIR",
@@ -54,12 +55,13 @@ _ENV_MAP: Dict[str, str] = {
     "gpu_name": "DAEMON_GPU_NAME",
     "vram_gb": "DAEMON_VRAM_GB",
     "runtime": "DAEMON_RUNTIME",
-    "vllm_timeout": "DAEMON_VLLM_TIMEOUT",
+    "inference_timeout": "DAEMON_INFERENCE_TIMEOUT",
+    "heartbeat_interval": "DAEMON_HEARTBEAT_INTERVAL",
 }
 
 # Fields that need type coercion from string env vars
-_INT_FIELDS = frozenset({"poll_interval"})
-_FLOAT_FIELDS = frozenset({"vram_gb", "vllm_timeout"})
+_INT_FIELDS = frozenset({"poll_interval", "heartbeat_interval"})
+_FLOAT_FIELDS = frozenset({"vram_gb", "inference_timeout"})
 
 
 def _read_env() -> Dict[str, Any]:
@@ -110,20 +112,23 @@ class DaemonConfig(BaseModel):
         poll_interval:  Seconds between job poll attempts when idle (must be > 0).
         log_level:      Python logging level (DEBUG, INFO, WARNING, ERROR).
         work_dir:       Local directory for job artifacts (inputs, outputs).
-        api_key:        Optional API key for worker authentication (spec §17).
+        api_key:        Org worker API key for authentication (spec §8.0/§17).
+                        Created in the platform dashboard; required to register.
         gpu_name:       Human-readable GPU model name for registration (spec §8).
         vram_gb:        GPU VRAM in gigabytes for registration (spec §8).
         models:         List of model names available on this worker (spec §8).
-        runtime:        Inference runtime type — "vllm" for V1 (spec §8).
-        vllm_timeout:   Per-prompt timeout for vLLM inference in seconds.
+        runtime:        Inference runtime type — "ollama" (default) or "vllm" .
+        inference_timeout: Per-prompt inference timeout in seconds (any runtime).
     """
 
     worker_id: str = Field(default_factory=_generate_worker_id)
     backend_url: str = "http://localhost:8000"
     vllm_url: str = "http://localhost:8100"
+    ollama_url: str = "http://localhost:11434"
     poll_interval: int = Field(default=5, gt=0, description="Seconds between poll attempts, must be > 0")
     log_level: str = "INFO"
     work_dir: str = Field(default_factory=lambda: str(Path.home() / ".gpu-daemon" / "jobs"))
+    credentials_path: str = Field(default_factory=lambda: str(Path.home() / ".gpu-daemon" / "credentials"))
 
     # ── Authentication (Spec §17) ────────────────────────────────
     api_key: Optional[str] = None
@@ -132,16 +137,13 @@ class DaemonConfig(BaseModel):
     gpu_name: str = "unknown"
     vram_gb: float = Field(default=0.0, ge=0, description="GPU VRAM in GB, must be >= 0")
     models: List[str] = Field(default_factory=list)
-    runtime: str = "vllm"
+    runtime: str = "ollama"
 
     # ── Executor tuning ──────────────────────────────────────────
-    vllm_timeout: float = Field(default=300.0, gt=0, description="Per-prompt vLLM timeout in seconds, must be > 0")
+    inference_timeout: float = Field(default=300.0, gt=0, description="Per-prompt timeout in seconds, must be > 0")
 
-    # ── Future-proofing slots (Week 2+) ──────────────────────────
-    # These fields exist so the config schema doesn't break when
-    # features are added later. They are NOT used in Week 1.
-    heartbeat_interval: Optional[int] = Field(default=None, gt=0)
-    checkpoint_interval: Optional[int] = Field(default=None, gt=0)
+    # ── Heartbeats & Progress ────────────────────────────────────
+    heartbeat_interval: int = Field(default=30, gt=0)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> DaemonConfig:

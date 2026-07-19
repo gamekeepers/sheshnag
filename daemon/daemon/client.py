@@ -8,12 +8,15 @@ makes it trivial to:
     - Swap HTTP transport (e.g., gRPC in future)
     - Add auth headers, retries, etc. in one place
 
-API contract (updated to match @akshay's OpenAI batch spec refactor):
-    POST /workers/register      → NOT YET on backend (TODO: ask Akshay)
-    POST /workers/poll           → returns assigned batch or {"job": null}
-    GET  /v1/files/{id}/content  → downloads input JSONL (path from poll)
-    POST /workers/upload-results → multipart upload of output JSONL
-    POST /workers/report-failure → reports job failure
+API contract (all calls authenticated with an org worker API key):
+    POST /workers/register                → registers worker, returns assigned worker_id
+    POST /workers/{worker_id}/heartbeat   → liveness + dynamic capability stats
+    POST /workers/poll                    → returns assigned batch or {"job": null}
+    GET  /v1/files/{id}/content           → downloads input JSONL (path from poll)
+    POST /workers/upload-results          → multipart upload of output JSONL + real counts
+    POST /workers/report-failure          → reports job failure (backend requeues)
+    POST /workers/progress                → live prompt counts every N prompts
+    POST /workers/model-progress          → model download progress
 """
 
 from __future__ import annotations
@@ -65,6 +68,16 @@ class BackendClient:
         self._api_key = api_key
         self._client: httpx.AsyncClient | None = None
 
+    def update_api_key(self, api_key: str) -> None:
+        """Update the API key after registration."""
+        self._api_key = api_key
+        if self._client:
+            self._client.headers["Authorization"] = f"Bearer {api_key}"
+
+    def update_worker_id(self, worker_id: str) -> None:
+        """Adopt the backend-assigned worker id after registration."""
+        self._worker_id = worker_id
+
     def _get_client(self) -> httpx.AsyncClient:
         """
         Lazy-initialize the HTTP client with production-grade settings.
@@ -96,11 +109,8 @@ class BackendClient:
         return self._client
 
     # ── Worker Registration (Spec §8) ────────────────────────────
-    # TODO: Ask Akshay to add POST /workers/register to the backend.
-    #       Until then, registration is a no-op — the daemon logs
-    #       the worker info locally and proceeds to polling.
 
-    async def register_worker(self, worker_info: WorkerInfo) -> None:
+    async def register_worker(self, worker_info: WorkerInfo) -> dict:
         """
         Register this worker with the control plane.
 
@@ -108,33 +118,53 @@ class BackendClient:
         models, runtime) before it begins polling for jobs. This lets
         the scheduler know what this worker can handle.
 
-        NOTE: Endpoint not yet implemented on backend. Currently a
-        no-op that logs worker info. Will be enabled once Akshay adds
-        POST /workers/register to the backend API.
+        Registration is authenticated with the org worker API key
+        — the key is created in the dashboard and must
+        be configured before the daemon starts. The backend derives the
+        owning organization from the key and returns the assigned
+        worker_id; it never issues API keys.
 
         Args:
             worker_info: Worker registration payload.
-        """
-        # ── Commented out until backend supports /workers/register ──
-        # client = self._get_client()
-        #
-        # response = await client.post(
-        #     "/workers/register",
-        #     json=worker_info.model_dump(),
-        # )
-        # response.raise_for_status()
 
-        logger.info(
-            f"Worker registration skipped (endpoint not yet on backend). "
-            f"Worker info: id={worker_info.worker_id}, "
-            f"GPU={worker_info.gpu_name}, "
-            f"VRAM={worker_info.vram_gb}GB, "
-            f"models={worker_info.models}"
+        Returns:
+            Dictionary containing 'status', 'worker_id', and 'message'.
+        """
+        client = self._get_client()
+
+        payload = {
+            "hostname": worker_info.hardware.hostname if worker_info.hardware else worker_info.worker_id,
+            "os": worker_info.hardware.os if worker_info.hardware else "unknown",
+            "cpu": {"cores": worker_info.hardware.cpu_cores} if worker_info.hardware else None,
+            "ram": {"total_gb": worker_info.hardware.ram_gb} if worker_info.hardware else None,
+            "gpus": [
+                {
+                    "index": gpu.index,
+                    "vendor": "nvidia",
+                    "name": gpu.name,
+                    "vram_gb": gpu.vram_gb,
+                    "driver": gpu.driver_version,
+                    "cuda": gpu.cuda_version,
+                }
+                for gpu in (worker_info.hardware.gpus if worker_info.hardware else [])
+            ],
+            "runtimes": [
+                {
+                    "type": worker_info.runtime,
+                    "endpoint": "localhost",
+                    "models": worker_info.models,
+                }
+            ],
+        }
+
+        response = await client.post(
+            "/workers/register",
+            json=payload,
         )
-        logger.warning(
-            "TODO: Enable registration once POST /workers/register is "
-            "available on the backend"
-        )
+        response.raise_for_status()
+        data = response.json()
+        logger.info(f"Worker registered: {worker_info.worker_id}")
+        return data
 
     # ── Job Polling ──────────────────────────────────────────────
 
@@ -228,15 +258,25 @@ class BackendClient:
 
     # ── Result Upload ────────────────────────────────────────────
 
-    async def upload_results(self, job_id: str, output_path: str | Path) -> None:
+    async def upload_results(
+        self,
+        job_id: str,
+        output_path: str | Path,
+        completed: int = 0,
+        failed: int = 0,
+    ) -> None:
         """
         Upload the output JSONL file for a completed job.
 
-        Uses multipart/form-data with the job_id and the output file.
+        Uses multipart/form-data with the job_id, this worker's id (the
+        backend verifies the batch is assigned to us), the real
+        completed/failed counts, and the output file.
 
         Args:
             job_id:      The job's unique identifier.
             output_path: Local path to the output JSONL file.
+            completed:   Number of prompts that succeeded.
+            failed:      Number of prompts that failed.
 
         Raises:
             httpx.HTTPError: On upload failure.
@@ -253,7 +293,12 @@ class BackendClient:
         with open(output, "rb") as fh:
             response = await client.post(
                 "/workers/upload-results",
-                data={"job_id": job_id},
+                data={
+                    "job_id": job_id,
+                    "worker_id": self._worker_id,
+                    "completed": str(completed),
+                    "failed": str(failed),
+                },
                 files={"file": ("output.jsonl", fh, "application/jsonl")},
                 timeout=httpx.Timeout(120.0),  # Large file upload timeout
             )
@@ -268,8 +313,9 @@ class BackendClient:
         Report a job failure to the backend so it can requeue the job.
 
         This is a best-effort call — if it fails, we log a warning
-        but don't crash. The backend's heartbeat timeout will
-        eventually reclaim the job anyway.
+        but don't crash. The backend requeues the batch (up to a max
+        attempt count, spec §12), and its heartbeat sweeper will
+        eventually reclaim the job even if this report never arrives.
 
         Args:
             job_id: The failed job's identifier.
@@ -292,6 +338,60 @@ class BackendClient:
         except Exception as exc:
             # Best-effort — don't crash if failure reporting itself fails
             logger.warning(f"Failed to report failure for job {job_id}: {exc}")
+
+    # ── Heartbeat and Progress ───────────────────────────────────
+    
+    async def send_heartbeat(self, payload: dict) -> None:
+        """POST /workers/{worker_id}/heartbeat — best-effort, never crash."""
+        client = self._get_client()
+        try:
+            response = await client.post(
+                f"/workers/{self._worker_id}/heartbeat",
+                json=payload,
+                timeout=httpx.Timeout(10.0),
+            )
+            response.raise_for_status()
+            logger.debug(f"Heartbeat sent (activity={payload.get('activity')})")
+        except Exception as exc:
+            logger.warning(f"Heartbeat failed: {exc}")
+
+    async def report_progress(self, job_id: str, completed: int, failed: int, total: int) -> None:
+        """Report batch processing progress to the platform."""
+        client = self._get_client()
+        try:
+            response = await client.post(
+                f"/workers/progress",
+                json={
+                    "job_id": job_id,
+                    "worker_id": self._worker_id,
+                    "completed": completed,
+                    "failed": failed,
+                    "total": total,
+                },
+                timeout=httpx.Timeout(10.0),
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            logger.debug(f"Progress report failed (non-fatal): {exc}")
+
+    async def report_model_download(self, worker_id: str, model_name: str, status: str, completed: int, total: int) -> None:
+        """Report model download progress to platform."""
+        client = self._get_client()
+        try:
+            response = await client.post(
+                f"/workers/model-progress",
+                json={
+                    "worker_id": worker_id,
+                    "model_name": model_name,
+                    "status": status,
+                    "completed": completed,
+                    "total": total,
+                },
+                timeout=httpx.Timeout(10.0),
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            logger.debug(f"Model progress report failed (non-fatal): {exc}")
 
     # ── Lifecycle ────────────────────────────────────────────────
 

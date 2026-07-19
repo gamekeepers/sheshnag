@@ -12,5 +12,6 @@ of BaseExecutor in this package. No changes needed in Worker.
 
 from daemon.executors.base import BaseExecutor
 from daemon.executors.vllm import VLLMExecutor
+from daemon.executors.ollama import OllamaExecutor
 
-__all__ = ["BaseExecutor", "VLLMExecutor"]
+__all__ = ["BaseExecutor", "VLLMExecutor", "OllamaExecutor"]

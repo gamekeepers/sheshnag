@@ -1,5 +1,12 @@
 # Database Design Rationale
 
+> **Implementation note (2026-07-17):** the Worker Runtimes / Runtime
+> Models / Worker GPUs entities described below are **implemented** as
+> the `worker_runtimes`, `runtime_models`, and `worker_gpus` tables
+> (`backend/models.py`). The earlier V1 JSON columns on `workers` were
+> backfilled into them and dropped by a startup migration
+> (`backend/migrations.py`). This document matches the implementation.
+
 ## Design Principles
 
 The platform is built around a few simple principles:

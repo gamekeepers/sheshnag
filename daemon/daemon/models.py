@@ -42,6 +42,24 @@ class JobStatus(str, Enum):
 # ── Worker Registration (Spec §8) ───────────────────────────────
 
 
+class GPUInfo(BaseModel):
+    name: str = "unknown"
+    vram_gb: float = 0.0
+    driver_version: str = ""
+    cuda_version: str = ""
+    index: int = 0
+
+class HardwareInfo(BaseModel):
+    os: str = "Linux"
+    os_version: str = ""
+    kernel: str = ""
+    arch: str = ""
+    hostname: str = ""
+    cpu_model: str = ""
+    cpu_cores: int = 0
+    ram_gb: float = 0.0
+    gpus: List[GPUInfo] = Field(default_factory=list)
+
 class WorkerInfo(BaseModel):
     """
     Worker registration payload sent to the control plane.
@@ -51,19 +69,21 @@ class WorkerInfo(BaseModel):
     and available models so the scheduler can make informed assignments.
 
     Attributes:
-        worker_id: Unique identifier for this worker instance.
-        gpu_name:  Human-readable GPU model (e.g., "RTX 4090").
-        vram_gb:   GPU VRAM in gigabytes.
-        models:    List of model names available on this worker.
-        runtime:   Inference runtime type (e.g., "vllm").
-        status:    Current worker status ("online", "offline", "busy").
+        worker_id:   Unique identifier for this worker instance.
+        hardware:    Hardware specifications of the worker.
+        models:      List of model names available on this worker.
+        runtime:     Inference runtime type (e.g., "ollama", "vllm").
+        status:      Current worker status ("online", "offline", "busy", "downloading_model").
+
+    The owning organization is derived server-side from the org worker
+    API key used to authenticate registration — there is no provider
+    identity (issue #13).
     """
 
     worker_id: str
-    gpu_name: str = "unknown"
-    vram_gb: float = 0.0
+    hardware: Optional[HardwareInfo] = None
     models: List[str] = Field(default_factory=list)
-    runtime: str = "vllm"
+    runtime: str = "ollama"
     status: str = "online"
 
 

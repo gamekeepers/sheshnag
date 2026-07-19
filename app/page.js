@@ -186,7 +186,23 @@ export default function Home() {
               >Get started</button>
             </>
           ) : (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div 
+              onClick={() => router.push('/dashboard')}
+              style={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '8px', 
+                cursor: 'pointer',
+                padding: '4px 8px',
+                borderRadius: '8px',
+                background: 'rgba(255,255,255,0.03)',
+                border: '1px solid rgba(255,255,255,0.06)',
+                transition: 'all 0.15s'
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.08)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.03)'}
+              title="Go to Dashboard"
+            >
               <div style={{
                 width: '34px', height: '34px', borderRadius: '50%',
                 backgroundColor: '#1e3a5f', border: '1px solid #2d5a8a',
@@ -195,7 +211,7 @@ export default function Home() {
               }}>
                 {userName.charAt(0).toUpperCase()}
               </div>
-              <span style={{ fontSize: '14px', color: '#aaa' }}>{userName}</span>
+              <span style={{ fontSize: '14px', color: '#aaa', fontWeight: 500 }}>{userName}</span>
             </div>
           )}
         </div>
@@ -311,7 +327,7 @@ export default function Home() {
 
               {i === 0 && (
                 <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                  <button onClick={() => router.push('/signup')} style={{
+                  <button onClick={() => router.push(isLoggedIn ? '/dashboard' : '/signup')} style={{
                     padding: '14px 30px', borderRadius: '12px',
                     border: '1px solid rgba(255,255,255,0.5)',
                     background: 'rgba(255,255,255,0.1)',
@@ -321,7 +337,7 @@ export default function Home() {
                     onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.18)'}
                     onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
                   >
-                    Get started free →
+                    {isLoggedIn ? 'Go to Dashboard →' : 'Get started free →'}
                   </button>
 
                 </div>

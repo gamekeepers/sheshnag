@@ -67,7 +67,6 @@ export default function SignupPage() {
           origin: { y: 0.6 },
           colors: ['#fff', '#cfdbfa', '#8896d3', '#302b5e']
         });
-
         localStorage.setItem('mk_token', loginData.access_token);
 
         // Fetch full user profile
@@ -143,6 +142,7 @@ export default function SignupPage() {
         <div style={{ width: '100%', maxWidth: '360px' }}>
           
           <InteractiveMoon isPasswordFocused={isPasswordFocused} />
+
 
 
           {/* Name Fields */}

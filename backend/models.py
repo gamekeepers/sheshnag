@@ -1,5 +1,7 @@
 from database import Base
-from sqlalchemy import Column, String, Integer, Boolean, Float, Text, ForeignKey
+from sqlalchemy import (
+    Column, String, Integer, Boolean, Float, Text, ForeignKey, UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 import uuid
@@ -32,6 +34,18 @@ def generate_file_id():
 
 def generate_batch_id():
     return f"batch-{uuid.uuid4().hex[:24]}"
+
+
+def generate_runtime_id():
+    return f"wrt-{uuid.uuid4().hex[:24]}"
+
+
+def generate_runtime_model_id():
+    return f"rtm-{uuid.uuid4().hex[:24]}"
+
+
+def generate_gpu_id():
+    return f"gpu-{uuid.uuid4().hex[:24]}"
 
 
 def unix_now():
@@ -94,6 +108,30 @@ class OrganizationMembership(Base):
     user = relationship("User", back_populates="memberships")
 
 
+# ─── Organization Invites ───────────────────────────────────
+
+def generate_invite_id():
+    return f"inv-{uuid.uuid4().hex[:24]}"
+
+
+class OrganizationInvite(Base):
+    __tablename__ = "organization_invites"
+
+    id              = Column(String, primary_key=True, default=generate_invite_id)
+    org_id          = Column(String, ForeignKey("organizations.id"), nullable=False)
+    inviter_id      = Column(String, ForeignKey("users.id"), nullable=False)
+    invitee_email   = Column(String, nullable=False)
+    invitee_user_id = Column(String, ForeignKey("users.id"), nullable=True)
+    role            = Column(String, nullable=False)         # role offered on acceptance
+    token           = Column(String, unique=True, nullable=False, index=True)
+    expires_at      = Column(Integer, nullable=False)        # unix timestamp
+    accepted        = Column(Boolean, default=False)
+    created_at      = Column(Integer, default=unix_now)
+
+    org     = relationship("Organization")
+    inviter = relationship("User", foreign_keys=[inviter_id])
+
+
 # ─── API Keys ───────────────────────────────────────────────
 
 class ApiKey(Base):
@@ -137,13 +175,124 @@ class Worker(Base):
     os             = Column(String, nullable=True)
     cpu_cores      = Column(Integer, nullable=True)
     ram_total_gb   = Column(Float, nullable=True)
-    gpus           = Column(Text, default="[]")
-    runtimes       = Column(Text, default="[]")
+    # Liveness (spec §8.1): online | offline | draining | error.
+    # Managed server-side (heartbeat arrival / sweeper timeout).
     status         = Column(String, default="online")
+    # What the daemon is doing right now: idle | busy | downloading_model.
+    # Reported by the worker in each heartbeat, separate from liveness.
+    activity       = Column(String, default="idle")
+    # Aggregate VRAM, updated on every heartbeat (spec §8.1). NULL until
+    # the first heartbeat arrives — poll uses that to fall back to
+    # registration-advertised models. Kept machine-aggregate because the
+    # daemon reports totals, not per-GPU stats.
+    vram_total_gb     = Column(Float, nullable=True)
+    vram_available_gb = Column(Float, nullable=True)
     last_heartbeat = Column(Integer, default=unix_now)
     created_at     = Column(Integer, default=unix_now)
 
     organization = relationship("Organization", back_populates="workers")
+    # Normalized inventory (spec §8.2–8.4). Assigning a new list replaces
+    # the old rows (delete-orphan), which is how re-registration works.
+    gpus     = relationship(
+        "WorkerGpu", back_populates="worker",
+        cascade="all, delete-orphan", order_by="WorkerGpu.gpu_index",
+    )
+    runtimes = relationship(
+        "WorkerRuntime", back_populates="worker",
+        cascade="all, delete-orphan",
+    )
+
+    def loaded_model_names(self) -> list:
+        """Model names currently loaded in VRAM (from heartbeats)."""
+        return [m.name for rt in self.runtimes for m in rt.models if m.loaded]
+
+    def advertised_model_names(self) -> set:
+        """All model names this worker's runtimes host."""
+        return {m.name for rt in self.runtimes for m in rt.models}
+
+
+class WorkerRuntime(Base):
+    """An inference engine a worker exposes (spec §8.2)."""
+    __tablename__ = "worker_runtimes"
+    __table_args__ = (
+        UniqueConstraint("worker_id", "engine", "base_url"),
+    )
+
+    id         = Column(String, primary_key=True, default=generate_runtime_id)
+    worker_id  = Column(
+        String, ForeignKey("workers.id", ondelete="CASCADE"), nullable=False,
+    )
+    engine     = Column(String, nullable=False)   # ollama | vllm | tgi | transformers
+    base_url   = Column(String, nullable=False, default="")
+    api_protocol = Column(String, default="openai-compatible")
+    status     = Column(String, default="ready")  # ready | draining | unavailable
+    max_concurrent_requests = Column(Integer, nullable=True)
+    request_timeout_seconds = Column(Integer, nullable=True)
+    created_at = Column(Integer, default=unix_now)
+    updated_at = Column(Integer, default=unix_now)
+
+    worker = relationship("Worker", back_populates="runtimes")
+    models = relationship(
+        "RuntimeModel", back_populates="runtime",
+        cascade="all, delete-orphan",
+    )
+
+
+class RuntimeModel(Base):
+    """A model hosted by a worker runtime (spec §8.3).
+
+    `loaded` (in VRAM right now) is transient heartbeat state; `status`
+    tracks on-disk availability.
+    """
+    __tablename__ = "runtime_models"
+    __table_args__ = (
+        UniqueConstraint("runtime_id", "name"),
+    )
+
+    id         = Column(String, primary_key=True, default=generate_runtime_model_id)
+    runtime_id = Column(
+        String, ForeignKey("worker_runtimes.id", ondelete="CASCADE"), nullable=False,
+    )
+    name             = Column(String, nullable=False)
+    runtime_model_id = Column(String, nullable=True)  # exact id the runtime expects
+    revision         = Column(String, nullable=True)
+    task_type        = Column(String, nullable=True)
+    parameter_count  = Column(Integer, nullable=True)
+    quantization     = Column(String, nullable=True)
+    context_length   = Column(Integer, nullable=True)
+    size_bytes       = Column(Integer, nullable=True)
+    license          = Column(String, nullable=True)
+    local_path       = Column(String, nullable=True)
+    status     = Column(String, default="available")  # available | downloading | not_downloaded | error
+    loaded     = Column(Boolean, default=False)
+    last_used_at = Column(Integer, nullable=True)
+    created_at = Column(Integer, default=unix_now)
+    updated_at = Column(Integer, default=unix_now)
+
+    runtime = relationship("WorkerRuntime", back_populates="models")
+
+
+class WorkerGpu(Base):
+    """A physical GPU on a worker (spec §8.4)."""
+    __tablename__ = "worker_gpus"
+    __table_args__ = (
+        UniqueConstraint("worker_id", "gpu_index"),
+    )
+
+    id        = Column(String, primary_key=True, default=generate_gpu_id)
+    worker_id = Column(
+        String, ForeignKey("workers.id", ondelete="CASCADE"), nullable=False,
+    )
+    gpu_index = Column(Integer, nullable=False)
+    vendor    = Column(String, nullable=True)
+    name      = Column(String, nullable=True)
+    vram_gb   = Column(Float, nullable=True)
+    driver    = Column(String, nullable=True)
+    cuda      = Column(String, nullable=True)
+    rocm      = Column(String, nullable=True)
+    updated_at = Column(Integer, default=unix_now)
+
+    worker = relationship("Worker", back_populates="gpus")
 
 
 # ─── Files & Batches ────────────────────────────────────────
@@ -181,13 +330,14 @@ class Batch(Base):
     request_counts_completed = Column(Integer, default=0)
     request_counts_failed    = Column(Integer, default=0)
     error_details            = Column(String, nullable=True)
+    attempts                 = Column(Integer, default=0)  # execution attempts (spec §12 requeue)
 
 
 class BatchAssignment(Base):
     __tablename__ = "batch_assignments"
 
     batch_id    = Column(String, primary_key=True)
-    worker_id   = Column(String, nullable=False)
+    worker_id   = Column(String, ForeignKey("workers.id"), nullable=False)
     assigned_at = Column(Integer, default=unix_now)
 
 
@@ -202,17 +352,3 @@ class PasswordResetToken(Base):
     expires_at = Column(Integer, nullable=False)
     used       = Column(Boolean, default=False)
     created_at = Column(Integer, default=unix_now)
-
-
-# ─── Legacy (kept for backward compat) ─────────────────────
-
-class ProviderCapability(Base):
-    __tablename__ = "provider_capabilities"
-
-    worker_id         = Column(String, primary_key=True)
-    provider_id       = Column(String, nullable=False)
-    vram_total_gb     = Column(Float, default=0)
-    vram_available_gb = Column(Float, default=0)
-    loaded_models     = Column(String, default="[]")
-    status            = Column(String, default="online")
-    last_heartbeat    = Column(Integer, default=unix_now)

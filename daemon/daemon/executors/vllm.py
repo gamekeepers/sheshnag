@@ -33,7 +33,7 @@ class VLLMExecutor(BaseExecutor):
 
     Args:
         base_url:          Base URL of the vLLM server (e.g., http://localhost:8100).
-        timeout:           Per-request timeout in seconds (configurable via DaemonConfig.vllm_timeout).
+        timeout:           Per-request timeout in seconds (configurable via DaemonConfig.inference_timeout).
         supported_models:  Optional list of models this worker supports. If provided,
                            health_check() will verify these models are loaded in vLLM.
     """
