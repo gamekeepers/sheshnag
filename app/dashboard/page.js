@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import confetti from 'canvas-confetti';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import './dashboard.css';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
@@ -24,7 +25,7 @@ function MoonknightLogo({ size = 22 }) {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState('home');
   const [isOrgDropdownOpen, setIsOrgDropdownOpen] = useState(false);
   const [token, setToken] = useState('');
   
@@ -67,7 +68,11 @@ export default function DashboardPage() {
   const [settingsProfileName, setSettingsProfileName] = useState('');
   const [settingsProfileEmail, setSettingsProfileEmail] = useState('');
   const [settingsStatus, setSettingsStatus] = useState('');
-
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [orgMembers, setOrgMembers] = useState([]);
+  const [orgInvites, setOrgInvites] = useState([]);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState('viewer');
   // SSE & Ref references
   const pollTimerRef = useRef(null);
   const validatingIdsRef = useRef(new Set());
@@ -152,6 +157,28 @@ export default function DashboardPage() {
       loadProfile();
     }
   }, [token, loadProfile]);
+
+  // Fetch Members & Invites
+  const loadMembers = useCallback(async () => {
+    if (!selectedOrg) return;
+    setSettingsLoading(true);
+    try {
+      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members`, { headers: getHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setOrgMembers(data.data || []);
+      }
+      const invRes = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members/invites`, { headers: getHeaders() });
+      if (invRes.ok) {
+        const data = await invRes.json();
+        setOrgInvites(data.data || []);
+      }
+    } catch (e) {
+      console.error('Failed to load members:', e);
+    } finally {
+      setSettingsLoading(false);
+    }
+  }, [selectedOrg, getHeaders]);
 
   // Fetch API Keys (Personal & Organization Worker Key)
   const loadKeys = useCallback(async () => {
@@ -239,8 +266,15 @@ export default function DashboardPage() {
       loadWorkers();
     } else if (activeTab === 'batches') {
       loadBatches();
+    } else if (activeTab === 'settings') {
+      loadMembers();
     }
-  }, [activeTab, selectedOrg, loadWorkers, loadBatches, loadKeys]);
+  }, [activeTab, selectedOrg, loadWorkers, loadBatches, loadKeys, loadMembers]);
+
+  const batchesRef = useRef(batches);
+  useEffect(() => {
+    batchesRef.current = batches;
+  }, [batches]);
 
   // Polling for active/running batches
   useEffect(() => {
@@ -248,6 +282,9 @@ export default function DashboardPage() {
 
     const poll = async () => {
       if (!active) return;
+      const hasActiveJobs = batchesRef.current.some(j => !['completed', 'failed'].includes(j.status));
+      if (!hasActiveJobs) return; // Only poll if there's an active job
+
       try {
         const res = await fetch(`${BACKEND}/v1/batches`, { headers: getHeaders() });
         if (res.ok) {
@@ -267,28 +304,19 @@ export default function DashboardPage() {
           }));
 
           setBatches(mapped);
-
-          // Check if we still have active jobs to poll
-          const hasActive = mapped.some(j => !['completed', 'failed'].includes(j.status));
-          if (hasActive && active) {
-            pollTimerRef.current = setTimeout(poll, 6000);
-          }
         }
       } catch (e) {
         console.error('Poll failed:', e);
       }
     };
 
-    const hasActiveJobs = batches.some(j => !['completed', 'failed'].includes(j.status));
-    if (hasActiveJobs) {
-      poll();
-    }
+    const interval = setInterval(poll, 5000);
 
     return () => {
       active = false;
-      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+      clearInterval(interval);
     };
-  }, [batches, getHeaders]);
+  }, [getHeaders]);
 
   // SSE subscription for batches still in 'validating'
   useEffect(() => {
@@ -496,12 +524,125 @@ export default function DashboardPage() {
   };
 
   // Settings Save
-  const handleSaveSettings = () => {
-    setSettingsStatus('Saving modifications...');
-    setTimeout(() => {
-      setSettingsStatus('Settings saved successfully!');
-      setTimeout(() => setSettingsStatus(''), 2000);
-    }, 800);
+  const handleSaveOrgSettings = async () => {
+    if (!settingsOrgName || !selectedOrg) return;
+    setSettingsStatus('Saving org settings...');
+    try {
+      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}`, {
+        method: 'PUT',
+        headers: getHeaders(),
+        body: JSON.stringify({ name: settingsOrgName })
+      });
+      if (res.ok) {
+        setSettingsStatus('Org settings saved!');
+        // Refresh org list to reflect new name
+        const orgRes = await fetch(`${BACKEND}/v1/me/organizations`, { headers: getHeaders() });
+        if (orgRes.ok) {
+           const body = await orgRes.json();
+           setOrgs(body.data);
+           const updatedOrg = body.data.find(o => o.id === selectedOrg.id);
+           if (updatedOrg) setSelectedOrg(updatedOrg);
+        }
+      } else {
+        const err = await res.json();
+        setSettingsStatus(err.detail || 'Failed to save org settings.');
+      }
+    } catch (e) {
+      setSettingsStatus('Server connection failed.');
+    }
+    setTimeout(() => setSettingsStatus(''), 3000);
+  };
+
+  const handleSaveProfile = async () => {
+    if (!settingsProfileName) return;
+    setSettingsStatus('Saving profile...');
+    try {
+      const res = await fetch(`${BACKEND}/v1/auth/me`, {
+        method: 'PUT',
+        headers: getHeaders(),
+        body: JSON.stringify({ full_name: settingsProfileName })
+      });
+      if (res.ok) {
+        setSettingsStatus('Profile saved!');
+        // Refresh user profile state
+        const profRes = await fetch(`${BACKEND}/v1/auth/me`, { headers: getHeaders() });
+        if (profRes.ok) {
+           setUserProfile(await profRes.json());
+        }
+      } else {
+        const err = await res.json();
+        setSettingsStatus(err.detail || 'Failed to save profile.');
+      }
+    } catch (e) {
+      setSettingsStatus('Server connection failed.');
+    }
+    setTimeout(() => setSettingsStatus(''), 3000);
+  };
+
+  const handleInvite = async () => {
+    if (!inviteEmail) return;
+    setSettingsLoading(true);
+    try {
+      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members/invite`, {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify({ email: inviteEmail, role: inviteRole })
+      });
+      if (res.ok) {
+        setInviteEmail('');
+        loadMembers();
+        setSettingsStatus('Invite sent!');
+        setTimeout(() => setSettingsStatus(''), 2000);
+      } else {
+        const err = await res.json();
+        alert(err.detail || 'Failed to send invite');
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
+  const handleRevokeInvite = async (token) => {
+    if (!confirm('Revoke this invite?')) return;
+    try {
+      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members/invites/${token}`, {
+        method: 'DELETE',
+        headers: getHeaders()
+      });
+      if (res.ok) loadMembers();
+    } catch (e) { console.error(e); }
+  };
+
+  const handleUpdateRole = async (userId, newRole) => {
+    try {
+      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members/${userId}`, {
+        method: 'PUT',
+        headers: getHeaders(),
+        body: JSON.stringify({ role: newRole })
+      });
+      if (res.ok) loadMembers();
+      else {
+        const err = await res.json();
+        alert(err.detail || 'Failed to update role');
+      }
+    } catch (e) { console.error(e); }
+  };
+
+  const handleRemoveMember = async (userId) => {
+    if (!confirm('Remove this member?')) return;
+    try {
+      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members/${userId}`, {
+        method: 'DELETE',
+        headers: getHeaders()
+      });
+      if (res.ok) loadMembers();
+      else {
+        const err = await res.json();
+        alert(err.detail || 'Failed to remove member');
+      }
+    } catch (e) { console.error(e); }
   };
 
   // Download File helper
@@ -533,8 +674,9 @@ export default function DashboardPage() {
 
   const getPageTitle = () => {
     const titles = {
-      overview: 'Overview',
+      home: 'Home',
       apikeys: 'API Keys',
+      usage: 'Usage',
       workers: 'Workers',
       files: 'Files',
       batches: 'Batches',
@@ -553,6 +695,30 @@ export default function DashboardPage() {
   const successRate = totalRequestsToday > 0 
     ? (((totalRequestsToday - totalFailedToday) / totalRequestsToday) * 100).toFixed(1) 
     : '100.0';
+
+  // Chart Data Calculation
+  const chartData = [...Array(14)].map((_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (13 - i));
+    return {
+      date: d.toISOString().split('T')[0],
+      displayDate: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      requests: 0,
+      successful: 0,
+      failed: 0
+    };
+  });
+
+  batches.forEach(b => {
+    if (!b.created_at) return;
+    const batchDate = new Date(b.created_at * 1000).toISOString().split('T')[0];
+    const day = chartData.find(d => d.date === batchDate);
+    if (day) {
+      day.requests += (b.total || 0);
+      day.successful += (b.done || 0);
+      day.failed += (b.failed || 0);
+    }
+  });
 
   return (
     <div className="app-layout">
@@ -581,20 +747,26 @@ export default function DashboardPage() {
         </div>
 
         <nav className="nav">
-          <div className={`nav-item ${activeTab === 'overview' ? 'active' : ''}`} onClick={() => setActiveTab('overview')}>
-            <span className="ic">📊</span> Overview
+          <div className={`nav-item ${activeTab === 'home' ? 'active' : ''}`} onClick={() => setActiveTab('home')}>
+            <span className="ic">📊</span> Home
           </div>
           <div className={`nav-item ${activeTab === 'apikeys' ? 'active' : ''}`} onClick={() => setActiveTab('apikeys')}>
             <span className="ic">🔑</span> API Keys
           </div>
+          <div className={`nav-item ${activeTab === 'usage' ? 'active' : ''}`} onClick={() => setActiveTab('usage')}>
+            <span className="ic">📈</span> Usage
+          </div>
+          <div className={`nav-item ${activeTab === 'batches' ? 'active' : ''}`} onClick={() => setActiveTab('batches')}>
+            <span className="ic">📦</span> Batches
+          </div>
+
+          <div className="section-title" style={{ marginTop: '1.5rem', marginLeft: '1rem', fontSize: '11px', opacity: 0.5, letterSpacing: '0.05em' }}>MANAGEMENT</div>
+          
           <div className={`nav-item ${activeTab === 'workers' ? 'active' : ''}`} onClick={() => setActiveTab('workers')}>
             <span className="ic">🖥️</span> Workers
           </div>
           <div className={`nav-item ${activeTab === 'files' ? 'active' : ''}`} onClick={() => setActiveTab('files')}>
             <span className="ic">📁</span> Files
-          </div>
-          <div className={`nav-item ${activeTab === 'batches' ? 'active' : ''}`} onClick={() => setActiveTab('batches')}>
-            <span className="ic">📦</span> Batches
           </div>
           <div className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>
             <span className="ic">⚙️</span> Settings
@@ -623,9 +795,9 @@ export default function DashboardPage() {
         </div>
 
         <div className="content-body">
-          {/* ============ OVERVIEW PAGE ============ */}
-          <div className={`page-panel ${activeTab === 'overview' ? 'active' : ''}`}>
-            <h1 className="page-title">Overview</h1>
+          {/* ============ HOME PAGE ============ */}
+          <div className={`page-panel ${activeTab === 'home' ? 'active' : ''}`}>
+            <h1 className="page-title">Home</h1>
             <p className="page-sub">Usage and recent activity for {selectedOrg ? selectedOrg.name : 'Lunar Labs'}.</p>
 
             <div className="grid-3">
@@ -655,31 +827,37 @@ export default function DashboardPage() {
             </div>
 
             <div className="section-title">Requests processed, last 14 days</div>
-            <div className="panel chart-wrap">
-              <svg viewBox="0 0 560 160" width="100%" height="160" preserveAspectRatio="none">
-                <defs>
-                  <linearGradient id="fillGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#C9C4FF" stopOpacity="0.35" />
-                    <stop offset="100%" stopColor="#C9C4FF" stopOpacity="0" />
-                  </linearGradient>
-                </defs>
-                <polyline
-                  points="0,120 40,110 80,95 120,100 160,70 200,80 240,55 280,60 320,40 360,50 400,30 440,42 480,20 520,28 560,15"
-                  fill="none"
-                  stroke="#C9C4FF"
-                  strokeWidth="2"
-                />
-                <polygon
-                  points="0,120 40,110 80,95 120,100 160,70 200,80 240,55 280,60 320,40 360,50 400,30 440,42 480,20 520,28 560,15 560,160 0,160"
-                  fill="url(#fillGrad)"
-                  stroke="none"
-                />
-              </svg>
-              <div className="chart-legend">
-                <div className="lg">
-                  <span className="sw" style={{ background: '#C9C4FF' }}></span> Requests processed
-                </div>
-              </div>
+            <div className="panel chart-wrap" style={{ height: '200px', padding: '1rem' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData}>
+                  <XAxis 
+                    dataKey="displayDate" 
+                    stroke="#888" 
+                    fontSize={12} 
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <YAxis 
+                    stroke="#888" 
+                    fontSize={12} 
+                    tickLine={false}
+                    axisLine={false}
+                    tickFormatter={(value) => value >= 1000 ? `${(value / 1000).toFixed(1)}k` : value}
+                  />
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: '#111116', border: '1px solid #333', borderRadius: '8px' }}
+                    itemStyle={{ color: '#C9C4FF' }}
+                  />
+                  <Line 
+                    type="monotone" 
+                    dataKey="requests" 
+                    stroke="#C9C4FF" 
+                    strokeWidth={3}
+                    dot={{ r: 4, fill: '#111116', stroke: '#C9C4FF', strokeWidth: 2 }}
+                    activeDot={{ r: 6, fill: '#C9C4FF' }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
             </div>
 
             <div className="section-title">Recent Batches</div>
@@ -715,6 +893,37 @@ export default function DashboardPage() {
                         <td colSpan={4} className="empty-hint">No batches submitted yet.</td>
                       </tr>
                     )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          {/* ============ USAGE PAGE ============ */}
+          <div className={`page-panel ${activeTab === 'usage' ? 'active' : ''}`}>
+            <h1 className="page-title">Usage Details</h1>
+            <p className="page-sub">Daily breakdown of request usage across all batches.</p>
+
+            <div className="panel" style={{ padding: '0.5rem' }}>
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Total Requests</th>
+                      <th>Successful</th>
+                      <th>Failed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {chartData.slice().reverse().map((day, idx) => (
+                      <tr key={idx}>
+                        <td className="mono">{day.displayDate}</td>
+                        <td>{day.requests.toLocaleString()}</td>
+                        <td style={{ color: '#00D287' }}>{day.successful.toLocaleString()}</td>
+                        <td style={{ color: '#F85149' }}>{day.failed.toLocaleString()}</td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -981,24 +1190,18 @@ export default function DashboardPage() {
           {/* ============ SETTINGS PAGE ============ */}
           <div className={`page-panel ${activeTab === 'settings' ? 'active' : ''}`}>
             <h1 className="page-title">Settings</h1>
-            <p className="page-sub">Organization and profile settings.</p>
+            <p className="page-sub">Manage your organization members, invites, and profile.</p>
 
             <div className="grid-2">
               <div className="panel">
-                <div className="section-title" style={{ marginTop: 0 }}>Organization</div>
+                <div className="section-title" style={{ marginTop: 0 }}>Organization details</div>
                 <div className="field">
                   <label>Organization name</label>
                   <input value={settingsOrgName} onChange={e => setSettingsOrgName(e.target.value)} />
                 </div>
-                <div className="field">
-                  <label>Default runtime engine</label>
-                  <select value={settingsDefaultEngine} onChange={e => setSettingsDefaultEngine(e.target.value)}>
-                    <option value="vLLM">vLLM</option>
-                    <option value="Ollama">Ollama</option>
-                  </select>
-                </div>
-                <button className="btn primary" onClick={handleSaveSettings}>Save changes</button>
+                <button className="btn primary" onClick={handleSaveOrgSettings} disabled={settingsLoading}>Save org settings</button>
               </div>
+
               <div className="panel">
                 <div className="section-title" style={{ marginTop: 0 }}>Profile</div>
                 <div className="field">
@@ -1009,12 +1212,117 @@ export default function DashboardPage() {
                   <label>Email</label>
                   <input value={settingsProfileEmail} disabled style={{ opacity: 0.6, cursor: 'not-allowed' }} />
                 </div>
-                <button className="btn primary" onClick={handleSaveSettings}>Save changes</button>
+                <button className="btn primary" onClick={handleSaveProfile} disabled={settingsLoading}>Save profile</button>
               </div>
             </div>
+            
             {settingsStatus && (
               <p style={{ color: 'var(--accent)', fontSize: '0.85rem', marginTop: '1rem' }}>{settingsStatus}</p>
             )}
+
+            {/* MEMBERS SECTION */}
+            <div className="section-title" style={{ marginTop: '2rem' }}>Members</div>
+            <div className="panel" style={{ padding: '0.5rem', marginBottom: '2rem' }}>
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name / Email</th>
+                      <th>Role</th>
+                      <th>Joined</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orgMembers.map(m => (
+                      <tr key={m.membership_id}>
+                        <td>
+                          {m.full_name} <span className="dim">({m.email})</span>
+                        </td>
+                        <td>
+                          <select 
+                            value={m.role} 
+                            onChange={(e) => handleUpdateRole(m.user_id, e.target.value)}
+                            className="btn" style={{ padding: '2px 8px', fontSize: '0.8rem', background: 'transparent' }}
+                            disabled={settingsLoading || userProfile?.email === m.email}
+                          >
+                            <option value="owner">Owner</option>
+                            <option value="admin">Admin</option>
+                            <option value="viewer">Viewer</option>
+                          </select>
+                        </td>
+                        <td className="dim">
+                          {new Date(m.joined_at * 1000).toLocaleDateString()}
+                        </td>
+                        <td>
+                          {userProfile?.email !== m.email && (
+                            <button className="btn" style={{ color: 'var(--danger)' }} onClick={() => handleRemoveMember(m.user_id)} disabled={settingsLoading}>
+                              Remove
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* INVITES SECTION */}
+            <div className="section-title">Pending Invites</div>
+            <div className="panel" style={{ padding: '0.5rem', marginBottom: '2rem' }}>
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Email</th>
+                      <th>Role</th>
+                      <th>Expires</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orgInvites.map(inv => (
+                      <tr key={inv.id}>
+                        <td>{inv.email}</td>
+                        <td><span className="badge">{inv.role}</span></td>
+                        <td className="dim">{new Date(inv.expires_at * 1000).toLocaleDateString()}</td>
+                        <td>
+                          <button className="btn" style={{ color: 'var(--danger)' }} onClick={() => handleRevokeInvite(inv.token)} disabled={settingsLoading}>
+                            Revoke
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {orgInvites.length === 0 && (
+                      <tr>
+                        <td colSpan={4} className="empty-hint">No pending invites.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              
+              <div style={{ padding: '1rem', borderTop: '1px solid var(--border)' }}>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
+                  <div className="field" style={{ margin: 0, flex: 1 }}>
+                    <label>Email Address</label>
+                    <input type="email" placeholder="colleague@example.com" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} />
+                  </div>
+                  <div className="field" style={{ margin: 0, width: '120px' }}>
+                    <label>Role</label>
+                    <select value={inviteRole} onChange={e => setInviteRole(e.target.value)}>
+                      <option value="viewer">Viewer</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                  </div>
+                  <button className="btn primary" onClick={handleInvite} disabled={!inviteEmail || settingsLoading}>
+                    Send Invite
+                  </button>
+                </div>
+              </div>
+            </div>
+            
           </div>
         </div>
       </div>
