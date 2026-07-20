@@ -47,6 +47,15 @@ def _bytes_to_gb(n):
     return round(n / (1024 ** 3), 2) if n else None
 
 
+def _bare_digest(d):
+    """Canonical stored form: bare lowercase hex, no `sha256:` prefix.
+    (The picker normalizes on read, but we keep the manifest consistent.)"""
+    if not d:
+        return None
+    d = str(d).strip().lower()
+    return d.split(":", 1)[1] if ":" in d else d
+
+
 def fetch_tags(base_url: str) -> dict:
     """runtime_model_id -> {digest, size, quantization, parameter_size} from /api/tags."""
     r = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=10.0)
@@ -58,7 +67,7 @@ def fetch_tags(base_url: str) -> dict:
             continue
         details = m.get("details") or {}
         out[name] = {
-            "digest": ("sha256:" + m["digest"]) if m.get("digest") and not str(m["digest"]).startswith("sha256:") else m.get("digest"),
+            "digest": _bare_digest(m.get("digest")),
             "size_gb": _bytes_to_gb(m.get("size")),
             "quantization": details.get("quantization_level"),
             "parameter_size": details.get("parameter_size"),

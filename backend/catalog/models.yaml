@@ -159,7 +159,7 @@
   homepage_url: https://ollama.com/library/qwen3
   enabled: true
 - id: glm-4-7-flash-latest-ollama
-  display_name: 'TODO: glm-4.7-flash:latest'
+  display_name: 'glm-4.7-flash:latest'
   runtime: ollama
   runtime_model_id: glm-4.7-flash:latest
   digest: d1a8a26252f18b34301218d22abd2620a65b85ba4b78987842eb157e01321222
@@ -175,7 +175,7 @@
   homepage_url: https://ollama.com/library/glm-4.7-flash
   enabled: true
 - id: qwen3-6-27b-ollama
-  display_name: 'TODO: qwen3.6:27b'
+  display_name: 'qwen3.6:27b'
   runtime: ollama
   runtime_model_id: qwen3.6:27b
   digest: a50eda8ed977ab48a12431878896b27ffd5cef552c17af3317d9623b939a7f1e
