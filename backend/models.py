@@ -112,6 +112,30 @@ class OrganizationMembership(Base):
     user = relationship("User", back_populates="memberships")
 
 
+# ─── Organization Invites ───────────────────────────────────
+
+def generate_invite_id():
+    return f"inv-{uuid.uuid4().hex[:24]}"
+
+
+class OrganizationInvite(Base):
+    __tablename__ = "organization_invites"
+
+    id              = Column(String, primary_key=True, default=generate_invite_id)
+    org_id          = Column(String, ForeignKey("organizations.id"), nullable=False)
+    inviter_id      = Column(String, ForeignKey("users.id"), nullable=False)
+    invitee_email   = Column(String, nullable=False)
+    invitee_user_id = Column(String, ForeignKey("users.id"), nullable=True)
+    role            = Column(String, nullable=False)         # role offered on acceptance
+    token           = Column(String, unique=True, nullable=False, index=True)
+    expires_at      = Column(Integer, nullable=False)        # unix timestamp
+    accepted        = Column(Boolean, default=False)
+    created_at      = Column(Integer, default=unix_now)
+
+    org     = relationship("Organization")
+    inviter = relationship("User", foreign_keys=[inviter_id])
+
+
 # ─── API Keys ───────────────────────────────────────────────
 
 class ApiKey(Base):
