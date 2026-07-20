@@ -48,6 +48,10 @@ def generate_gpu_id():
     return f"gpu-{uuid.uuid4().hex[:24]}"
 
 
+def generate_catalog_id():
+    return f"mdl-{uuid.uuid4().hex[:24]}"
+
+
 def unix_now():
     return int(datetime.now(timezone.utc).timestamp())
 
@@ -210,6 +214,14 @@ class Worker(Base):
         """All model names this worker's runtimes host."""
         return {m.name for rt in self.runtimes for m in rt.models}
 
+    def advertised_models(self) -> list:
+        """(name, digest) pairs this worker's runtimes host."""
+        return [(m.name, m.digest) for rt in self.runtimes for m in rt.models]
+
+    def loaded_models(self) -> list:
+        """(name, digest) pairs currently loaded in VRAM."""
+        return [(m.name, m.digest) for rt in self.runtimes for m in rt.models if m.loaded]
+
 
 class WorkerRuntime(Base):
     """An inference engine a worker exposes (spec §8.2)."""
@@ -239,7 +251,10 @@ class WorkerRuntime(Base):
 
 
 class RuntimeModel(Base):
-    """A model hosted by a worker runtime (spec §8.3).
+    """A model hosted by a worker runtime — the per-worker *availability*
+    row. Lean by design: scheduling only needs name/digest match + loaded
+    state. Descriptive/curated metadata (quantization, params, context,
+    task type, size) lives on `ModelCatalog`, not replicated here.
 
     `loaded` (in VRAM right now) is transient heartbeat state; `status`
     tracks on-disk availability.
@@ -255,14 +270,7 @@ class RuntimeModel(Base):
     )
     name             = Column(String, nullable=False)
     runtime_model_id = Column(String, nullable=True)  # exact id the runtime expects
-    revision         = Column(String, nullable=True)
-    task_type        = Column(String, nullable=True)
-    parameter_count  = Column(Integer, nullable=True)
-    quantization     = Column(String, nullable=True)
-    context_length   = Column(Integer, nullable=True)
-    size_bytes       = Column(Integer, nullable=True)
-    license          = Column(String, nullable=True)
-    local_path       = Column(String, nullable=True)
+    digest           = Column(String, nullable=True)  # artifact digest (reproducibility join key)
     status     = Column(String, default="available")  # available | downloading | not_downloaded | error
     loaded     = Column(Boolean, default=False)
     last_used_at = Column(Integer, nullable=True)
@@ -293,6 +301,53 @@ class WorkerGpu(Base):
     updated_at = Column(Integer, default=unix_now)
 
     worker = relationship("Worker", back_populates="gpus")
+
+
+# ─── Model Catalogue ────────────────────────────────────────
+
+class ModelCatalog(Base):
+    """A curated, pinned model the user may select for a batch.
+
+    Identity is curated (admin/seed), not derived from what workers
+    registered: `id` is a stable platform slug the user puts in
+    `body.model`; `runtime_model_id` (the raw `mistral:7b` / HF repo id)
+    is an internal detail. Each row is ONE concrete artifact — weights +
+    quantization + runtime — so a batch bound to it never silently swaps
+    precision or runtime (reproducibility).
+
+    `digest` is the reproducibility anchor and the intended join key
+    against a worker's advertised models; until the daemon reports
+    digests, availability is matched on `runtime_model_id` (see
+    provider_picker). `org_id` NULL = public; reserved for org-private
+    entries (tier 2, not wired yet).
+    """
+    __tablename__ = "model_catalog"
+
+    id               = Column(String, primary_key=True, default=generate_catalog_id)
+    display_name     = Column(String, nullable=False)
+    runtime          = Column(String, nullable=False)   # ollama | vllm
+    runtime_model_id = Column(String, nullable=False)   # exact runtime string, internal
+    digest           = Column(String, nullable=True)    # reproducibility pin / join key (identity)
+    quantization     = Column(String, nullable=True)
+    vram_gb          = Column(Float, nullable=True)     # scheduling requirement
+    size_gb          = Column(Float, nullable=True)     # disk (feeds download size cap)
+    # Descriptive metadata (curated, one place) — moved off the per-worker
+    # runtime_models rows. For the Models tab / picker, not scheduling.
+    task_type        = Column(String, nullable=True)    # chat | text-generation | embedding | vision
+    parameter_size   = Column(String, nullable=True)    # human-readable, e.g. '7B'
+    context_length   = Column(Integer, nullable=True)
+    # Provenance (where the artifact came from / how to fetch it) — distinct
+    # from identity (`digest`). source_ref + source_revision is the pull
+    # reference (HF repo+commit, or Ollama library path); homepage_url is the
+    # human-facing model card. Metadata only, never a matching key.
+    source_type      = Column(String, nullable=True)    # 'ollama-library' | 'huggingface'
+    source_ref       = Column(String, nullable=True)    # HF repo id / ollama library path
+    source_revision  = Column(String, nullable=True)    # HF commit/tag; NULL for ollama
+    homepage_url     = Column(String, nullable=True)    # model-card link for the dashboard
+    org_id           = Column(String, ForeignKey("organizations.id"), nullable=True)  # NULL = public
+    status           = Column(String, default="active")  # active | requested | deprecated
+    enabled          = Column(Boolean, default=True)
+    created_at       = Column(Integer, default=unix_now)
 
 
 # ─── Files & Batches ────────────────────────────────────────

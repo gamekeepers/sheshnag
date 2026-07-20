@@ -220,3 +220,4 @@ __marimo__/
 **/.DS_Store
 
 *.orig
+.env.local

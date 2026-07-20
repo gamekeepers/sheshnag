@@ -9,7 +9,6 @@ from database import get_db
 from models import Batch, File as FileModel
 from schemas import BatchCreate, BatchOut, BatchSummary
 from auth import get_human_context
-from provider_picker import is_model_supported
 from services.batch_validator import validate_batch_file
 from services.sse_manager import sse_manager
 
