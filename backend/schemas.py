@@ -146,6 +146,9 @@ class WorkerHeartbeatRequest(BaseModel):
     vram_total_gb: float = 0.0
     vram_available_gb: float = 0.0
     loaded_models: List[str] = []
+    # Optional name → digest map for the loaded models (additive; older
+    # daemons omit it and fall back to name matching).
+    loaded_model_digests: dict = {}
     uptime_seconds: int = 0
 
 
@@ -191,6 +194,8 @@ class RuntimeInfo(BaseModel):
     type: str                   # "ollama", "vllm", etc.
     endpoint: str
     models: List[str] = []
+    # Optional name → digest map (additive; older daemons omit it).
+    model_digests: dict = {}
 
 
 class WorkerRegisterRequest(BaseModel):

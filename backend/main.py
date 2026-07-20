@@ -6,14 +6,16 @@ import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
-from routers import files, batches, workers, auth, users, organizations
+from routers import files, batches, workers, auth, users, organizations, models as models_router
 from models import User, Organization, OrganizationMembership
 from auth import hash_password
 from migrations import run_startup_migrations
+from catalog_seed import seed_model_catalog
 from sweeper import run_sweeper
 
 Base.metadata.create_all(bind=engine)
 run_startup_migrations(engine)
+seed_model_catalog()
 
 app = FastAPI(title="Batch AI Compute Platform")
 
@@ -30,6 +32,7 @@ app.include_router(files.router,     prefix="/v1",      tags=["Files"])
 app.include_router(batches.router,   prefix="/v1",      tags=["Batches"])
 app.include_router(users.router,     prefix="/v1",      tags=["Users"])
 app.include_router(organizations.router, prefix="/v1",  tags=["Organizations"])
+app.include_router(models_router.router, prefix="/v1",  tags=["Models"])
 app.include_router(workers.router,   prefix="/workers",  tags=["Workers"])
 
 

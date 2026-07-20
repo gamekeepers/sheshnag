@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import File as FileModel, Batch, BatchAssignment, Worker, OrganizationMembership
 from schemas import FileOut
-from auth import get_human_context
+from auth import get_human_context, get_file_read_context
 import shutil, os
 
 router = APIRouter()
@@ -40,48 +40,53 @@ def upload_file(
     return db_file
 
 
+def _file_assigned_worker_org(db, file_id):
+    """org_id of the worker currently assigned the batch that uses this file
+    as input, or None."""
+    batch = db.query(Batch).filter(Batch.input_file_id == file_id).first()
+    if not batch:
+        return None
+    assignment = db.query(BatchAssignment).filter(
+        BatchAssignment.batch_id == batch.id
+    ).first()
+    if not assignment:
+        return None
+    worker = db.query(Worker).filter(Worker.id == assignment.worker_id).first()
+    return worker.org_id if worker else None
+
+
 @router.get("/files/{file_id}/content")
 def download_file_content(
     file_id: str,
-    ctx=Depends(get_human_context),
+    ctx=Depends(get_file_read_context),
     db: Session = Depends(get_db),
 ):
-    user, _api_key = ctx
+    kind, principal = ctx
 
     db_file = db.query(FileModel).filter(FileModel.id == file_id).first()
     if not db_file:
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Superadmin can access all files
-    if user.platform_role == "superadmin":
-        pass
-    # Owner can access their own files
-    elif db_file.user_id == user.id:
-        pass
-    else:
-        # Check if user is member of an org whose worker is assigned to this file's batch
-        batch = db.query(Batch).filter(Batch.input_file_id == file_id).first()
-        if batch:
-            assignment = db.query(BatchAssignment).filter(
-                BatchAssignment.batch_id == batch.id
-            ).first()
-            if assignment:
-                worker = db.query(Worker).filter(Worker.id == assignment.worker_id).first()
-                if worker:
-                    membership = db.query(OrganizationMembership).filter(
-                        OrganizationMembership.org_id == worker.org_id,
-                        OrganizationMembership.user_id == user.id,
-                    ).first()
-                    if membership:
-                        pass  # Allow access
-                    else:
-                        raise HTTPException(status_code=403, detail="Access denied")
-                else:
-                    raise HTTPException(status_code=403, detail="Access denied")
-            else:
-                raise HTTPException(status_code=403, detail="Access denied")
-        else:
+    if kind == "worker":
+        # A daemon downloading job input: the file must be the input of a
+        # batch assigned to a worker in this key's org.
+        org = principal
+        if _file_assigned_worker_org(db, file_id) != org.id:
             raise HTTPException(status_code=403, detail="Access denied")
+    else:
+        user = principal
+        # Superadmin: all. Owner: own files. Otherwise: a member of the org
+        # whose worker is assigned this file's batch.
+        if user.platform_role == "superadmin" or db_file.user_id == user.id:
+            pass
+        else:
+            worker_org_id = _file_assigned_worker_org(db, file_id)
+            member = worker_org_id and db.query(OrganizationMembership).filter(
+                OrganizationMembership.org_id == worker_org_id,
+                OrganizationMembership.user_id == user.id,
+            ).first()
+            if not member:
+                raise HTTPException(status_code=403, detail="Access denied")
 
     if not os.path.exists(db_file.filepath):
         raise HTTPException(status_code=404, detail="File data missing")

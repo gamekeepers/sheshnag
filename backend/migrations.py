@@ -28,10 +28,27 @@ _NEW_COLUMNS = {
         ("vram_total_gb", "REAL"),
         ("vram_available_gb", "REAL"),
     ],
+    "runtime_models": [("digest", "TEXT")],
+    "model_catalog": [
+        ("source_type", "TEXT"),
+        ("source_ref", "TEXT"),
+        ("source_revision", "TEXT"),
+        ("homepage_url", "TEXT"),
+        ("task_type", "TEXT"),
+        ("parameter_size", "TEXT"),
+        ("context_length", "INTEGER"),
+    ],
 }
 
 # Legacy JSON columns on workers, replaced by the normalized tables.
 _LEGACY_WORKER_COLUMNS = ("gpus", "runtimes", "loaded_models")
+
+# Descriptive columns pruned from runtime_models (moved to model_catalog).
+# Dropped from pre-existing DBs; harmless if absent (fresh DB never had them).
+_DROPPED_RUNTIME_MODEL_COLUMNS = (
+    "revision", "task_type", "parameter_count", "quantization",
+    "context_length", "size_bytes", "license", "local_path",
+)
 
 
 def _columns(conn, table: str) -> list:
@@ -138,10 +155,26 @@ def _backfill_inventory(conn) -> None:
         logger.info("Backfilled inventory tables for %d workers", migrated)
 
 
+def _drop_pruned_columns(conn) -> None:
+    """Drop the descriptive columns pruned from runtime_models."""
+    existing = _columns(conn, "runtime_models")
+    if not existing:
+        return
+    for col in _DROPPED_RUNTIME_MODEL_COLUMNS:
+        if col not in existing:
+            continue
+        try:
+            conn.execute(text(f"ALTER TABLE runtime_models DROP COLUMN {col}"))
+        except Exception:
+            # SQLite < 3.35 can't drop columns — unused columns are harmless.
+            logger.warning("Could not drop runtime_models.%s", col)
+
+
 def run_startup_migrations(engine) -> None:
     """Run all idempotent schema/data migrations. Call after create_all."""
     with engine.connect() as conn:
         _add_missing_columns(conn)
         _backfill_inventory(conn)
+        _drop_pruned_columns(conn)
         conn.execute(text("DROP TABLE IF EXISTS provider_capabilities"))
         conn.commit()

@@ -46,6 +46,7 @@ class CreateApiKeyRequest(BaseModel):
 # ─── Helpers ────────────────────────────────────────────────
 
 VALID_ROLES = {"owner", "admin", "viewer"}
+VALID_KEY_TYPES = {"worker", "personal"}
 
 
 def _require_membership(db: Session, user, org_id: str, roles: list | None = None):
@@ -147,6 +148,12 @@ def create_api_key(
     Returns the raw key ONCE — only the hash is persisted.
     """
     _require_membership(db, user, org_id, roles=["owner", "admin"])
+
+    if req.key_type not in VALID_KEY_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid key_type '{req.key_type}'. Must be one of: {', '.join(VALID_KEY_TYPES)}",
+        )
 
     raw_key = generate_api_key()
     api_key = ApiKey(
@@ -324,6 +331,13 @@ def invite_member(
     """
     _require_membership(db, user, org_id, roles=["owner", "admin"])
     _validate_role(req.role)
+
+    # FIX #1: Prevent privilege escalation — only owners can confer owner role
+    if req.role == "owner":
+        _require_membership(db, user, org_id, roles=["owner"])
+
+    # FIX #4: Case-fold email for consistent matching
+    req.email = req.email.strip().lower()
 
     # Check if already a member
     existing_user = db.query(User).filter(User.email == req.email).first()
@@ -503,6 +517,11 @@ def transfer_ownership(
     """Transfer ownership to another member. Caller becomes admin."""
     caller_membership = _require_membership(db, user, org_id, roles=["owner"])
 
+    # FIX #2: Guard self-transfer — SQLAlchemy identity map would make both
+    # references point to the same row, ending up with role="admin" and 0 owners.
+    if req.new_owner_user_id == user.id:
+        raise HTTPException(status_code=400, detail="You are already the owner")
+
     target_membership = db.query(OrganizationMembership).filter(
         OrganizationMembership.org_id == org_id,
         OrganizationMembership.user_id == req.new_owner_user_id,
@@ -671,8 +690,8 @@ def accept_invite(
     if invite.expires_at < unix_now():
         raise HTTPException(status_code=410, detail="Invite has expired")
 
-    # Verify the invite is for this user's email
-    if invite.invitee_email != user.email:
+    # FIX #4: Case-insensitive email comparison
+    if invite.invitee_email.lower() != user.email.lower():
         raise HTTPException(status_code=403, detail="This invite is for a different email address")
 
     # Check not already a member

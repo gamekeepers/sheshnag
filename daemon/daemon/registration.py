@@ -25,11 +25,14 @@ class RegistrationManager:
         self._credentials_path = Path(credentials_path)
         self._credentials_path.parent.mkdir(parents=True, exist_ok=True)
 
-    async def register(self, client, config) -> str:
+    async def register(self, client, config, model_digests=None) -> str:
         """
         Register worker with the control plane, returning the assigned
         worker_id. Re-registering (same hostname + org) updates the
         worker's hardware/models on the backend.
+
+        `model_digests` (name → digest) is best-effort provenance for the
+        advertised models; empty when the runtime can't be queried.
         """
         logger.info("Detecting hardware for registration...")
         hardware = await asyncio.to_thread(detect_hardware)
@@ -38,6 +41,7 @@ class RegistrationManager:
             worker_id=config.worker_id,
             hardware=hardware,
             models=config.models,
+            model_digests=model_digests or {},
             runtime=config.runtime,
             status="online"
         )

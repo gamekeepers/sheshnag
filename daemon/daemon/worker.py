@@ -75,6 +75,7 @@ class Worker:
             worker_id=config.worker_id,
             interval=config.heartbeat_interval,
             get_loaded_models=self._get_loaded_models,
+            get_loaded_model_digests=self._get_loaded_model_digests,
         )
 
         self._model_manager = None
@@ -99,6 +100,20 @@ class Worker:
         if hasattr(self._executor, "list_models"):
             return await self._executor.list_models()
         return list(self._config.models)
+
+    async def _get_loaded_model_digests(self) -> dict:
+        """name → digest map for loaded models (reproducibility pins).
+
+        Empty for runtimes that can't report digests; the backend then
+        falls back to name matching.
+        """
+        if hasattr(self._executor, "list_models_detailed"):
+            return {
+                m["name"]: m.get("digest")
+                for m in await self._executor.list_models_detailed()
+                if m.get("name")
+            }
+        return {}
 
     # ── Public API ───────────────────────────────────────────────
 
@@ -269,7 +284,8 @@ class Worker:
         Parse input JSONL into a list of PromptRequest objects.
 
         Applies job-level defaults (max_tokens, temperature) to prompts
-        that don't specify their own values.
+        that don't specify their own values, and forces the runtime model
+        id resolved by the backend.
         """
         prompts: List[PromptRequest] = []
 
@@ -286,6 +302,13 @@ class Worker:
                     # Apply job-level defaults if not in prompt body
                     prompt.body.setdefault("max_tokens", job.max_tokens)
                     prompt.body.setdefault("temperature", job.temperature)
+
+                    # body.model is the platform catalogue id the user
+                    # submitted; run the runtime id the backend resolved
+                    # (job.model = runtime_model_id from poll), else the
+                    # runtime 404s on an unknown model name.
+                    if job.model:
+                        prompt.body["model"] = job.model
 
                     prompts.append(prompt)
                 except (json.JSONDecodeError, Exception) as exc:

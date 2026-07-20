@@ -12,7 +12,7 @@ from schemas import (
 from pydantic import BaseModel
 from typing import Optional
 from auth import get_worker_context
-from provider_picker import picker
+from provider_picker import picker, get_catalog_entry
 from sweeper import MAX_BATCH_ATTEMPTS, requeue_or_fail_batch
 import shutil, os, logging
 
@@ -117,7 +117,10 @@ def register_worker(
                 engine=r.type,
                 base_url=r.endpoint,
                 models=[
-                    RuntimeModel(name=m, runtime_model_id=m)
+                    RuntimeModel(
+                        name=m, runtime_model_id=m,
+                        digest=(r.model_digests or {}).get(m),
+                    )
                     for m in r.models
                 ],
             )
@@ -188,13 +191,17 @@ def worker_heartbeat(
     worker.vram_total_gb = req.vram_total_gb
     worker.vram_available_gb = req.vram_available_gb
 
-    # Map reported loaded models onto runtime_models.loaded flags.
+    # Map reported loaded models onto runtime_models.loaded flags, and
+    # record the digest of each loaded model (the reproducibility pin).
     reported = set(req.loaded_models)
+    digests = req.loaded_model_digests or {}
     known = set()
     for runtime in worker.runtimes:
         for model in runtime.models:
             was_loaded = model.loaded
             model.loaded = model.name in reported
+            if model.name in digests and digests[model.name]:
+                model.digest = digests[model.name]
             if model.loaded != was_loaded:
                 model.updated_at = unix_now()
             known.add(model.name)
@@ -204,7 +211,10 @@ def worker_heartbeat(
     if missing and worker.runtimes:
         for name in missing:
             worker.runtimes[0].models.append(
-                RuntimeModel(name=name, runtime_model_id=name, loaded=True)
+                RuntimeModel(
+                    name=name, runtime_model_id=name,
+                    digest=digests.get(name), loaded=True,
+                )
             )
 
     db.commit()
@@ -232,17 +242,9 @@ def poll_job(
     if not available_batches:
         return {"job": None}
 
-    if worker.vram_total_gb is not None:
-        batch = picker.find_best_batch(worker, available_batches)
-    else:
-        # No heartbeat yet — fall back to the models the worker advertised
-        # at registration. Never hand out an arbitrary batch to a worker
-        # whose capabilities are unknown.
-        advertised = worker.advertised_model_names()
-        batch = next(
-            (b for b in available_batches if b.model and b.model in advertised),
-            None,
-        )
+    # Catalogue-aware matching (VRAM fit + hosts the artifact), handling
+    # both the heartbeated and never-heartbeated worker inside the picker.
+    batch = picker.find_best_batch(db, worker, available_batches)
 
     if not batch:
         return {"job": None}
@@ -259,12 +261,16 @@ def poll_job(
     db.commit()
     db.refresh(batch)
 
+    # The daemon runs the runtime's own model id, not our catalogue slug.
+    entry = get_catalog_entry(db, batch.model)
+    runtime_model_id = entry.runtime_model_id if entry else batch.model
+
     return {
         "job": {
             "job_id":        batch.id,
             "input_file_id": batch.input_file_id,
             "input_path":    f"/v1/files/{batch.input_file_id}/content",
-            "model":         batch.model,
+            "model":         runtime_model_id,
         }
     }
 

@@ -153,6 +153,7 @@ class BackendClient:
                     "type": worker_info.runtime,
                     "endpoint": "localhost",
                     "models": worker_info.models,
+                    "model_digests": worker_info.model_digests,
                 }
             ],
         }

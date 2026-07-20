@@ -399,5 +399,20 @@ def validate_batch_file(batch_id: str, filepath: str) -> bool:
     if result.total_lines == 0:
         _fail(result, "empty_file", None, None, "Batch file contains no requests")
 
-    # 4. Tight DB transaction — only runs AFTER full validation
+    # 4. Model must be a selectable catalogue entry (reproducibility gate:
+    #    users pick a pinned model, not a free-form id).
+    if result.valid and result.model:
+        from provider_picker import is_model_supported
+        db = SessionLocal()
+        try:
+            if not is_model_supported(db, result.model):
+                _fail(
+                    result, "unsupported_model", None, "body.model",
+                    f"Model '{result.model}' is not in the platform catalogue. "
+                    f"Choose one of the ids from GET /v1/models.",
+                )
+        finally:
+            db.close()
+
+    # 5. Tight DB transaction — only runs AFTER full validation
     return _persist_result(batch_id, result)
