@@ -34,7 +34,7 @@ export default function SignupPage() {
       return;
     }
 
-    setLoading(true);
+    setLoading(true);n
     try {
       const res = await fetch(`${BACKEND}/v1/auth/signup`, {
         method: 'POST',
