@@ -30,7 +30,7 @@ export default function LoginPage() {
     try {
       const res = await fetch(`${BACKEND}/v1/auth/login`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+        headers: { 'Content-Type': 'application/json', ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }) },
         body: JSON.stringify({ email, password }),
       });
       const data = await res.json();
@@ -51,7 +51,7 @@ export default function LoginPage() {
 
       try {
         const meRes = await fetch(`${BACKEND}/v1/auth/me`, {
-          headers: { 'Authorization': `Bearer ${data.access_token}`, 'ngrok-skip-browser-warning': 'true' },
+          headers: { 'Authorization': `Bearer ${data.access_token}`, ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }) },
         });
         const me = await meRes.json();
         const platformRole = me.platform_role || me.role || 'user';

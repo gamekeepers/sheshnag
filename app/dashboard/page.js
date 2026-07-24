@@ -59,8 +59,9 @@ export default function DashboardPage() {
   // Batch Form State
   const [batchFileId, setBatchFileId] = useState('');
   const [batchEndpoint, setBatchEndpoint] = useState('/v1/chat/completions');
-  const [batchModel, setBatchModel] = useState('llama-3.1-70b');
+  const [batchModel, setBatchModel] = useState('');
   const [submitStatus, setSubmitStatus] = useState('');
+  const [availableModels, setAvailableModels] = useState([]);
 
   // Settings Forms
   const [settingsOrgName, setSettingsOrgName] = useState('');
@@ -99,11 +100,12 @@ export default function DashboardPage() {
 
   // Utility auth headers
   const getHeaders = useCallback(() => {
-    return {
+    const h = {
       'Authorization': `Bearer ${localStorage.getItem('mk_token')}`,
-      'ngrok-skip-browser-warning': 'true',
       'Content-Type': 'application/json',
     };
+    if (process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true') h['ngrok-skip-browser-warning'] = 'true';
+    return h;
   }, []);
 
   // Fetch profiles & Orgs
@@ -113,7 +115,7 @@ export default function DashboardPage() {
     try {
       // 1. Fetch profile
       const profileRes = await fetch(`${BACKEND}/v1/auth/me`, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('mk_token')}`, 'ngrok-skip-browser-warning': 'true' }
+        headers: getHeaders()
       });
       if (profileRes.ok) {
         const data = await profileRes.json();
@@ -253,6 +255,21 @@ export default function DashboardPage() {
       setLoadingBatches(false);
     }
   }, [getHeaders]);
+
+  // Load available models from /v1/models
+  const loadModels = useCallback(async () => {
+    try {
+      const res = await fetch(`${BACKEND}/v1/models`, { headers: getHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        const modelIds = (data.data || []).map(m => m.id);
+        setAvailableModels(modelIds);
+        if (modelIds.length > 0 && !batchModel) setBatchModel(modelIds[0]);
+      }
+    } catch (e) {
+      console.error('Failed to fetch models:', e);
+    }
+  }, [getHeaders, batchModel]);
 
   // Refresh tab specific data
   useEffect(() => {
@@ -450,7 +467,7 @@ export default function DashboardPage() {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('mk_token')}`,
-          'ngrok-skip-browser-warning': 'true',
+          ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }),
         },
         body: formData
       });
@@ -651,7 +668,7 @@ export default function DashboardPage() {
       const res = await fetch(`${BACKEND}/v1/files/${fileId}/content`, {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('mk_token')}`,
-          'ngrok-skip-browser-warning': 'true'
+          ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' })
         }
       });
       if (res.ok) {
@@ -696,12 +713,20 @@ export default function DashboardPage() {
     ? (((totalRequestsToday - totalFailedToday) / totalRequestsToday) * 100).toFixed(1) 
     : '100.0';
 
-  // Chart Data Calculation
+  // Helper: format date as local YYYY-MM-DD (avoids UTC timezone mismatch)
+  const toLocalDateStr = (date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+
+  // Chart Data Calculation (using local dates consistently)
   const chartData = [...Array(14)].map((_, i) => {
     const d = new Date();
     d.setDate(d.getDate() - (13 - i));
     return {
-      date: d.toISOString().split('T')[0],
+      date: toLocalDateStr(d),
       displayDate: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
       requests: 0,
       successful: 0,
@@ -711,7 +736,7 @@ export default function DashboardPage() {
 
   batches.forEach(b => {
     if (!b.created_at) return;
-    const batchDate = new Date(b.created_at * 1000).toISOString().split('T')[0];
+    const batchDate = toLocalDateStr(new Date(b.created_at * 1000));
     const day = chartData.find(d => d.date === batchDate);
     if (day) {
       day.requests += (b.total || 0);
@@ -1169,7 +1194,7 @@ export default function DashboardPage() {
                 <h1 className="page-title">Batches</h1>
                 <p className="page-sub">Submit and track batch jobs.</p>
               </div>
-              <button className="btn primary" onClick={() => setIsNewBatchModalOpen(true)}>
+              <button className="btn primary" onClick={() => { loadModels(); setIsNewBatchModalOpen(true); }}>
                 + New Batch
               </button>
             </div>
@@ -1441,11 +1466,16 @@ export default function DashboardPage() {
 
             <div className="field">
               <label>Model</label>
-              <input
-                placeholder="llama-3.1-70b"
+              <select
                 value={batchModel}
                 onChange={e => setBatchModel(e.target.value)}
-              />
+                style={{ width: '100%', padding: '0.6rem 0.8rem', borderRadius: '8px', background: '#141720', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', fontSize: '0.9rem' }}
+              >
+                <option value="">Select a model…</option>
+                {availableModels.map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
             </div>
 
             {submitStatus && (

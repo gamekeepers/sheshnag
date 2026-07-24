@@ -45,7 +45,7 @@ async function handleSubmit() {
       const fileRes = await fetch(`${BACKEND}/v1/files`, {
         method: 'POST',
         headers: {
-          'ngrok-skip-browser-warning': 'true',
+          ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }),
           'Authorization': `Bearer ${token}`,
         },
         body: fileData,
@@ -69,7 +69,7 @@ localStorage.setItem('moonknight_file_map', JSON.stringify(fileMap));
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'ngrok-skip-browser-warning': 'true',
+          ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }),
           'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({

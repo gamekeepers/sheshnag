@@ -34,11 +34,11 @@ export default function SignupPage() {
       return;
     }
 
-    setLoading(true);n
+    setLoading(true);
     try {
       const res = await fetch(`${BACKEND}/v1/auth/signup`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+        headers: { 'Content-Type': 'application/json', ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }) },
         body: JSON.stringify({
           email,
           password,
@@ -55,7 +55,7 @@ export default function SignupPage() {
       // Auto login after signup
       const loginRes = await fetch(`${BACKEND}/v1/auth/login`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+        headers: { 'Content-Type': 'application/json', ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }) },
         body: JSON.stringify({ email, password }),
       });
       const loginData = await loginRes.json();
@@ -72,7 +72,7 @@ export default function SignupPage() {
         // Fetch full user profile
         try {
           const meRes = await fetch(`${BACKEND}/v1/auth/me`, {
-            headers: { 'Authorization': `Bearer ${loginData.access_token}`, 'ngrok-skip-browser-warning': 'true' },
+            headers: { 'Authorization': `Bearer ${loginData.access_token}`, ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }) },
           });
           const me = await meRes.json();
           localStorage.setItem('mk_user', JSON.stringify({

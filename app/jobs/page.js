@@ -65,7 +65,7 @@ export default function JobsPage() {
       const token = localStorage.getItem('mk_token') || '';
       const res = await fetch(`${BACKEND}/v1/batches`, {
         headers: {
-          'ngrok-skip-browser-warning': 'true',
+          ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }),
           'Authorization': `Bearer ${token}`,
         },
         signal: controller.signal,
