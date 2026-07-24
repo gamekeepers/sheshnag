@@ -217,7 +217,7 @@ export default function Home() {
         </div>
       </nav>
 
-      {/* ── 3D MOON BACKGROUND ── */}
+      {/* ── 3D MOON BACKGROUND (Commented out for PR merge - to be replaced in upcoming PR) ──
       <div style={{
         position: 'fixed',
         top: 0, left: 0, right: 0, bottom: 0,
@@ -236,6 +236,7 @@ export default function Home() {
           allow="autoplay"
         />
       </div>
+      ── */}
 
       {/* ── SCROLL SECTIONS — text moves opposite to moon ── */}
       {SECTIONS.map((section, i) => {
