@@ -728,24 +728,6 @@ export default function DashboardPage() {
           <MoonknightLogo />
         </div>
 
-        <div className={`org-switcher ${isOrgDropdownOpen ? 'open' : ''}`} id="orgSwitcher">
-          <button onClick={() => setIsOrgDropdownOpen(!isOrgDropdownOpen)}>
-            <span>{selectedOrg ? selectedOrg.name : 'Select Org'}</span>
-            <span className="chev">▾</span>
-          </button>
-          <div className="org-menu">
-            {orgs.map(org => (
-              <button
-                key={org.id}
-                className={selectedOrg && selectedOrg.id === org.id ? 'active' : ''}
-                onClick={() => handleSelectOrg(org)}
-              >
-                {org.name}
-              </button>
-            ))}
-          </div>
-        </div>
-
         <nav className="nav">
           <div className={`nav-item ${activeTab === 'home' ? 'active' : ''}`} onClick={() => setActiveTab('home')}>
             <span className="ic">📊</span> Home
@@ -759,27 +741,77 @@ export default function DashboardPage() {
           <div className={`nav-item ${activeTab === 'batches' ? 'active' : ''}`} onClick={() => setActiveTab('batches')}>
             <span className="ic">📦</span> Batches
           </div>
-
-          <div className="section-title" style={{ marginTop: '1.5rem', marginLeft: '1rem', fontSize: '11px', opacity: 0.5, letterSpacing: '0.05em' }}>MANAGEMENT</div>
-          
-          <div className={`nav-item ${activeTab === 'workers' ? 'active' : ''}`} onClick={() => setActiveTab('workers')}>
-            <span className="ic">🖥️</span> Workers
-          </div>
           <div className={`nav-item ${activeTab === 'files' ? 'active' : ''}`} onClick={() => setActiveTab('files')}>
             <span className="ic">📁</span> Files
           </div>
-          <div className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>
-            <span className="ic">⚙️</span> Settings
-          </div>
         </nav>
 
-        <div className="profile-card">
-          <div className="avatar"></div>
-          <div className="profile-meta">
-            <div className="profile-name">{userProfile ? userProfile.full_name : 'Loading...'}</div>
-            <div className="profile-email">{userProfile ? userProfile.email : ''}</div>
+        <div className="sidebar-bottom">
+          <div className="profile-dropdown-wrap" style={{ position: 'relative' }}>
+            <button
+              className="profile-icon-btn"
+              onClick={() => setIsOrgDropdownOpen(!isOrgDropdownOpen)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '10px',
+                padding: '10px 14px', borderRadius: '10px', width: '100%',
+                background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
+                color: '#fff', cursor: 'pointer', transition: 'all 0.2s',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.08)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)'}
+            >
+              <div style={{
+                width: '32px', height: '32px', borderRadius: '50%',
+                background: '#1e3a5f', border: '1px solid #2d5a8a',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: '13px', fontWeight: 600, color: '#60a5fa', flexShrink: 0,
+              }}>
+                {userProfile ? userProfile.full_name?.charAt(0).toUpperCase() : '?'}
+              </div>
+              <div style={{ flex: 1, textAlign: 'left', overflow: 'hidden' }}>
+                <div style={{ fontSize: '13px', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{userProfile ? userProfile.full_name : 'Loading...'}</div>
+                <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{userProfile ? userProfile.email : ''}</div>
+              </div>
+              <span style={{ fontSize: '10px', opacity: 0.5 }}>⚙️</span>
+            </button>
+            {isOrgDropdownOpen && (
+              <div style={{
+                position: 'absolute', bottom: '100%', left: 0, right: 0,
+                marginBottom: '6px', borderRadius: '10px',
+                background: '#141720', border: '1px solid rgba(255,255,255,0.1)',
+                padding: '6px', zIndex: 200,
+                boxShadow: '0 -8px 24px rgba(0,0,0,0.5)',
+              }}>
+                <button
+                  onClick={() => { setActiveTab('settings'); setIsOrgDropdownOpen(false); }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '8px', width: '100%',
+                    padding: '10px 12px', borderRadius: '8px', border: 'none',
+                    background: 'transparent', color: '#fff', cursor: 'pointer',
+                    fontSize: '13px', transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.07)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  ⚙️ Settings
+                </button>
+                <div style={{ height: '1px', background: 'rgba(255,255,255,0.08)', margin: '4px 0' }} />
+                <button
+                  onClick={handleSignOut}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '8px', width: '100%',
+                    padding: '10px 12px', borderRadius: '8px', border: 'none',
+                    background: 'transparent', color: '#f87171', cursor: 'pointer',
+                    fontSize: '13px', transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.07)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  🚪 Signout
+                </button>
+              </div>
+            )}
           </div>
-          <button className="signout" onClick={handleSignOut}>SIGN OUT</button>
         </div>
       </aside>
 
@@ -787,10 +819,7 @@ export default function DashboardPage() {
       <div className="main-content">
         <div className="header">
           <div className="breadcrumbs">
-            {selectedOrg ? selectedOrg.name : 'Lunar Labs'} / <span className="current">{getPageTitle()}</span>
-          </div>
-          <div className="header-right">
-            <input className="search" placeholder="Search…" />
+            Dashboard / <span className="current">{getPageTitle()}</span>
           </div>
         </div>
 
@@ -798,7 +827,7 @@ export default function DashboardPage() {
           {/* ============ HOME PAGE ============ */}
           <div className={`page-panel ${activeTab === 'home' ? 'active' : ''}`}>
             <h1 className="page-title">Home</h1>
-            <p className="page-sub">Usage and recent activity for {selectedOrg ? selectedOrg.name : 'Lunar Labs'}.</p>
+            <p className="page-sub">Usage and recent activity.</p>
 
             <div className="grid-3">
               <div className="panel stat-card">
