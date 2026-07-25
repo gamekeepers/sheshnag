@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import ParticleField from '../components/ParticleField';
 import CursorEffect from '../components/CursorEffect';
+import InteractiveMoon from '../components/InteractiveMoon';
+import confetti from 'canvas-confetti';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
@@ -14,6 +16,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isPasswordFocused, setIsPasswordFocused] = useState(false);
   const router = useRouter();
 
   async function handleSubmit() {
@@ -27,7 +30,7 @@ export default function LoginPage() {
     try {
       const res = await fetch(`${BACKEND}/v1/auth/login`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+        headers: { 'Content-Type': 'application/json', ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }) },
         body: JSON.stringify({ email, password }),
       });
       const data = await res.json();
@@ -35,11 +38,20 @@ export default function LoginPage() {
         setError(data?.detail || 'Invalid email or password.');
         return;
       }
+
+      // Trigger confetti on success
+      confetti({
+        particleCount: 100,
+        spread: 70,
+        origin: { y: 0.6 },
+        colors: ['#fff', '#cfdbfa', '#8896d3', '#302b5e']
+      });
+
       localStorage.setItem('mk_token', data.access_token);
 
       try {
         const meRes = await fetch(`${BACKEND}/v1/auth/me`, {
-          headers: { 'Authorization': `Bearer ${data.access_token}`, 'ngrok-skip-browser-warning': 'true' },
+          headers: { 'Authorization': `Bearer ${data.access_token}`, ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }) },
         });
         const me = await meRes.json();
         const platformRole = me.platform_role || me.role || 'user';
@@ -92,10 +104,8 @@ export default function LoginPage() {
 
       <div style={{ position: 'relative', zIndex: 3, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
         <div style={{ width: '100%', maxWidth: '340px' }}>
-
-          <h1 style={{ color: '#fff', fontSize: '21px', fontWeight: 500, textAlign: 'center', marginBottom: '24px' }}>
-            {mode === 'admin' ? 'Admin Login' : 'Welcome back'}
-          </h1>
+          {/* The Interactive Moon Avatar */}
+          <InteractiveMoon isPasswordFocused={isPasswordFocused} />
 
           {mode === 'admin' && (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '8px', padding: '8px 14px', fontSize: '12px', color: 'rgba(255,255,255,0.6)', marginBottom: '16px' }}>
@@ -128,6 +138,8 @@ export default function LoginPage() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              onFocus={() => setIsPasswordFocused(true)}
+              onBlur={() => setIsPasswordFocused(false)}
               autoComplete="new-password"
               style={{
                 width: '100%', background: 'transparent', border: '1px solid rgba(255,255,255,0.25)',

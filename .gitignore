@@ -220,4 +220,7 @@ __marimo__/
 **/.DS_Store
 
 *.orig
+# Node.js
+node_modules/
+.next/
 .env.local

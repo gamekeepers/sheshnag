@@ -10,7 +10,7 @@ function authHeaders() {
   const token = typeof window !== 'undefined' ? localStorage.getItem('mk_token') : '';
   return {
     'Authorization': `Bearer ${token}`,
-    'ngrok-skip-browser-warning': 'true',
+    ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }),
     'Content-Type': 'application/json',
   };
 }
