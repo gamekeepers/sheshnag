@@ -55,6 +55,43 @@ def _file_assigned_worker_org(db, file_id):
     return worker.org_id if worker else None
 
 
+@router.delete("/files/{file_id}")
+def delete_file(
+    file_id: str,
+    ctx=Depends(get_human_context),
+    db: Session = Depends(get_db),
+):
+    user, _api_key = ctx
+
+    db_file = db.query(FileModel).filter(FileModel.id == file_id).first()
+    if not db_file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if user.platform_role != "superadmin" and db_file.user_id != user.id:
+        raise HTTPException(status_code=403, detail="You don't own this file")
+
+    active = db.query(Batch).filter(
+        Batch.input_file_id == file_id,
+        Batch.status.in_(("validating", "validated", "in_progress")),
+    ).first()
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail=f"File is the input of batch '{active.id}' ({active.status}); "
+                   "wait for it to finish before deleting",
+        )
+
+    if db_file.filepath and os.path.exists(db_file.filepath):
+        try:
+            os.remove(db_file.filepath)
+        except OSError:
+            pass  # orphaned disk file is harmless; the DB row is authoritative
+
+    db.delete(db_file)
+    db.commit()
+    return {"id": file_id, "object": "file", "deleted": True}
+
+
 @router.get("/files/{file_id}/content")
 def download_file_content(
     file_id: str,

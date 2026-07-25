@@ -716,6 +716,31 @@ export default function DashboardPage() {
     }
   };
 
+  const handleDeleteFile = async (fileId) => {
+    if (!confirm('Delete this file? This cannot be undone.')) return;
+    try {
+      const res = await fetch(`${BACKEND}/v1/files/${fileId}`, {
+        method: 'DELETE',
+        headers: getHeaders()
+      });
+      if (res.ok) {
+        const updatedList = uploadedFiles.filter(f => f.id !== fileId);
+        setUploadedFiles(updatedList);
+        localStorage.setItem('moonknight_uploaded_files', JSON.stringify(updatedList));
+        const fileMap = JSON.parse(localStorage.getItem('moonknight_file_map') || '{}');
+        delete fileMap[fileId];
+        localStorage.setItem('moonknight_file_map', JSON.stringify(fileMap));
+        if (batchFileId === fileId) setBatchFileId('');
+      } else {
+        const err = await res.json();
+        alert(err.detail || 'Failed to delete file');
+      }
+    } catch (e) {
+      console.error(e);
+      alert('Could not reach server.');
+    }
+  };
+
   const handleCopyModelId = async (id) => {
     try {
       await navigator.clipboard.writeText(id);
@@ -1217,9 +1242,14 @@ export default function DashboardPage() {
                           {new Date(file.created_at * 1000).toLocaleDateString()}
                         </td>
                         <td>
-                          <button className="btn" onClick={() => handleDownloadFile(file.id, file.filename)}>
-                            Download
-                          </button>
+                          <span style={{ display: 'inline-flex', gap: '0.5rem' }}>
+                            <button className="btn" onClick={() => handleDownloadFile(file.id, file.filename)}>
+                              Download
+                            </button>
+                            <button className="btn" style={{ color: 'var(--danger)' }} onClick={() => handleDeleteFile(file.id)}>
+                              Delete
+                            </button>
+                          </span>
                         </td>
                       </tr>
                     ))}
