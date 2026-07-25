@@ -87,16 +87,6 @@ export default function DashboardPage() {
       return;
     }
     setToken(tk);
-
-    // Initial files load from localStorage
-    try {
-      const localFiles = localStorage.getItem('moonknight_uploaded_files');
-      if (localFiles) {
-        setUploadedFiles(JSON.parse(localFiles));
-      }
-    } catch (e) {
-      console.error('Failed to load local files:', e);
-    }
   }, [router]);
 
   // Utility auth headers
@@ -108,6 +98,34 @@ export default function DashboardPage() {
     if (process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true') h['ngrok-skip-browser-warning'] = 'true';
     return h;
   }, []);
+
+  // Fetch Files list — the server is the source of truth; localStorage only
+  // caches client-side sniffed metadata (body.model) the backend doesn't store.
+  const loadFiles = useCallback(async () => {
+    try {
+      const res = await fetch(`${BACKEND}/v1/files`, { headers: getHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        const meta = JSON.parse(localStorage.getItem('moonknight_file_meta') || '{}');
+        const entries = (data.data || []).map(f => ({
+          id: f.id,
+          filename: f.filename,
+          bytes: f.bytes || 0,
+          created_at: f.created_at,
+          model: meta[f.id]?.model || null,
+          mixed_models: meta[f.id]?.mixed_models || null,
+        }));
+        setUploadedFiles(entries);
+
+        // Keep the id→filename map fresh for batch cards on any device
+        const fileMap = {};
+        entries.forEach(f => { fileMap[f.id] = f.filename; });
+        localStorage.setItem('moonknight_file_map', JSON.stringify(fileMap));
+      }
+    } catch (e) {
+      console.error('Failed to fetch files:', e);
+    }
+  }, [getHeaders]);
 
   // Fetch profiles & Orgs
   const loadProfile = useCallback(async () => {
@@ -158,8 +176,9 @@ export default function DashboardPage() {
   useEffect(() => {
     if (token) {
       loadProfile();
+      loadFiles();  // batch cards need id→filename before any tab is opened
     }
-  }, [token, loadProfile]);
+  }, [token, loadProfile, loadFiles]);
 
   // Fetch Members & Invites
   const loadMembers = useCallback(async () => {
@@ -284,12 +303,15 @@ export default function DashboardPage() {
       loadWorkers();
     } else if (activeTab === 'batches') {
       loadBatches();
+      loadFiles();
     } else if (activeTab === 'models') {
       loadModels();
+    } else if (activeTab === 'files') {
+      loadFiles();
     } else if (activeTab === 'settings') {
-      loadMembers();
+      // loadMembers();  // org settings parked — relocating to the provider portal
     }
-  }, [activeTab, selectedOrg, loadWorkers, loadBatches, loadKeys, loadMembers, loadModels]);
+  }, [activeTab, selectedOrg, loadWorkers, loadBatches, loadKeys, loadModels, loadFiles]);
 
   const batchesRef = useRef(batches);
   useEffect(() => {
@@ -502,23 +524,12 @@ export default function DashboardPage() {
         const data = await res.json();
         setUploadStatus('File uploaded successfully!');
         
-        // Save filename mapping to localStorage
-        const fileMap = JSON.parse(localStorage.getItem('moonknight_file_map') || '{}');
-        fileMap[data.id] = uploadFile.name;
-        localStorage.setItem('moonknight_file_map', JSON.stringify(fileMap));
-
-        // Save uploaded files metadata
-        const newFileEntry = {
-          id: data.id,
-          filename: data.filename || uploadFile.name,
-          bytes: data.bytes || uploadFile.size,
-          model: detectedModel,
-          mixed_models: mixedModels,
-          created_at: Math.floor(Date.now() / 1000)
-        };
-        const updatedList = [newFileEntry, ...uploadedFiles];
-        setUploadedFiles(updatedList);
-        localStorage.setItem('moonknight_uploaded_files', JSON.stringify(updatedList));
+        // Cache client-side sniffed metadata the server doesn't store,
+        // then re-fetch the authoritative list.
+        const meta = JSON.parse(localStorage.getItem('moonknight_file_meta') || '{}');
+        meta[data.id] = { model: detectedModel, mixed_models: mixedModels };
+        localStorage.setItem('moonknight_file_meta', JSON.stringify(meta));
+        loadFiles();
 
         setUploadFile(null);
         confetti({ particleCount: 30, spread: 40 });
@@ -724,13 +735,11 @@ export default function DashboardPage() {
         headers: getHeaders()
       });
       if (res.ok) {
-        const updatedList = uploadedFiles.filter(f => f.id !== fileId);
-        setUploadedFiles(updatedList);
-        localStorage.setItem('moonknight_uploaded_files', JSON.stringify(updatedList));
-        const fileMap = JSON.parse(localStorage.getItem('moonknight_file_map') || '{}');
-        delete fileMap[fileId];
-        localStorage.setItem('moonknight_file_map', JSON.stringify(fileMap));
+        const meta = JSON.parse(localStorage.getItem('moonknight_file_meta') || '{}');
+        delete meta[fileId];
+        localStorage.setItem('moonknight_file_meta', JSON.stringify(meta));
         if (batchFileId === fileId) setBatchFileId('');
+        loadFiles();
       } else {
         const err = await res.json();
         alert(err.detail || 'Failed to delete file');
@@ -1112,6 +1121,9 @@ export default function DashboardPage() {
               </div>
             </div>
 
+            {/* Org worker key parked — relocating to the provider portal */}
+            {false && (
+            <>
             <div className="section-title">Worker API Key</div>
             <div className="panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
               <div>
@@ -1127,6 +1139,8 @@ export default function DashboardPage() {
                 Regenerate Organization Key
               </button>
             </div>
+            </>
+            )}
           </div>
 
           {/* ============ WORKERS PAGE ============ */}
@@ -1327,7 +1341,7 @@ export default function DashboardPage() {
                 <h1 className="page-title">Batches</h1>
                 <p className="page-sub">Submit and track batch jobs.</p>
               </div>
-              <button className="btn primary" onClick={() => { loadModels(); setIsNewBatchModalOpen(true); }}>
+              <button className="btn primary" onClick={() => { loadModels(); loadFiles(); setIsNewBatchModalOpen(true); }}>
                 + New Batch
               </button>
             </div>
@@ -1407,9 +1421,11 @@ export default function DashboardPage() {
           {/* ============ SETTINGS PAGE ============ */}
           <div className={`page-panel ${activeTab === 'settings' ? 'active' : ''}`}>
             <h1 className="page-title">Settings</h1>
-            <p className="page-sub">Manage your organization members, invites, and profile.</p>
+            <p className="page-sub">Manage your profile.</p>
 
             <div className="grid-2">
+              {/* Org settings parked — relocating to the provider portal */}
+              {false && (
               <div className="panel">
                 <div className="section-title" style={{ marginTop: 0 }}>Organization details</div>
                 <div className="field">
@@ -1418,6 +1434,7 @@ export default function DashboardPage() {
                 </div>
                 <button className="btn primary" onClick={handleSaveOrgSettings} disabled={settingsLoading}>Save org settings</button>
               </div>
+              )}
 
               <div className="panel">
                 <div className="section-title" style={{ marginTop: 0 }}>Profile</div>
@@ -1437,7 +1454,9 @@ export default function DashboardPage() {
               <p style={{ color: 'var(--accent)', fontSize: '0.85rem', marginTop: '1rem' }}>{settingsStatus}</p>
             )}
 
-            {/* MEMBERS SECTION */}
+            {/* Org members & invites parked — relocating to the provider portal */}
+            {false && (
+            <>
             <div className="section-title" style={{ marginTop: '2rem' }}>Members</div>
             <div className="panel" style={{ padding: '0.5rem', marginBottom: '2rem' }}>
               <div className="table-container">
@@ -1539,7 +1558,9 @@ export default function DashboardPage() {
                 </div>
               </div>
             </div>
-            
+            </>
+            )}
+
           </div>
         </div>
       </div>
@@ -1578,7 +1599,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {isRegenModalOpen && (
+      {false && isRegenModalOpen && (
         <div className="modal-overlay open">
           <div className="modal">
             <h3>Regenerate organization key?</h3>

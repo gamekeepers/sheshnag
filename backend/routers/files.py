@@ -55,6 +55,22 @@ def _file_assigned_worker_org(db, file_id):
     return worker.org_id if worker else None
 
 
+@router.get("/files")
+def list_files(
+    ctx=Depends(get_human_context),
+    db: Session = Depends(get_db),
+):
+    """List the caller's uploaded files (OpenAI files-list shape)."""
+    user, _api_key = ctx
+
+    query = db.query(FileModel)
+    if user.platform_role != "superadmin":
+        query = query.filter(FileModel.user_id == user.id)
+
+    files = query.order_by(FileModel.created_at.desc()).all()
+    return {"object": "list", "data": [FileOut.model_validate(f) for f in files]}
+
+
 @router.delete("/files/{file_id}")
 def delete_file(
     file_id: str,

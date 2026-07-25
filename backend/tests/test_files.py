@@ -30,6 +30,17 @@ def _seed_file(_engine, owner_id, tmp_path, name="input.jsonl"):
         db.close()
 
 
+def test_list_files_returns_only_own(auth_client, _engine, _test_user, _test_superuser, tmp_path):
+    mine, _ = _seed_file(_engine, _test_user.id, tmp_path, name="mine.jsonl")
+    theirs, _ = _seed_file(_engine, _test_superuser.id, tmp_path, name="theirs.jsonl")
+
+    res = auth_client.get("/v1/files")
+    assert res.status_code == 200, res.text
+    ids = [f["id"] for f in res.json()["data"]]
+    assert mine.id in ids
+    assert theirs.id not in ids
+
+
 def test_delete_own_file(auth_client, _engine, _test_user, tmp_path, db_session):
     record, jsonl = _seed_file(_engine, _test_user.id, tmp_path)
 
