@@ -61,6 +61,7 @@ export default function DashboardPage() {
   const [batchEndpoint, setBatchEndpoint] = useState('/v1/chat/completions');
   const [submitStatus, setSubmitStatus] = useState('');
   const [availableModels, setAvailableModels] = useState([]);
+  const [modelCatalog, setModelCatalog] = useState([]);
 
   // Settings Forms
   const [settingsOrgName, setSettingsOrgName] = useState('');
@@ -261,8 +262,9 @@ export default function DashboardPage() {
       const res = await fetch(`${BACKEND}/v1/models`, { headers: getHeaders() });
       if (res.ok) {
         const data = await res.json();
-        const modelIds = (data.data || []).map(m => m.id);
-        setAvailableModels(modelIds);
+        const entries = data.data || [];
+        setModelCatalog(entries);
+        setAvailableModels(entries.map(m => m.id));
       }
     } catch (e) {
       console.error('Failed to fetch models:', e);
@@ -281,10 +283,12 @@ export default function DashboardPage() {
       loadWorkers();
     } else if (activeTab === 'batches') {
       loadBatches();
+    } else if (activeTab === 'models') {
+      loadModels();
     } else if (activeTab === 'settings') {
       loadMembers();
     }
-  }, [activeTab, selectedOrg, loadWorkers, loadBatches, loadKeys, loadMembers]);
+  }, [activeTab, selectedOrg, loadWorkers, loadBatches, loadKeys, loadMembers, loadModels]);
 
   const batchesRef = useRef(batches);
   useEffect(() => {
@@ -459,12 +463,24 @@ export default function DashboardPage() {
     setUploadStatus('Uploading file...');
     try {
       // Model is defined by body.model inside the JSONL (OpenAI batch format);
-      // sniff the first line so the batch modal can display and verify it.
+      // sniff the head of the file so the batch modal can display and verify
+      // it — and catch mixed-model files before the backend rejects them.
       let detectedModel = null;
+      let mixedModels = null;
       try {
         const head = await uploadFile.slice(0, 65536).text();
-        const firstLine = head.split('\n').find(l => l.trim());
-        if (firstLine) detectedModel = JSON.parse(firstLine)?.body?.model || null;
+        const seen = [];
+        for (const line of head.split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const m = JSON.parse(line)?.body?.model;
+            if (m && !seen.includes(m)) seen.push(m);
+          } catch {
+            // last line of the head slice may be truncated mid-JSON — skip
+          }
+        }
+        detectedModel = seen[0] || null;
+        if (seen.length > 1) mixedModels = seen;
       } catch {
         detectedModel = null;
       }
@@ -496,6 +512,7 @@ export default function DashboardPage() {
           filename: data.filename || uploadFile.name,
           bytes: data.bytes || uploadFile.size,
           model: detectedModel,
+          mixed_models: mixedModels,
           created_at: Math.floor(Date.now() / 1000)
         };
         const updatedList = [newFileEntry, ...uploadedFiles];
@@ -703,6 +720,7 @@ export default function DashboardPage() {
       home: 'Home',
       apikeys: 'API Keys',
       usage: 'Usage',
+      models: 'Models',
       workers: 'Workers',
       files: 'Files',
       batches: 'Batches',
@@ -768,6 +786,9 @@ export default function DashboardPage() {
           </div>
           <div className={`nav-item ${activeTab === 'apikeys' ? 'active' : ''}`} onClick={() => setActiveTab('apikeys')}>
             <span className="ic">🔑</span> API Keys
+          </div>
+          <div className={`nav-item ${activeTab === 'models' ? 'active' : ''}`} onClick={() => setActiveTab('models')}>
+            <span className="ic">🧠</span> Models
           </div>
           <div className={`nav-item ${activeTab === 'usage' ? 'active' : ''}`} onClick={() => setActiveTab('usage')}>
             <span className="ic">📈</span> Usage
@@ -1196,6 +1217,50 @@ export default function DashboardPage() {
             </div>
           </div>
 
+          {/* ============ MODELS PAGE ============ */}
+          <div className={`page-panel ${activeTab === 'models' ? 'active' : ''}`}>
+            <h1 className="page-title">Models</h1>
+            <p className="page-sub">
+              The platform model catalogue. Use the <span className="mono">ID</span> as <span className="mono">body.model</span> in your batch JSONL — anything else fails validation.
+            </p>
+
+            <div className="panel" style={{ padding: '0.5rem' }}>
+              <div className="table-container">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>Name</th>
+                      <th>Runtime</th>
+                      <th>Params</th>
+                      <th>Quantization</th>
+                      <th>Context</th>
+                      <th>VRAM</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {modelCatalog.map(m => (
+                      <tr key={m.id}>
+                        <td className="mono">{m.id}</td>
+                        <td>{m.display_name || '—'}</td>
+                        <td className="dim">{m.runtime || '—'}</td>
+                        <td className="dim">{m.parameter_size || '—'}</td>
+                        <td className="dim">{m.quantization || '—'}</td>
+                        <td className="dim">{m.context_length ? m.context_length.toLocaleString() : '—'}</td>
+                        <td className="dim">{m.vram_gb ? `${m.vram_gb} GB` : '—'}</td>
+                      </tr>
+                    ))}
+                    {modelCatalog.length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="empty-hint">No models in the catalogue yet.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
           {/* ============ BATCHES PAGE ============ */}
           <div className={`page-panel ${activeTab === 'batches' ? 'active' : ''}`}>
             <div className="page-actions">
@@ -1227,6 +1292,36 @@ export default function DashboardPage() {
                       <span>{batch.done.toLocaleString()} / {batch.total.toLocaleString()} completed</span>
                       <span>{batch.failed} failed</span>
                     </div>
+                    {batch.status === 'failed' && batch.error_details && (() => {
+                      let msgs = [];
+                      let total = 0;
+                      try {
+                        const parsed = JSON.parse(batch.error_details);
+                        if (Array.isArray(parsed?.data)) {
+                          msgs = parsed.data.map(e => (e.line ? `line ${e.line}: ` : '') + e.message);
+                          total = parsed.total_errors || msgs.length;
+                        } else if (parsed?.error) {
+                          msgs = [parsed.error];
+                          total = 1;
+                        }
+                      } catch {
+                        msgs = [batch.error_details];
+                        total = 1;
+                      }
+                      return (
+                        <div style={{ marginTop: '0.8rem', padding: '0.6rem 0.8rem', borderRadius: '8px', background: 'rgba(248,81,73,0.08)', border: '1px solid rgba(248,81,73,0.3)' }}>
+                          <div style={{ color: '#F85149', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.3rem' }}>
+                            Validation failed — {total} error{total === 1 ? '' : 's'}
+                          </div>
+                          {msgs.slice(0, 3).map((m, i) => (
+                            <div key={i} className="mono" style={{ color: '#F85149', fontSize: '0.72rem', opacity: 0.9, overflowWrap: 'anywhere' }}>{m}</div>
+                          ))}
+                          {total > 3 && (
+                            <div style={{ color: '#F85149', fontSize: '0.72rem', opacity: 0.7, marginTop: '0.2rem' }}>…and {total - 3} more</div>
+                          )}
+                        </div>
+                      );
+                    })()}
                     <div style={{ marginTop: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <button
                         className="btn primary"
@@ -1479,6 +1574,13 @@ export default function DashboardPage() {
                 const selectedFile = uploadedFiles.find(f => f.id === batchFileId);
                 const fileModel = selectedFile?.model || null;
                 const inCatalogue = fileModel && availableModels.includes(fileModel);
+                if (selectedFile?.mixed_models) {
+                  return (
+                    <div style={{ padding: '0.6rem 0.8rem', borderRadius: '8px', background: 'rgba(248,81,73,0.08)', border: '1px solid rgba(248,81,73,0.3)', fontSize: '0.85rem', color: '#F85149' }}>
+                      File mixes models ({selectedFile.mixed_models.join(', ')}) — a batch must use one model; validation will fail
+                    </div>
+                  );
+                }
                 return (
                   <div style={{ padding: '0.6rem 0.8rem', borderRadius: '8px', background: '#141720', border: '1px solid rgba(255,255,255,0.1)', fontSize: '0.9rem' }}>
                     {fileModel ? (
