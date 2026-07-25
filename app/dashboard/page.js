@@ -62,6 +62,7 @@ export default function DashboardPage() {
   const [submitStatus, setSubmitStatus] = useState('');
   const [availableModels, setAvailableModels] = useState([]);
   const [modelCatalog, setModelCatalog] = useState([]);
+  const [copiedModelId, setCopiedModelId] = useState(null);
 
   // Settings Forms
   const [settingsOrgName, setSettingsOrgName] = useState('');
@@ -715,6 +716,22 @@ export default function DashboardPage() {
     }
   };
 
+  const handleCopyModelId = async (id) => {
+    try {
+      await navigator.clipboard.writeText(id);
+    } catch {
+      // Clipboard API unavailable (http origin) — fall back to a hidden textarea
+      const ta = document.createElement('textarea');
+      ta.value = id;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    }
+    setCopiedModelId(id);
+    setTimeout(() => setCopiedModelId(current => (current === id ? null : current)), 1500);
+  };
+
   const getPageTitle = () => {
     const titles = {
       home: 'Home',
@@ -1241,7 +1258,19 @@ export default function DashboardPage() {
                   <tbody>
                     {modelCatalog.map(m => (
                       <tr key={m.id}>
-                        <td className="mono">{m.id}</td>
+                        <td className="mono">
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                            {m.id}
+                            <button
+                              className="btn"
+                              title="Copy model id"
+                              onClick={() => handleCopyModelId(m.id)}
+                              style={{ padding: '2px 8px', fontSize: '0.72rem', color: copiedModelId === m.id ? '#00D287' : undefined }}
+                            >
+                              {copiedModelId === m.id ? 'Copied ✓' : 'Copy'}
+                            </button>
+                          </span>
+                        </td>
                         <td>{m.display_name || '—'}</td>
                         <td className="dim">{m.runtime || '—'}</td>
                         <td className="dim">{m.parameter_size || '—'}</td>
