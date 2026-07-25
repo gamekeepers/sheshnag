@@ -59,7 +59,6 @@ export default function DashboardPage() {
   // Batch Form State
   const [batchFileId, setBatchFileId] = useState('');
   const [batchEndpoint, setBatchEndpoint] = useState('/v1/chat/completions');
-  const [batchModel, setBatchModel] = useState('');
   const [submitStatus, setSubmitStatus] = useState('');
   const [availableModels, setAvailableModels] = useState([]);
 
@@ -264,12 +263,11 @@ export default function DashboardPage() {
         const data = await res.json();
         const modelIds = (data.data || []).map(m => m.id);
         setAvailableModels(modelIds);
-        if (modelIds.length > 0 && !batchModel) setBatchModel(modelIds[0]);
       }
     } catch (e) {
       console.error('Failed to fetch models:', e);
     }
-  }, [getHeaders, batchModel]);
+  }, [getHeaders]);
 
   // Refresh tab specific data
   useEffect(() => {
@@ -460,6 +458,17 @@ export default function DashboardPage() {
     }
     setUploadStatus('Uploading file...');
     try {
+      // Model is defined by body.model inside the JSONL (OpenAI batch format);
+      // sniff the first line so the batch modal can display and verify it.
+      let detectedModel = null;
+      try {
+        const head = await uploadFile.slice(0, 65536).text();
+        const firstLine = head.split('\n').find(l => l.trim());
+        if (firstLine) detectedModel = JSON.parse(firstLine)?.body?.model || null;
+      } catch {
+        detectedModel = null;
+      }
+
       const formData = new FormData();
       formData.append('file', uploadFile);
 
@@ -486,6 +495,7 @@ export default function DashboardPage() {
           id: data.id,
           filename: data.filename || uploadFile.name,
           bytes: data.bytes || uploadFile.size,
+          model: detectedModel,
           created_at: Math.floor(Date.now() / 1000)
         };
         const updatedList = [newFileEntry, ...uploadedFiles];
@@ -519,8 +529,7 @@ export default function DashboardPage() {
         body: JSON.stringify({
           input_file_id: batchFileId,
           endpoint: batchEndpoint,
-          completion_window: '24h',
-          model: batchModel
+          completion_window: '24h'
         })
       });
 
@@ -1465,17 +1474,30 @@ export default function DashboardPage() {
             </div>
 
             <div className="field">
-              <label>Model</label>
-              <select
-                value={batchModel}
-                onChange={e => setBatchModel(e.target.value)}
-                style={{ width: '100%', padding: '0.6rem 0.8rem', borderRadius: '8px', background: '#141720', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', fontSize: '0.9rem' }}
-              >
-                <option value="">Select a model…</option>
-                {availableModels.map(m => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
+              <label>Model (from file)</label>
+              {(() => {
+                const selectedFile = uploadedFiles.find(f => f.id === batchFileId);
+                const fileModel = selectedFile?.model || null;
+                const inCatalogue = fileModel && availableModels.includes(fileModel);
+                return (
+                  <div style={{ padding: '0.6rem 0.8rem', borderRadius: '8px', background: '#141720', border: '1px solid rgba(255,255,255,0.1)', fontSize: '0.9rem' }}>
+                    {fileModel ? (
+                      <>
+                        <span style={{ color: '#fff', fontFamily: 'monospace' }}>{fileModel}</span>
+                        {availableModels.length > 0 && (
+                          inCatalogue ? (
+                            <span style={{ color: '#00D287', marginLeft: '0.6rem', fontSize: '0.8rem' }}>✓ in catalogue</span>
+                          ) : (
+                            <span style={{ color: '#F85149', marginLeft: '0.6rem', fontSize: '0.8rem' }}>not in catalogue — validation will fail</span>
+                          )
+                        )}
+                      </>
+                    ) : (
+                      <span style={{ color: 'var(--dim)' }}>Read from body.model in the JSONL during validation</span>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
 
             {submitStatus && (
