@@ -1,16 +1,89 @@
 @import "tailwindcss";
 
 :root {
-  --background: #000000;
-  --foreground: #ededed;
+  --hero-base:          #04050c;
+  --heading:            #eef0f6;
+  --body-muted:         #b9becf;
+  --on-media:           #ffffff;
+  --action-inverse:     #ffffff;
+  --action-inverse-fg:  #2f2f33;
+  --glass-fill:         rgba(255,255,255,0.07);
+  --glass-border:       rgba(255,255,255,0.14);
+  --scrim:              rgba(4,5,12,0.46);
+  --scrim-strong:       rgba(4,5,12,0.72);
+  --scrim-soft:         rgba(4,5,12,0.12);
+  --brand:              #9fff00;
+  --duration-fast:      150ms;
+  --ease-entrance:      cubic-bezier(0.2, 0, 0, 1);
 }
 
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { font-size: 16px; scroll-behavior: smooth; }
+@media (max-width: 1920px) { html { font-size: 0.833333vw; } }
+@media (max-width: 1440px) { html { font-size: 1.111111vw; } }
+@media (max-width: 1024px) { html { font-size: 1.5625vw; } }
+@media (max-width: 640px)  { html { font-size: 4.444444vw; } }
+
 body {
-  background: #000000;
-  color: var(--foreground);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  background-color: var(--hero-base);
+  color: var(--heading);
+  font-family: 'Inter', 'Onest', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  margin: 0;
-  padding: 0;
+  overflow-x: hidden;
 }
+
+.font-onest { font-family: 'Onest', sans-serif; }
+
+@keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+.animate-blink { animation: blink 1s step-end infinite; }
+
+.glass {
+  background: var(--glass-fill);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.glass-card {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 20px;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-card:hover {
+  background: rgba(255,255,255,0.04);
+  border-color: rgba(159,255,0,0.25);
+  transform: translateY(-4px);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5), 0 0 40px rgba(159,255,0,0.06);
+}
+
+.pill-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 2.75rem;
+  border-radius: 9999px;
+  background: var(--action-inverse);
+  padding: 0 1.375rem;
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--action-inverse-fg);
+  box-shadow: 0 1px 2px rgba(0,0,0,.05);
+  transition: background var(--duration-fast) var(--ease-entrance);
+  border: none;
+  cursor: pointer;
+  text-decoration: none;
+}
+.pill-btn:hover { background: rgba(255,255,255,0.85); }
+.pill-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(255,255,255,.7); }
+
+.brand-pill-btn {
+  background: #9fff00;
+  color: #0A0B0F;
+}
+.brand-pill-btn:hover { filter: brightness(1.08); background: #9fff00; }

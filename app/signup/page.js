@@ -3,8 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import ParticleField from '../components/ParticleField';
-import CursorEffect from '../components/CursorEffect';
+import FluidCanvas from '../components/FluidCanvas';
 import InteractiveMoon from '../components/InteractiveMoon';
 import confetti from 'canvas-confetti';
 
@@ -122,9 +121,8 @@ export default function SignupPage() {
   };
 
   return (
-    <div style={{ background: '#050505', minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', fontFamily: 'sans-serif' }}>
-      <ParticleField />
-      <CursorEffect />
+    <div style={{ background: '#04050c', minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', fontFamily: 'sans-serif' }}>
+      <FluidCanvas />
 
       {/* Top bar */}
       <div style={{ position: 'relative', zIndex: 3, padding: '20px 28px' }}>
@@ -140,7 +138,7 @@ export default function SignupPage() {
       {/* Body */}
       <div style={{ position: 'relative', zIndex: 3, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
         <div style={{ width: '100%', maxWidth: '360px' }}>
-          
+          {/* The Interactive Moon Avatar */}
           <InteractiveMoon isPasswordFocused={isPasswordFocused} />
 
 

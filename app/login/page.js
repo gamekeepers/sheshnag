@@ -3,8 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import ParticleField from '../components/ParticleField';
-import CursorEffect from '../components/CursorEffect';
+import FluidCanvas from '../components/FluidCanvas';
 import InteractiveMoon from '../components/InteractiveMoon';
 import confetti from 'canvas-confetti';
 
@@ -88,9 +87,8 @@ export default function LoginPage() {
   }
 
   return (
-    <div style={{ background: '#050505', minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', fontFamily: 'sans-serif' }}>
-      <ParticleField />
-      <CursorEffect />
+    <div style={{ background: '#04050c', minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', fontFamily: 'sans-serif' }}>
+      <FluidCanvas />
 
       <div style={{ position: 'relative', zIndex: 3, padding: '20px 28px' }}>
         <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none' }}>

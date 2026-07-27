@@ -1,9 +1,8 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import Link from 'next/link';
 
-export default function Home() {
+export default function FluidCanvas() {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -14,298 +13,36 @@ export default function Home() {
 
   return (
     <>
-      <style jsx global>{`
-        @import url('https://fonts.googleapis.com/css2?family=Onest:wght@400;500&display=swap');
-        html { font-size: 16px; }
-        @media (max-width: 1920px) { html { font-size: 0.833333vw; } }
-        @media (max-width: 1440px) { html { font-size: 1.111111vw; } }
-        @media (max-width: 1024px) { html { font-size: 1.5625vw; } }
-        @media (max-width: 640px)  { html { font-size: 4.444444vw; } }
-        * { margin: 0; box-sizing: border-box; }
-        body { background: #04050c; color: #eef0f6; overflow-x: hidden; font-family: 'Onest', sans-serif; }
-        a { text-decoration: none; color: inherit; }
-        button { border: none; cursor: pointer; font-family: inherit; }
-
-        .mk-hero { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100lvh; width: 100vw; overflow: hidden; background: #04050c; text-align: center; padding: 0 1.25rem; }
-        @media (min-width: 640px) { .mk-hero { padding: 0 2.5rem; } }
-        .mk-canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
-        .mk-scrim { position: absolute; inset: 0; z-index: 1; pointer-events: none;
-          background: radial-gradient(115% 95% at 50% 46%, rgba(4,5,12,0.68) 0%, rgba(4,5,12,0.68) 24%, rgba(4,5,12,0.46) 52%, rgba(4,5,12,0.12) 100%); }
-
-        .mk-nav { position: absolute; inset-inline: 0; top: 0; display: flex; align-items: center; justify-content: space-between; padding: 1.25rem; z-index: 20;
-          opacity: 0; transform: translateY(-0.75rem); transition: opacity 0.7s cubic-bezier(0.2,0,0,1), transform 0.7s cubic-bezier(0.2,0,0,1); transition-delay: 150ms; }
-        @media (min-width: 640px) { .mk-nav { padding: 1.75rem 2.5rem; } }
-        .mk-nav.mk-in { opacity: 1; transform: translateY(0); }
-
-        .mk-brand { display: flex; align-items: center; gap: 0.6rem; font-weight: 500; font-size: 1.15rem; color: #ffffff; letter-spacing: -0.01em; }
-        @media (min-width: 640px) { .mk-brand { font-size: 1.375rem; } }
-        .mk-brand svg { width: 1.35rem; height: 1.35rem; stroke: currentColor; }
-        @media (min-width: 640px) { .mk-brand svg { width: 1.5rem; height: 1.5rem; } }
-
-        .mk-navlinks { display: none; position: absolute; left: 50%; transform: translateX(-50%); height: 3rem; align-items: center; gap: 2.25rem; border-radius: 9999px; border: 1px solid rgba(255,255,255,0.16); background: rgba(255,255,255,0.08); padding: 0 1.75rem; backdrop-filter: blur(12px); }
-        @media (min-width: 640px) { .mk-navlinks { display: flex; } }
-        .mk-navlinks a { font-size: 0.95rem; color: #b9becf; transition: color 150ms cubic-bezier(0.2,0,0,1); white-space: nowrap; }
-        .mk-navlinks a:hover { color: #eef0f6; }
-
-        .mk-pill { display: inline-flex; align-items: center; justify-content: center; height: 2.5rem; border-radius: 9999px; background: #ffffff; padding: 0 1.125rem; font-size: 0.85rem; font-weight: 500; color: #2f2f33; box-shadow: 0 1px 2px rgba(0,0,0,.05); transition: background 150ms cubic-bezier(0.2,0,0,1); }
-        @media (min-width: 640px) { .mk-pill { height: 2.75rem; padding: 0 1.375rem; font-size: 0.95rem; } }
-        .mk-pill:hover { background: rgba(255,255,255,0.85); }
-
-        .mk-center { position: relative; z-index: 10; display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 22rem; }
-        @media (min-width: 640px) { .mk-center { max-width: 40rem; } }
-        @media (min-width: 1024px) { .mk-center { max-width: 52rem; } }
-
-        .mk-badge { display: inline-flex; align-items: center; border-radius: 9999px; border: 1px solid rgba(255,255,255,0.16); background: rgba(255,255,255,0.08); padding: 0.4rem 0.875rem; font-size: 0.72rem; color: #b9becf; backdrop-filter: blur(12px);
-          opacity: 0; transform: translateY(1.25rem); transition: opacity 0.7s cubic-bezier(0.2,0,0,1), transform 0.7s cubic-bezier(0.2,0,0,1); transition-delay: 320ms; }
-        @media (min-width: 640px) { .mk-badge { font-size: 0.8rem; } }
-        .mk-badge.mk-in { opacity: 1; transform: translateY(0); }
-
-        .mk-heading { margin-top: 1.25rem; max-width: 20rem; font-size: 2rem; font-weight: 500; line-height: 1.1; letter-spacing: -0.02em; color: #eef0f6; text-align: center; }
-        @media (min-width: 640px) { .mk-heading { margin-top: 1.75rem; max-width: 34rem; font-size: 3.5rem; } }
-        @media (min-width: 1024px) { .mk-heading { max-width: 46rem; font-size: 5rem; } }
-        .mk-word { display: inline-block; opacity: 0; transform: translateY(26px); transition: opacity 720ms cubic-bezier(0.33,1,0.68,1), transform 720ms cubic-bezier(0.33,1,0.68,1); }
-        .mk-word.mk-in { opacity: 1; transform: translateY(0); }
-
-        .mk-sub { margin-top: 1rem; max-width: 20rem; font-size: 1rem; line-height: 1.5; color: #b9becf; }
-        @media (min-width: 640px) { .mk-sub { margin-top: 1.25rem; max-width: 34rem; font-size: 1.1rem; } }
-        @media (min-width: 1024px) { .mk-sub { max-width: none; font-size: 1.2rem; } }
-        .mk-subword { display: inline-block; opacity: 0; transform: translateY(14px); transition: opacity 600ms cubic-bezier(0.33,1,0.68,1), transform 600ms cubic-bezier(0.33,1,0.68,1); }
-        .mk-subword.mk-in { opacity: 1; transform: translateY(0); }
-
-        .mk-formwrap { margin-top: 1.75rem; display: flex; justify-content: center; width: 100%;
-          opacity: 0; transform: translateY(1.25rem); transition: opacity 0.7s cubic-bezier(0.2,0,0,1), transform 0.7s cubic-bezier(0.2,0,0,1); transition-delay: 1450ms; }
-        @media (min-width: 640px) { .mk-formwrap { margin-top: 2.5rem; } }
-        .mk-formwrap.mk-in { opacity: 1; transform: translateY(0); }
-        .mk-form { width: 30rem; max-width: 100%; }
-        .mk-bar { display: flex; align-items: center; height: 3.5rem; border-radius: 9999px; border: 1px solid rgba(255,255,255,0.16); background: rgba(255,255,255,0.08); backdrop-filter: blur(12px); box-shadow: 0 1px 2px rgba(0,0,0,.05); padding-left: 1.25rem; padding-right: 0.35rem; }
-        @media (min-width: 640px) { .mk-bar { height: 4rem; padding-left: 1.5rem; padding-right: 0.4rem; } }
-        .mk-bar button { flex: 1; min-width: 0; height: 100%; background: transparent; color: #eef0f6; font-size: 0.95rem; text-align: left; }
-        @media (min-width: 640px) { .mk-bar button { font-size: 1.15rem; } }
-
-        .mk-footer { position: absolute; inset-inline: 0; bottom: 0; display: flex; justify-content: center; padding: 1.25rem; font-size: 0.72rem; color: #b9becf; z-index: 20;
-          opacity: 0; transform: translateY(1.25rem); transition: opacity 0.7s cubic-bezier(0.2,0,0,1), transform 0.7s cubic-bezier(0.2,0,0,1); transition-delay: 1650ms; }
-        @media (min-width: 640px) { .mk-footer { padding: 1.5rem 2.5rem; font-size: 0.8rem; } }
-        .mk-footer.mk-in { opacity: 1; transform: translateY(0); }
-
-        /* ---- Info sections below hero ---- */
-        .mk-section { background: #04050c; padding: 6rem 2rem; }
-        .mk-section-inner { max-width: 72rem; margin: 0 auto; }
-        .mk-section-title { font-size: 2.25rem; font-weight: 500; color: #eef0f6; letter-spacing: -0.02em; text-align: center; margin-bottom: 0.75rem; }
-        .mk-section-sub { font-size: 1rem; color: #b9becf; text-align: center; max-width: 34rem; margin: 0 auto 3.5rem; line-height: 1.6; }
-        .mk-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem; }
-        @media (max-width: 900px) { .mk-grid { grid-template-columns: 1fr; } }
-        .mk-card { border-radius: 16px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.03); padding: 2rem; }
-        .mk-card-icon { font-size: 1.5rem; margin-bottom: 1rem; }
-        .mk-card-title { font-size: 1.1rem; font-weight: 500; color: #eef0f6; margin-bottom: 0.5rem; }
-        .mk-card-body { font-size: 0.9rem; color: #b9becf; line-height: 1.6; }
-
-        .mk-steps { display: flex; flex-direction: column; gap: 0; max-width: 40rem; margin: 0 auto; }
-        .mk-step { display: flex; gap: 1.25rem; padding: 1.5rem 0; border-bottom: 1px solid rgba(255,255,255,0.08); }
-        .mk-step:last-child { border-bottom: none; }
-        .mk-step-num { font-size: 0.8rem; color: #6a6f85; font-weight: 500; flex-shrink: 0; width: 2rem; }
-        .mk-step-title { font-size: 1rem; font-weight: 500; color: #eef0f6; margin-bottom: 0.25rem; }
-        .mk-step-body { font-size: 0.9rem; color: #b9becf; line-height: 1.6; }
-
-        .mk-roles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem; }
-        @media (max-width: 900px) { .mk-roles { grid-template-columns: 1fr; } }
-        .mk-role-badge { display: inline-flex; padding: 0.3rem 0.75rem; border-radius: 9999px; background: rgba(255,255,255,0.08); font-size: 0.72rem; color: #b9becf; margin-bottom: 1rem; }
-      `}</style>
-
-      {/* ===== HERO ===== */}
-      <section className="mk-hero">
-        <canvas ref={canvasRef} className="mk-canvas" aria-hidden="true" />
-        <div className="mk-scrim" aria-hidden="true" />
-
-        <header className="mk-nav" id="mk-nav">
-          <Link href="/" className="mk-brand">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M2.5 9c2.5 0 2.5 4.2 5 4.2S10 9 12 9s2.5 4.2 5 4.2S19.5 9 21.5 9" strokeWidth="1.8" strokeLinecap="round" />
-              <path d="M2.5 15c2.5 0 2.5 4.2 5 4.2S10 15 12 15s2.5 4.2 5 4.2S19.5 15 21.5 15" strokeWidth="1.8" strokeLinecap="round" opacity="0.5" />
-            </svg>
-            MOONKNIGHT
-          </Link>
-
-          <div className="mk-navlinks">
-            <a href="#how-it-works">How it works</a>
-            <a href="#roles">Who it's for</a>
-            <a href="#pricing">Pricing</a>
-            <Link href="/login">Log in</Link>
-          </div>
-
-          <Link href="/signup" className="mk-pill">Get started</Link>
-        </header>
-
-        <div className="mk-center">
-          <p className="mk-badge" id="mk-badge">Distributed GPU inference for everyone</p>
-
-          <h1 className="mk-heading" id="mk-heading">
-            <WordSpan text="Process thousands of prompts in one shot" delay={480} stagger={85} dur={720} from={26} cls="mk-word" />
-          </h1>
-
-          <p className="mk-sub" id="mk-sub">
-            <WordSpan text="Upload a JSONL file, submit a batch job, and let MOONKNIGHT route it across distributed AI workers running vLLM and Ollama." delay={1150} stagger={22} dur={600} from={14} cls="mk-subword" />
-          </p>
-
-          <div className="mk-formwrap" id="mk-formwrap">
-            <div className="mk-form">
-              <div className="mk-bar">
-                <Link href="/signup" style={{ flex: 1 }}>
-                  <button>Upload a batch job →</button>
-                </Link>
-                <Link href="/signup" className="mk-pill">Get started</Link>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <footer className="mk-footer" id="mk-footer">© 2026 MOONKNIGHT — distributed AI, on demand.</footer>
-      </section>
-
-      {/* ===== WHAT IT DOES ===== */}
-      <section className="mk-section" id="how-it-works">
-        <div className="mk-section-inner">
-          <h2 className="mk-section-title">How it works</h2>
-          <p className="mk-section-sub">Four steps from raw prompts to processed output.</p>
-          <div className="mk-steps">
-            <div className="mk-step">
-              <span className="mk-step-num">01</span>
-              <div>
-                <p className="mk-step-title">Upload your JSONL file</p>
-                <p className="mk-step-body">Bring a file of prompts formatted as JSONL — one request per line, same as OpenAI's batch API.</p>
-              </div>
-            </div>
-            <div className="mk-step">
-              <span className="mk-step-num">02</span>
-              <div>
-                <p className="mk-step-title">Submit the batch job</p>
-                <p className="mk-step-body">MOONKNIGHT queues your job and assigns it to an available GPU worker running your chosen model.</p>
-              </div>
-            </div>
-            <div className="mk-step">
-              <span className="mk-step-num">03</span>
-              <div>
-                <p className="mk-step-title">Track it in real time</p>
-                <p className="mk-step-body">Watch prompts complete live from your dashboard — status, progress, and per-request results.</p>
-              </div>
-            </div>
-            <div className="mk-step">
-              <span className="mk-step-num">04</span>
-              <div>
-                <p className="mk-step-title">Download your outputs</p>
-                <p className="mk-step-body">Once complete, download a single outputs.jsonl file with every response matched to its request.</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ===== FEATURES ===== */}
-      <section className="mk-section">
-        <div className="mk-section-inner">
-          <h2 className="mk-section-title">Built for scale</h2>
-          <p className="mk-section-sub">Everything you need to run inference at volume, without managing infrastructure yourself.</p>
-          <div className="mk-grid">
-            <div className="mk-card">
-              <div className="mk-card-icon">⚡</div>
-              <p className="mk-card-title">Distributed workers</p>
-              <p className="mk-card-body">Jobs are routed across a pool of GPU-backed workers running vLLM and Ollama, so throughput scales with demand.</p>
-            </div>
-            <div className="mk-card">
-              <div className="mk-card-icon">📋</div>
-              <p className="mk-card-title">Real-time job tracking</p>
-              <p className="mk-card-body">Live status, progress bars, and per-prompt completion counts — no polling, no guessing.</p>
-            </div>
-            <div className="mk-card">
-              <div className="mk-card-icon">🔑</div>
-              <p className="mk-card-title">Simple REST API</p>
-              <p className="mk-card-body">Upload files, create batches, and poll status with a small, predictable set of endpoints.</p>
-            </div>
-            <div className="mk-card">
-              <div className="mk-card-icon">🖥️</div>
-              <p className="mk-card-title">Bring your own GPU</p>
-              <p className="mk-card-body">Providers register their machines and models, then get routed real jobs from the platform.</p>
-            </div>
-            <div className="mk-card">
-              <div className="mk-card-icon">📊</div>
-              <p className="mk-card-title">Full admin visibility</p>
-              <p className="mk-card-body">See every job, user, and provider on the platform from one dashboard, with live system logs.</p>
-            </div>
-            <div className="mk-card">
-              <div className="mk-card-icon">🔒</div>
-              <p className="mk-card-title">Role-based access</p>
-              <p className="mk-card-body">Separate flows and permissions for Users, Providers, and Admins, each with their own dashboard.</p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ===== ROLES ===== */}
-      <section className="mk-section" id="roles">
-        <div className="mk-section-inner">
-          <h2 className="mk-section-title">Built for three kinds of people</h2>
-          <p className="mk-section-sub">Whoever you are on the platform, there's a dashboard built for you.</p>
-          <div className="mk-roles">
-            <div className="mk-card">
-              <span className="mk-role-badge">User</span>
-              <p className="mk-card-title">Run inference at scale</p>
-              <p className="mk-card-body">Upload prompts, submit batches, and download results — without provisioning a single GPU yourself.</p>
-            </div>
-            <div className="mk-card">
-              <span className="mk-role-badge">Provider</span>
-              <p className="mk-card-title">Monetize your compute</p>
-              <p className="mk-card-body">Register your GPU, go online, and start receiving jobs. Track throughput, uptime, and earnings live.</p>
-            </div>
-            <div className="mk-card">
-              <span className="mk-role-badge">Admin</span>
-              <p className="mk-card-title">Oversee the whole platform</p>
-              <p className="mk-card-body">Monitor every job, user, and provider, approve new machines, and keep the system running smoothly.</p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <ScrollReveal />
+      <canvas
+        ref={canvasRef}
+        aria-hidden="true"
+        style={{
+          position: 'fixed',
+          inset: 0,
+          width: '100%',
+          height: '100%',
+          zIndex: 0,
+          pointerEvents: 'none',
+        }}
+      />
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: 1,
+          pointerEvents: 'none',
+          background:
+            'radial-gradient(115% 95% at 50% 46%, rgba(4,5,12,0.68) 0%, rgba(4,5,12,0.68) 24%, rgba(4,5,12,0.46) 52%, rgba(4,5,12,0.12) 100%)',
+        }}
+      />
     </>
   );
 }
 
-function WordSpan({ text, delay, stagger, dur, from, cls }) {
-  const words = text.split(' ');
-  return words.map((w, i) => (
-    <span
-      key={i}
-      className={cls}
-      data-delay={delay + i * stagger}
-      data-dur={dur}
-      data-from={from}
-    >
-      {w}{i < words.length - 1 ? '\u00A0' : ''}
-    </span>
-  ));
-}
-
-function ScrollReveal() {
-  useEffect(() => {
-    const reveal = (id) => {
-      const el = document.getElementById(id);
-      if (el) el.classList.add('mk-in');
-    };
-    setTimeout(() => reveal('mk-nav'), 0);
-    setTimeout(() => reveal('mk-badge'), 0);
-    setTimeout(() => reveal('mk-formwrap'), 0);
-    setTimeout(() => reveal('mk-footer'), 0);
-
-    document.querySelectorAll('.mk-word, .mk-subword').forEach((el) => {
-      const delay = parseInt(el.dataset.delay, 10);
-      el.style.transitionDelay = delay + 'ms';
-      setTimeout(() => el.classList.add('mk-in'), 10);
-    });
-  }, []);
-  return null;
-}
-
 /* ============ WebGL fluid engine (verbatim, unmodified logic) ============ */
 function fluidSimulation(canvas) {
+  if (!canvas) return;
   canvas.width = canvas.clientWidth;
   canvas.height = canvas.clientHeight;
 
@@ -342,6 +79,7 @@ function fluidSimulation(canvas) {
   pointers.push(new pointerPrototype());
 
   const { gl, ext } = getWebGLContext(canvas);
+  if (!gl) return;
 
   function isMobile() { return /Mobi|Android/i.test(navigator.userAgent); }
   if (isMobile()) config.SHADING = false;
@@ -352,6 +90,7 @@ function fluidSimulation(canvas) {
     let gl = canvas.getContext('webgl2', params);
     const isWebGL2 = !!gl;
     if (!isWebGL2) gl = canvas.getContext('webgl', params) || canvas.getContext('experimental-webgl', params);
+    if (!gl) return { gl: null, ext: {} };
     let halfFloat, supportLinearFiltering;
     if (isWebGL2) {
       gl.getExtension('EXT_color_buffer_float');
@@ -361,7 +100,7 @@ function fluidSimulation(canvas) {
       supportLinearFiltering = gl.getExtension('OES_texture_half_float_linear');
     }
     gl.clearColor(0.0, 0.0, 0.0, 1.0);
-    const halfFloatTexType = isWebGL2 ? gl.HALF_FLOAT : halfFloat.HALF_FLOAT_OES;
+    const halfFloatTexType = isWebGL2 ? gl.HALF_FLOAT : halfFloat?.HALF_FLOAT_OES;
     let formatRGBA, formatRG, formatR;
     if (isWebGL2) {
       formatRGBA = getSupportedFormat(gl, gl.RGBA16F, gl.RGBA, halfFloatTexType);
@@ -950,7 +689,7 @@ function fluidSimulation(canvas) {
     bloomFinalProgram.bind();
     gl.uniform2f(bloomFinalProgram.uniforms.texelSize, 1.0 / last.width, 1.0 / last.height);
     gl.uniform1i(bloomFinalProgram.uniforms.uTexture, last.attach(0));
-    gl.uniform1f(bloomFinalProgram.intensity, config.BLOOM_INTENSITY);
+    gl.uniform1f(bloomFinalProgram.uniforms.intensity, config.BLOOM_INTENSITY);
     gl.viewport(0, 0, destination.width, destination.height); blit(destination.fbo);
   }
 
