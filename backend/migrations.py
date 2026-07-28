@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 
 # Columns added after their table first shipped: table -> [(name, ddl)]
 _NEW_COLUMNS = {
+    "users": [
+        ("google_id", "TEXT"),
+        ("auth_provider", "TEXT DEFAULT 'local'"),
+    ],
     "batches": [("attempts", "INTEGER DEFAULT 0")],
     "workers": [
         ("activity", "TEXT DEFAULT 'idle'"),

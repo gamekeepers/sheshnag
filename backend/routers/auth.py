@@ -5,12 +5,14 @@ from models import User, Organization, OrganizationMembership, ApiKey, Worker, P
 from schemas import (
     SignupRequest, LoginRequest, ChangePasswordRequest,
     ForgotPasswordRequest, ResetPasswordRequest,
+    GoogleAuthRequest,
     UserOut, TokenOut,
 )
 from auth import (
     hash_password, verify_password, create_access_token,
     generate_api_key, hash_api_key, get_api_key_prefix,
     get_current_user, get_human_context, require_role,
+    verify_google_token,
 )
 # get_current_user is JWT-only
 # get_human_context accepts JWT or personal API key
@@ -59,10 +61,98 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
     return user
 
 
+@router.post("/auth/google")
+def google_auth(req: GoogleAuthRequest, db: Session = Depends(get_db)):
+    """Authenticate or register via Google ID token.
+
+    - Returning Google user → login (JWT)
+    - Existing email/password user → link Google account, login
+    - New user → create account + personal org, login
+    """
+    # 1. Verify the Google ID token
+    idinfo = verify_google_token(req.id_token)
+    google_sub = idinfo["sub"]
+    email = idinfo.get("email", "").strip().lower()
+    email_verified = idinfo.get("email_verified", False)
+
+    if not email or not email_verified:
+        raise HTTPException(
+            status_code=400,
+            detail="Google account email is not verified",
+        )
+
+    full_name = idinfo.get("name", "")
+    if not full_name:
+        given = idinfo.get("given_name", "")
+        family = idinfo.get("family_name", "")
+        full_name = f"{given} {family}".strip() or email
+
+    # 2. Look up by google_id (fast path for returning Google users)
+    user = db.query(User).filter(User.google_id == google_sub).first()
+
+    if not user:
+        # 3. Look up by email (account linking)
+        user = db.query(User).filter(User.email == email).first()
+        if user:
+            # Link Google to existing account
+            user.google_id = google_sub
+            user.auth_provider = "both" if user.password_hash else "google"
+            db.commit()
+        else:
+            # 4. Create new Google-only user
+            user = User(
+                email=email,
+                password_hash=None,
+                full_name=full_name,
+                platform_role="user",
+                google_id=google_sub,
+                auth_provider="google",
+            )
+            db.add(user)
+            db.flush()
+
+            # Auto-create personal organization
+            org = Organization(name=f"{full_name}'s Personal Org")
+            db.add(org)
+            db.flush()
+
+            membership = OrganizationMembership(
+                org_id=org.id,
+                user_id=user.id,
+                role="owner",
+            )
+            db.add(membership)
+            db.commit()
+            db.refresh(user)
+
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is disabled")
+
+    # 5. Issue JWT
+    token = create_access_token(user.id, user.platform_role)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "platform_role": user.platform_role,
+        "must_change_password": False,
+        "is_new_user": user.auth_provider == "google" and not db.query(Organization).join(
+            OrganizationMembership,
+            OrganizationMembership.org_id == Organization.id,
+        ).filter(OrganizationMembership.user_id == user.id).count() > 1,
+    }
+
+
 @router.post("/auth/login", response_model=TokenOut)
 def login(req: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == req.email).first()
-    if not user or not verify_password(req.password, user.password_hash):
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not user.password_hash:
+        raise HTTPException(
+            status_code=400,
+            detail="This account uses Google sign-in. Please log in with Google.",
+        )
+    if not verify_password(req.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is disabled")

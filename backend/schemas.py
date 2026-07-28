@@ -118,6 +118,7 @@ class UserOut(BaseModel):
     platform_role: str
     is_active: bool
     must_change_password: bool
+    auth_provider: str = "local"
     created_at: int
 
     class Config:
@@ -177,6 +178,10 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
+
+
+class GoogleAuthRequest(BaseModel):
+    id_token: str   # Google ID token from the frontend
 
 
 # ─── Worker schemas ────────────────────────────────────────

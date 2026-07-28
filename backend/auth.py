@@ -9,6 +9,12 @@ from sqlalchemy.orm import Session
 from database import get_db
 import secrets
 import hashlib
+import os
+
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
+
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 
 SECRET_KEY = "batch-ai-platform-secret-change-in-production"
 ALGORITHM = "HS256"
@@ -260,3 +266,29 @@ def require_role(*roles):
             )
         return user
     return checker
+
+
+# ─── Google OAuth ──────────────────────────────────────────
+
+def verify_google_token(token: str) -> dict:
+    """Verify a Google ID token and return the decoded payload.
+
+    Returns dict with keys: sub, email, email_verified, name,
+    given_name, family_name, picture, etc.
+
+    Raises HTTPException 401 on invalid/expired tokens.
+    """
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(
+            status_code=500,
+            detail="Google OAuth is not configured (GOOGLE_CLIENT_ID not set)",
+        )
+    try:
+        idinfo = google_id_token.verify_oauth2_token(
+            token, google_requests.Request(), GOOGLE_CLIENT_ID
+        )
+        if idinfo["iss"] not in ("accounts.google.com", "https://accounts.google.com"):
+            raise ValueError("Invalid issuer")
+        return idinfo
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid Google token: {e}")

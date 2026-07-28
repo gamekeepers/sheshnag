@@ -26,13 +26,17 @@ from models import (
 
 # ─── Shared in-memory engine ─────────────────────────────────
 
-_TEST_URL = "sqlite:///file::memory:?cache=shared"
+import sqlite3
+
+def _shared_memory_creator():
+    """Return a connection to a shared in-memory SQLite database."""
+    return sqlite3.connect("file::memory:?cache=shared", uri=True)
 
 
 @pytest.fixture(scope="session")
 def _engine():
     """Single engine for the whole test session with all tables created."""
-    eng = create_engine(_TEST_URL, connect_args={"check_same_thread": False})
+    eng = create_engine("sqlite://", creator=_shared_memory_creator)
     Base.metadata.create_all(bind=eng)
     yield eng
     Base.metadata.drop_all(bind=eng)
