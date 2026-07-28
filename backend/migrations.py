@@ -22,11 +22,15 @@ logger = logging.getLogger(__name__)
 
 # Columns added after their table first shipped: table -> [(name, ddl)]
 _NEW_COLUMNS = {
-    "batches": [("attempts", "INTEGER DEFAULT 0")],
+    "batches": [
+        ("attempts", "INTEGER DEFAULT 0"),
+        ("api_key_id", "TEXT"),
+    ],
     "workers": [
         ("activity", "TEXT DEFAULT 'idle'"),
         ("vram_total_gb", "REAL"),
         ("vram_available_gb", "REAL"),
+        ("api_key_id", "TEXT"),
     ],
     "runtime_models": [("digest", "TEXT")],
     "model_catalog": [
@@ -37,6 +41,21 @@ _NEW_COLUMNS = {
         ("task_type", "TEXT"),
         ("parameter_size", "TEXT"),
         ("context_length", "INTEGER"),
+    ],
+    "users": [
+        ("platform_role", "TEXT DEFAULT 'user'"),
+        ("is_active", "BOOLEAN DEFAULT 1"),
+        ("must_change_password", "BOOLEAN DEFAULT 0"),
+    ],
+    "api_keys": [
+        ("key_type", "TEXT DEFAULT 'worker'"),
+        ("created_by_user_id", "TEXT"),
+        ("key_prefix", "TEXT"),
+        ("key_hash", "TEXT"),
+        ("status", "TEXT DEFAULT 'active'"),
+        ("last_used_at", "INTEGER"),
+        ("expires_at", "INTEGER"),
+        ("revoked_at", "INTEGER"),
     ],
 }
 
@@ -168,6 +187,20 @@ def _drop_pruned_columns(conn) -> None:
         except Exception:
             # SQLite < 3.35 can't drop columns — unused columns are harmless.
             logger.warning("Could not drop runtime_models.%s", col)
+
+    # Drop legacy columns from users and organizations
+    try:
+        conn.execute(text("ALTER TABLE users DROP COLUMN role"))
+    except Exception:
+        pass
+    try:
+        conn.execute(text("ALTER TABLE organizations DROP COLUMN owner_id"))
+    except Exception:
+        pass
+    try:
+        conn.execute(text("ALTER TABLE api_keys DROP COLUMN key"))
+    except Exception:
+        pass
 
 
 def run_startup_migrations(engine) -> None:

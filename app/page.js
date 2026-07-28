@@ -39,7 +39,7 @@ export default function Home() {
 
         .mk-brand { display: flex; align-items: center; gap: 0.6rem; font-weight: 500; font-size: 1.15rem; color: #ffffff; letter-spacing: -0.01em; }
         @media (min-width: 640px) { .mk-brand { font-size: 1.375rem; } }
-        .mk-brand svg { width: 1.35rem; height: 1.35rem; stroke: currentColor; }
+        .mk-brand svg { width: 1.35rem; height: 1.35rem; }
         @media (min-width: 640px) { .mk-brand svg { width: 1.5rem; height: 1.5rem; } }
 
         .mk-navlinks { display: none; position: absolute; left: 50%; transform: translateX(-50%); height: 3rem; align-items: center; gap: 2.25rem; border-radius: 9999px; border: 1px solid rgba(255,255,255,0.16); background: rgba(255,255,255,0.08); padding: 0 1.75rem; backdrop-filter: blur(12px); }
@@ -118,9 +118,9 @@ export default function Home() {
 
         <header className="mk-nav" id="mk-nav">
           <Link href="/" className="mk-brand">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M2.5 9c2.5 0 2.5 4.2 5 4.2S10 9 12 9s2.5 4.2 5 4.2S19.5 9 21.5 9" strokeWidth="1.8" strokeLinecap="round" />
-              <path d="M2.5 15c2.5 0 2.5 4.2 5 4.2S10 15 12 15s2.5 4.2 5 4.2S19.5 15 21.5 15" strokeWidth="1.8" strokeLinecap="round" opacity="0.5" />
+            <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+              <circle cx="16" cy="16" r="12" fill="#fff" />
+              <circle cx="20" cy="13" r="10" fill="#04050c" />
             </svg>
             MOONKNIGHT
           </Link>

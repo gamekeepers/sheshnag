@@ -3,8 +3,9 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import FluidCanvas from '../components/FluidCanvas';
 import InteractiveMoon from '../components/InteractiveMoon';
+import FluidCanvas from '../components/FluidCanvas';
+import GoogleAuthButton from '../components/GoogleAuthButton';
 import confetti from 'canvas-confetti';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
@@ -129,7 +130,7 @@ export default function SignupPage() {
         <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none' }}>
           <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
             <circle cx="16" cy="16" r="12" fill="#fff" />
-            <circle cx="20" cy="13" r="10" fill="#050505" />
+            <circle cx="20" cy="13" r="10" fill="#03030a" />
           </svg>
           <span style={{ color: '#fff', fontSize: '14px', fontWeight: 500, letterSpacing: '0.12em' }}>MOONKNIGHT</span>
         </Link>
@@ -138,10 +139,7 @@ export default function SignupPage() {
       {/* Body */}
       <div style={{ position: 'relative', zIndex: 3, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
         <div style={{ width: '100%', maxWidth: '360px' }}>
-          {/* The Interactive Moon Avatar */}
           <InteractiveMoon isPasswordFocused={isPasswordFocused} />
-
-
 
           {/* Name Fields */}
           <div style={{ display: 'flex', gap: '12px', marginBottom: '14px' }}>
@@ -221,6 +219,14 @@ export default function SignupPage() {
           >
             {loading ? 'Creating account...' : 'Create account'}
           </button>
+
+          <div style={{ display: 'flex', alignItems: 'center', margin: '20px 0' }}>
+            <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.1)' }} />
+            <span style={{ padding: '0 10px', fontSize: '12px', color: 'rgba(255,255,255,0.4)' }}>OR</span>
+            <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.1)' }} />
+          </div>
+
+          <GoogleAuthButton setError={setError} setLoading={setLoading} loading={loading} />
 
           <p style={{ textAlign: 'center', fontSize: '13px', color: 'rgba(255,255,255,0.45)', marginTop: '18px' }}>
             Already have an account?{' '}

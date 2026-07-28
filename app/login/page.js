@@ -3,8 +3,9 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import FluidCanvas from '../components/FluidCanvas';
 import InteractiveMoon from '../components/InteractiveMoon';
+import FluidCanvas from '../components/FluidCanvas';
+import GoogleAuthButton from '../components/GoogleAuthButton';
 import confetti from 'canvas-confetti';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
@@ -102,7 +103,6 @@ export default function LoginPage() {
 
       <div style={{ position: 'relative', zIndex: 3, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
         <div style={{ width: '100%', maxWidth: '340px' }}>
-          {/* The Interactive Moon Avatar */}
           <InteractiveMoon isPasswordFocused={isPasswordFocused} />
 
           {mode === 'admin' && (
@@ -110,6 +110,7 @@ export default function LoginPage() {
               Admin access only
             </div>
           )}
+
 
           <div style={{ marginBottom: '14px' }}>
             <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.55)', marginBottom: '6px', display: 'block' }}>Email address</span>
@@ -160,6 +161,19 @@ export default function LoginPage() {
           >
             {loading ? 'Logging in...' : 'Continue'}
           </button>
+
+          {mode !== 'admin' && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', margin: '20px 0' }}>
+                <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.1)' }} />
+                <span style={{ padding: '0 10px', fontSize: '12px', color: 'rgba(255,255,255,0.4)' }}>OR</span>
+                <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.1)' }} />
+              </div>
+
+              <GoogleAuthButton setError={setError} setLoading={setLoading} loading={loading} />
+            </>
+          )}
+
 
           {mode !== 'admin' && (
             <p style={{ textAlign: 'center', fontSize: '13px', color: 'rgba(255,255,255,0.45)', marginTop: '18px' }}>
