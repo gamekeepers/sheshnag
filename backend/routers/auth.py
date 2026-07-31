@@ -5,7 +5,7 @@ from models import User, Organization, OrganizationMembership, ApiKey, Worker, P
 from schemas import (
     SignupRequest, LoginRequest, ChangePasswordRequest,
     ForgotPasswordRequest, ResetPasswordRequest,
-    GoogleAuthRequest,
+    GoogleAuthRequest, GoogleTokenOut,
     UserOut, TokenOut,
 )
 from auth import (
@@ -61,7 +61,7 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
     return user
 
 
-@router.post("/auth/google")
+@router.post("/auth/google", response_model=GoogleTokenOut)
 def google_auth(req: GoogleAuthRequest, db: Session = Depends(get_db)):
     """Authenticate or register via Google ID token.
 
@@ -88,6 +88,7 @@ def google_auth(req: GoogleAuthRequest, db: Session = Depends(get_db)):
         full_name = f"{given} {family}".strip() or email
 
     # 2. Look up by google_id (fast path for returning Google users)
+    created = False
     user = db.query(User).filter(User.google_id == google_sub).first()
 
     if not user:
@@ -100,6 +101,7 @@ def google_auth(req: GoogleAuthRequest, db: Session = Depends(get_db)):
             db.commit()
         else:
             # 4. Create new Google-only user
+            created = True
             user = User(
                 email=email,
                 password_hash=None,
@@ -130,16 +132,12 @@ def google_auth(req: GoogleAuthRequest, db: Session = Depends(get_db)):
 
     # 5. Issue JWT
     token = create_access_token(user.id, user.platform_role)
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "platform_role": user.platform_role,
-        "must_change_password": False,
-        "is_new_user": user.auth_provider == "google" and not db.query(Organization).join(
-            OrganizationMembership,
-            OrganizationMembership.org_id == Organization.id,
-        ).filter(OrganizationMembership.user_id == user.id).count() > 1,
-    }
+    return GoogleTokenOut(
+        access_token=token,
+        platform_role=user.platform_role,
+        must_change_password=bool(user.must_change_password),
+        is_new_user=created,
+    )
 
 
 @router.post("/auth/login", response_model=TokenOut)
