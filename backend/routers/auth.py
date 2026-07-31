@@ -23,18 +23,25 @@ import uuid
 router = APIRouter()
 
 
+def normalize_email(email: str) -> str:
+    """One canonical form everywhere — the Google path lowercases, so the
+    local paths must too, or case-variant duplicates split into two accounts."""
+    return (email or "").strip().lower()
+
+
 # ─── Auth ───────────────────────────────────────────────────
 
 @router.post("/auth/signup", response_model=UserOut)
 def signup(req: SignupRequest, db: Session = Depends(get_db)):
     """Unified signup: creates user + personal org + membership."""
-    existing = db.query(User).filter(User.email == req.email).first()
+    email = normalize_email(req.email)
+    existing = db.query(User).filter(User.email == email).first()
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
 
     # Create user
     user = User(
-        email=req.email,
+        email=email,
         password_hash=hash_password(req.password),
         full_name=req.full_name,
         platform_role="user",
@@ -142,7 +149,7 @@ def google_auth(req: GoogleAuthRequest, db: Session = Depends(get_db)):
 
 @router.post("/auth/login", response_model=TokenOut)
 def login(req: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == req.email).first()
+    user = db.query(User).filter(User.email == normalize_email(req.email)).first()
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.password_hash:
@@ -337,7 +344,7 @@ RESET_TOKEN_EXPIRY_SECONDS = 3600  # 1 hour
 @router.post("/auth/forgot-password")
 def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)):
     """Generate reset token and send email. Always returns 200 to prevent email enumeration."""
-    user = db.query(User).filter(User.email == req.email).first()
+    user = db.query(User).filter(User.email == normalize_email(req.email)).first()
     if not user:
         return {"detail": "If that email is registered, a reset link has been sent."}
 
