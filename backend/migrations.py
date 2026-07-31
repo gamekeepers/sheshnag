@@ -59,6 +59,21 @@ def _columns(conn, table: str) -> list:
     return [row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))]
 
 
+# Indexes added after their table first shipped. ALTER TABLE ADD COLUMN
+# cannot carry UNIQUE, so uniqueness on late columns lives here. Safe on
+# existing DBs while the column is all-NULL (SQLite unique indexes allow
+# multiple NULLs); a genuine duplicate fails loudly at startup, which is
+# the correct outcome.
+_NEW_INDEXES = [
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_id ON users(google_id)",
+]
+
+
+def _add_missing_indexes(conn) -> None:
+    for ddl in _NEW_INDEXES:
+        conn.execute(text(ddl))
+
+
 def _add_missing_columns(conn) -> None:
     for table, columns in _NEW_COLUMNS.items():
         existing = _columns(conn, table)
@@ -178,6 +193,7 @@ def run_startup_migrations(engine) -> None:
     """Run all idempotent schema/data migrations. Call after create_all."""
     with engine.connect() as conn:
         _add_missing_columns(conn)
+        _add_missing_indexes(conn)
         _backfill_inventory(conn)
         _drop_pruned_columns(conn)
         conn.execute(text("DROP TABLE IF EXISTS provider_capabilities"))
