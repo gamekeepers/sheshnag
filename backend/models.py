@@ -63,11 +63,13 @@ class User(Base):
 
     id                   = Column(String, primary_key=True, default=generate_user_id)
     email                = Column(String, unique=True, nullable=False)
-    password_hash        = Column(String, nullable=False)
+    password_hash        = Column(String, nullable=True)   # NULL for Google-only users
     full_name            = Column(String, nullable=False)
     platform_role        = Column(String, default="user")  # "user" or "superadmin"
     is_active            = Column(Boolean, default=True)
     must_change_password = Column(Boolean, default=False)
+    google_id            = Column(String, unique=True, nullable=True)   # Google sub (unique user ID)
+    auth_provider        = Column(String, default="local")              # "local" | "google" | "both"
     created_at           = Column(Integer, default=unix_now)
 
     memberships = relationship("OrganizationMembership", back_populates="user")
