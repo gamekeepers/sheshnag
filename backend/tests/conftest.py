@@ -30,7 +30,11 @@ import sqlite3
 
 def _shared_memory_creator():
     """Return a connection to a shared in-memory SQLite database."""
-    return sqlite3.connect("file::memory:?cache=shared", uri=True)
+    return sqlite3.connect(
+        "file::memory:?cache=shared",
+        uri=True,
+        check_same_thread=False,  # TestClient runs sync endpoints in worker threads
+    )
 
 
 @pytest.fixture(scope="session")
