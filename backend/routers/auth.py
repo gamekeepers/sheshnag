@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from database import get_db
 from models import User, Organization, OrganizationMembership, ApiKey, Worker, PasswordResetToken, unix_now, get_org_owner
@@ -109,30 +110,40 @@ def google_auth(req: GoogleAuthRequest, db: Session = Depends(get_db)):
         else:
             # 4. Create new Google-only user
             created = True
-            user = User(
-                email=email,
-                password_hash=None,
-                full_name=full_name,
-                platform_role="user",
-                google_id=google_sub,
-                auth_provider="google",
-            )
-            db.add(user)
-            db.flush()
+            try:
+                user = User(
+                    email=email,
+                    password_hash=None,
+                    full_name=full_name,
+                    platform_role="user",
+                    google_id=google_sub,
+                    auth_provider="google",
+                )
+                db.add(user)
+                db.flush()
 
-            # Auto-create personal organization
-            org = Organization(name=f"{full_name}'s Personal Org")
-            db.add(org)
-            db.flush()
+                # Auto-create personal organization
+                org = Organization(name=f"{full_name}'s Personal Org")
+                db.add(org)
+                db.flush()
 
-            membership = OrganizationMembership(
-                org_id=org.id,
-                user_id=user.id,
-                role="owner",
-            )
-            db.add(membership)
-            db.commit()
-            db.refresh(user)
+                membership = OrganizationMembership(
+                    org_id=org.id,
+                    user_id=user.id,
+                    role="owner",
+                )
+                db.add(membership)
+                db.commit()
+                db.refresh(user)
+            except IntegrityError:
+                # A concurrent first sign-in for the same account won the
+                # unique-constraint race — use the winner's row.
+                db.rollback()
+                created = False
+                user = db.query(User).filter(User.google_id == google_sub).first() \
+                    or db.query(User).filter(User.email == email).first()
+                if not user:
+                    raise
 
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is disabled")
