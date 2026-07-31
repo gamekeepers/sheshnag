@@ -184,6 +184,10 @@ class GoogleAuthRequest(BaseModel):
     id_token: str   # Google ID token from the frontend
 
 
+class GoogleTokenOut(TokenOut):
+    is_new_user: bool = False
+
+
 # ─── Worker schemas ────────────────────────────────────────
 
 class GpuInfo(BaseModel):

@@ -59,6 +59,46 @@ def _columns(conn, table: str) -> list:
     return [row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))]
 
 
+# Indexes added after their table first shipped. ALTER TABLE ADD COLUMN
+# cannot carry UNIQUE, so uniqueness on late columns lives here. Safe on
+# existing DBs while the column is all-NULL (SQLite unique indexes allow
+# multiple NULLs); a genuine duplicate fails loudly at startup, which is
+# the correct outcome.
+_NEW_INDEXES = [
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_id ON users(google_id)",
+]
+
+
+def _add_missing_indexes(conn) -> None:
+    for ddl in _NEW_INDEXES:
+        conn.execute(text(ddl))
+
+
+def _normalize_user_emails(conn) -> None:
+    """One-time lowercase/trim of users.email so lookups match the
+    normalized form all auth endpoints now use. Accounts differing only
+    by case are left untouched (merging them is a human decision)."""
+    rows = conn.execute(text(
+        "SELECT id, email FROM users WHERE email != lower(trim(email))"
+    )).fetchall()
+    for uid, email in rows:
+        target = email.strip().lower()
+        clash = conn.execute(
+            text("SELECT id FROM users WHERE email = :e AND id != :id"),
+            {"e": target, "id": uid},
+        ).first()
+        if clash:
+            logger.warning(
+                "users.email case-collision: %s (%s) vs %s — left as-is",
+                uid, email, clash[0],
+            )
+            continue
+        conn.execute(
+            text("UPDATE users SET email = :e WHERE id = :id"),
+            {"e": target, "id": uid},
+        )
+
+
 def _add_missing_columns(conn) -> None:
     for table, columns in _NEW_COLUMNS.items():
         existing = _columns(conn, table)
@@ -178,6 +218,8 @@ def run_startup_migrations(engine) -> None:
     """Run all idempotent schema/data migrations. Call after create_all."""
     with engine.connect() as conn:
         _add_missing_columns(conn)
+        _add_missing_indexes(conn)
+        _normalize_user_emails(conn)
         _backfill_inventory(conn)
         _drop_pruned_columns(conn)
         conn.execute(text("DROP TABLE IF EXISTS provider_capabilities"))

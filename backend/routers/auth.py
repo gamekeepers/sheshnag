@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from database import get_db
 from models import User, Organization, OrganizationMembership, ApiKey, Worker, PasswordResetToken, unix_now, get_org_owner
 from schemas import (
     SignupRequest, LoginRequest, ChangePasswordRequest,
     ForgotPasswordRequest, ResetPasswordRequest,
-    GoogleAuthRequest,
+    GoogleAuthRequest, GoogleTokenOut,
     UserOut, TokenOut,
 )
 from auth import (
@@ -23,18 +24,25 @@ import uuid
 router = APIRouter()
 
 
+def normalize_email(email: str) -> str:
+    """One canonical form everywhere — the Google path lowercases, so the
+    local paths must too, or case-variant duplicates split into two accounts."""
+    return (email or "").strip().lower()
+
+
 # ─── Auth ───────────────────────────────────────────────────
 
 @router.post("/auth/signup", response_model=UserOut)
 def signup(req: SignupRequest, db: Session = Depends(get_db)):
     """Unified signup: creates user + personal org + membership."""
-    existing = db.query(User).filter(User.email == req.email).first()
+    email = normalize_email(req.email)
+    existing = db.query(User).filter(User.email == email).first()
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
 
     # Create user
     user = User(
-        email=req.email,
+        email=email,
         password_hash=hash_password(req.password),
         full_name=req.full_name,
         platform_role="user",
@@ -61,7 +69,7 @@ def signup(req: SignupRequest, db: Session = Depends(get_db)):
     return user
 
 
-@router.post("/auth/google")
+@router.post("/auth/google", response_model=GoogleTokenOut)
 def google_auth(req: GoogleAuthRequest, db: Session = Depends(get_db)):
     """Authenticate or register via Google ID token.
 
@@ -88,6 +96,7 @@ def google_auth(req: GoogleAuthRequest, db: Session = Depends(get_db)):
         full_name = f"{given} {family}".strip() or email
 
     # 2. Look up by google_id (fast path for returning Google users)
+    created = False
     user = db.query(User).filter(User.google_id == google_sub).first()
 
     if not user:
@@ -100,51 +109,58 @@ def google_auth(req: GoogleAuthRequest, db: Session = Depends(get_db)):
             db.commit()
         else:
             # 4. Create new Google-only user
-            user = User(
-                email=email,
-                password_hash=None,
-                full_name=full_name,
-                platform_role="user",
-                google_id=google_sub,
-                auth_provider="google",
-            )
-            db.add(user)
-            db.flush()
+            created = True
+            try:
+                user = User(
+                    email=email,
+                    password_hash=None,
+                    full_name=full_name,
+                    platform_role="user",
+                    google_id=google_sub,
+                    auth_provider="google",
+                )
+                db.add(user)
+                db.flush()
 
-            # Auto-create personal organization
-            org = Organization(name=f"{full_name}'s Personal Org")
-            db.add(org)
-            db.flush()
+                # Auto-create personal organization
+                org = Organization(name=f"{full_name}'s Personal Org")
+                db.add(org)
+                db.flush()
 
-            membership = OrganizationMembership(
-                org_id=org.id,
-                user_id=user.id,
-                role="owner",
-            )
-            db.add(membership)
-            db.commit()
-            db.refresh(user)
+                membership = OrganizationMembership(
+                    org_id=org.id,
+                    user_id=user.id,
+                    role="owner",
+                )
+                db.add(membership)
+                db.commit()
+                db.refresh(user)
+            except IntegrityError:
+                # A concurrent first sign-in for the same account won the
+                # unique-constraint race — use the winner's row.
+                db.rollback()
+                created = False
+                user = db.query(User).filter(User.google_id == google_sub).first() \
+                    or db.query(User).filter(User.email == email).first()
+                if not user:
+                    raise
 
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is disabled")
 
     # 5. Issue JWT
     token = create_access_token(user.id, user.platform_role)
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "platform_role": user.platform_role,
-        "must_change_password": False,
-        "is_new_user": user.auth_provider == "google" and not db.query(Organization).join(
-            OrganizationMembership,
-            OrganizationMembership.org_id == Organization.id,
-        ).filter(OrganizationMembership.user_id == user.id).count() > 1,
-    }
+    return GoogleTokenOut(
+        access_token=token,
+        platform_role=user.platform_role,
+        must_change_password=bool(user.must_change_password),
+        is_new_user=created,
+    )
 
 
 @router.post("/auth/login", response_model=TokenOut)
 def login(req: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == req.email).first()
+    user = db.query(User).filter(User.email == normalize_email(req.email)).first()
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.password_hash:
@@ -339,7 +355,7 @@ RESET_TOKEN_EXPIRY_SECONDS = 3600  # 1 hour
 @router.post("/auth/forgot-password")
 def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)):
     """Generate reset token and send email. Always returns 200 to prevent email enumeration."""
-    user = db.query(User).filter(User.email == req.email).first()
+    user = db.query(User).filter(User.email == normalize_email(req.email)).first()
     if not user:
         return {"detail": "If that email is registered, a reset link has been sent."}
 
