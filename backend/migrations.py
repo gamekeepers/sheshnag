@@ -25,6 +25,9 @@ _NEW_COLUMNS = {
     "users": [
         ("google_id", "TEXT"),
         ("auth_provider", "TEXT DEFAULT 'local'"),
+        ("platform_role", "TEXT DEFAULT 'user'"),
+        ("is_active", "BOOLEAN DEFAULT 1"),
+        ("must_change_password", "BOOLEAN DEFAULT 0"),
     ],
     "batches": [("attempts", "INTEGER DEFAULT 0"),("api_key_id", "TEXT"),],
     "workers": [
@@ -42,11 +45,6 @@ _NEW_COLUMNS = {
         ("task_type", "TEXT"),
         ("parameter_size", "TEXT"),
         ("context_length", "INTEGER"),
-    ],
-    "users": [
-        ("platform_role", "TEXT DEFAULT 'user'"),
-        ("is_active", "BOOLEAN DEFAULT 1"),
-        ("must_change_password", "BOOLEAN DEFAULT 0"),
     ],
     "api_keys": [
         ("key_type", "TEXT DEFAULT 'worker'"),
