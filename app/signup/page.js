@@ -7,6 +7,7 @@ import InteractiveMoon from '../components/InteractiveMoon';
 import FluidCanvas from '../components/FluidCanvas';
 import GoogleAuthButton from '../components/GoogleAuthButton';
 import confetti from 'canvas-confetti';
+import { completeLogin } from '../lib/completeLogin';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
@@ -67,29 +68,10 @@ export default function SignupPage() {
           origin: { y: 0.6 },
           colors: ['#fff', '#cfdbfa', '#8896d3', '#302b5e']
         });
-        localStorage.setItem('mk_token', loginData.access_token);
-
-        // Fetch full user profile
-        try {
-          const meRes = await fetch(`${BACKEND}/v1/auth/me`, {
-            headers: { 'Authorization': `Bearer ${loginData.access_token}`, ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }) },
-          });
-          const me = await meRes.json();
-          localStorage.setItem('mk_user', JSON.stringify({
-            id: me.id || '',
-            email: me.email || email,
-            full_name: me.full_name || `${firstName} ${lastName}`,
-            platform_role: me.platform_role || me.role || 'user',
-          }));
-        } catch {
-          localStorage.setItem('mk_user', JSON.stringify({
-            email,
-            full_name: `${firstName} ${lastName}`,
-            platform_role: 'user',
-          }));
-        }
-
-        router.push('/dashboard');
+        await completeLogin(loginData.access_token, router, {
+          fallbackEmail: email,
+          fallbackName: `${firstName} ${lastName}`,
+        });
       } else {
         router.push('/login');
       }
@@ -219,12 +201,6 @@ export default function SignupPage() {
           >
             {loading ? 'Creating account...' : 'Create account'}
           </button>
-
-          <div style={{ display: 'flex', alignItems: 'center', margin: '20px 0' }}>
-            <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.1)' }} />
-            <span style={{ padding: '0 10px', fontSize: '12px', color: 'rgba(255,255,255,0.4)' }}>OR</span>
-            <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.1)' }} />
-          </div>
 
           <GoogleAuthButton setError={setError} setLoading={setLoading} loading={loading} />
 

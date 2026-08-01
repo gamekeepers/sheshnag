@@ -3,6 +3,7 @@
 import { GoogleLogin } from '@react-oauth/google';
 import { useRouter } from 'next/navigation';
 import confetti from 'canvas-confetti';
+import { completeLogin } from '../lib/completeLogin';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
@@ -39,35 +40,7 @@ export default function GoogleAuthButton({ setError, setLoading, loading }) {
         colors: ['#fff', '#cfdbfa', '#8896d3', '#302b5e']
       });
 
-      localStorage.setItem('mk_token', data.access_token);
-
-      try {
-        const meRes = await fetch(`${BACKEND}/v1/auth/me`, {
-          headers: { 
-            'Authorization': `Bearer ${data.access_token}`,
-            ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }) 
-          },
-        });
-        
-        const me = await meRes.json();
-        const platformRole = me.platform_role || me.role || 'user';
-
-        localStorage.setItem('mk_user', JSON.stringify({
-          id: me.id || '',
-          email: me.email || '',
-          full_name: me.full_name || '',
-          platform_role: platformRole,
-        }));
-
-        if (platformRole === 'superadmin') {
-          router.push('/admin');
-        } else {
-          router.push('/dashboard');
-        }
-      } catch (meError) {
-        console.error('Failed to fetch user profile:', meError);
-        router.push('/dashboard');
-      }
+      await completeLogin(data.access_token, router);
     } catch (err) {
       console.error('Google auth error:', err);
       setError('An error occurred during Google sign-in.');
@@ -79,7 +52,17 @@ export default function GoogleAuthButton({ setError, setLoading, loading }) {
     setError('Google sign-in was unsuccessful. Please try again.');
   };
 
+  // Without a client id the provider isn't mounted — render nothing rather
+  // than a button that errors on click.
+  if (!process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID) return null;
+
   return (
+    <>
+    <div style={{ display: 'flex', alignItems: 'center', margin: '20px 0' }}>
+      <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.1)' }} />
+      <span style={{ padding: '0 10px', fontSize: '12px', color: 'rgba(255,255,255,0.4)' }}>OR</span>
+      <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.1)' }} />
+    </div>
     <div style={{ position: 'relative', width: '100%', marginTop: '12px' }}>
       {/* Custom Button styling to match "Create account" / "Log in" */}
       <button
@@ -109,18 +92,26 @@ export default function GoogleAuthButton({ setError, setLoading, loading }) {
         Continue with Google
       </button>
 
-      {/* Invisible GoogleLogin overlay */}
-      <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, overflow: 'hidden', cursor: 'pointer' }}>
-        <GoogleLogin
-          onSuccess={handleSuccess}
-          onError={handleError}
-          useOneTap={false}
-          theme="outline"
-          shape="rectangular"
-          text="continue_with"
-          width="1000" // Make it very wide so it covers the button completely
-        />
-      </div>
+      {/* Invisible GoogleLogin overlay. Unmounted while loading so the
+          disabled state of the styled button underneath is actually
+          enforced (clicks would otherwise hit the live iframe). Note:
+          hiding Google's rendered button under a custom one sits in a
+          gray zone of Google's branding guidelines — if it ever breaks
+          or gets flagged, swap in the real button. */}
+      {!loading && (
+        <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, overflow: 'hidden', cursor: 'pointer' }}>
+          <GoogleLogin
+            onSuccess={handleSuccess}
+            onError={handleError}
+            useOneTap={false}
+            theme="outline"
+            shape="rectangular"
+            text="continue_with"
+            width="1000" // Make it very wide so it covers the button completely
+          />
+        </div>
+      )}
     </div>
+    </>
   );
 }

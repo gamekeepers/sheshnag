@@ -22,10 +22,6 @@ logger = logging.getLogger(__name__)
 
 # Columns added after their table first shipped: table -> [(name, ddl)]
 _NEW_COLUMNS = {
-    "users": [
-        ("google_id", "TEXT"),
-        ("auth_provider", "TEXT DEFAULT 'local'"),
-    ],
     "batches": [("attempts", "INTEGER DEFAULT 0"),("api_key_id", "TEXT"),],
     "workers": [
         ("activity", "TEXT DEFAULT 'idle'"),
@@ -47,6 +43,8 @@ _NEW_COLUMNS = {
         ("platform_role", "TEXT DEFAULT 'user'"),
         ("is_active", "BOOLEAN DEFAULT 1"),
         ("must_change_password", "BOOLEAN DEFAULT 0"),
+        ("google_id", "TEXT"),
+        ("auth_provider", "TEXT DEFAULT 'local'"),
     ],
     "api_keys": [
         ("key_type", "TEXT DEFAULT 'worker'"),
@@ -229,19 +227,17 @@ def _drop_pruned_columns(conn) -> None:
             # SQLite < 3.35 can't drop columns — unused columns are harmless.
             logger.warning("Could not drop runtime_models.%s", col)
 
-    # Drop legacy columns from users and organizations
-    try:
-        conn.execute(text("ALTER TABLE users DROP COLUMN role"))
-    except Exception:
-        pass
-    try:
-        conn.execute(text("ALTER TABLE organizations DROP COLUMN owner_id"))
-    except Exception:
-        pass
-    try:
-        conn.execute(text("ALTER TABLE api_keys DROP COLUMN key"))
-    except Exception:
-        pass
+    # Legacy columns superseded by the personal-API-keys restructure.
+    for table, col in (("users", "role"),
+                       ("organizations", "owner_id"),
+                       ("api_keys", "key")):
+        if col not in _columns(conn, table):
+            continue
+        try:
+            conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {col}"))
+        except Exception:
+            # SQLite < 3.35 can't drop columns — unused columns are harmless.
+            logger.warning("Could not drop %s.%s", table, col)
 
 
 def run_startup_migrations(engine) -> None:

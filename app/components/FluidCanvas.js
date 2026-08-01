@@ -40,19 +40,25 @@ export default function FluidCanvas() {
   );
 }
 
-/* ============ WebGL fluid engine (verbatim, unmodified logic) ============ */
+/* ============ WebGL fluid engine ============
+ * Adapted from "WebGL Fluid Simulation" by Pavel Dobryakov,
+ * https://github.com/PavelDoGreat/WebGL-Fluid-Simulation — MIT License.
+ * Copyright (c) 2017 Pavel Dobryakov. Retained per license terms.
+ * Local changes: config tuning for the auth pages (resolution/iterations
+ * lowered for lab-grade GPUs); logic otherwise unmodified.
+ */
 function fluidSimulation(canvas) {
   if (!canvas) return;
   canvas.width = canvas.clientWidth;
   canvas.height = canvas.clientHeight;
 
   let config = {
-    SIM_RESOLUTION: 200,
+    SIM_RESOLUTION: 128,
     DYE_RESOLUTION: 512,
     DENSITY_DISSIPATION: 0.958,
     VELOCITY_DISSIPATION: 0.96,
     PRESSURE_DISSIPATION: 0.8,
-    PRESSURE_ITERATIONS: 20,
+    PRESSURE_ITERATIONS: 12,
     CURL: 42,
     SPLAT_RADIUS: 0.22,
     SHADING: true,

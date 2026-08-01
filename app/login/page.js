@@ -7,6 +7,7 @@ import InteractiveMoon from '../components/InteractiveMoon';
 import FluidCanvas from '../components/FluidCanvas';
 import GoogleAuthButton from '../components/GoogleAuthButton';
 import confetti from 'canvas-confetti';
+import { completeLogin } from '../lib/completeLogin';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
@@ -47,39 +48,11 @@ export default function LoginPage() {
         colors: ['#fff', '#cfdbfa', '#8896d3', '#302b5e']
       });
 
-      localStorage.setItem('mk_token', data.access_token);
-
-      try {
-        const meRes = await fetch(`${BACKEND}/v1/auth/me`, {
-          headers: { 'Authorization': `Bearer ${data.access_token}`, ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }) },
-        });
-        const me = await meRes.json();
-        const platformRole = me.platform_role || me.role || 'user';
-
-        // Admin mode: only allow superadmin
-        if (mode === 'admin' && platformRole !== 'superadmin') {
-          setError('This account does not have admin access.');
-          localStorage.removeItem('mk_token');
-          return;
-        }
-
-        localStorage.setItem('mk_user', JSON.stringify({
-          id: me.id || '',
-          email: me.email || email,
-          full_name: me.full_name || email,
-          platform_role: platformRole,
-        }));
-
-        if (platformRole === 'superadmin') {
-          router.push('/admin');
-        } else {
-          router.push('/dashboard');
-        }
-      } catch {
-        // Fallback
-        localStorage.setItem('mk_user', JSON.stringify({ email, full_name: email, platform_role: 'user' }));
-        router.push('/dashboard');
-      }
+      const result = await completeLogin(data.access_token, router, {
+        requireSuperadmin: mode === 'admin',
+        fallbackEmail: email,
+      });
+      if (!result.ok) setError(result.error);
     } catch {
       setError('Cannot reach server. Please try again.');
     } finally {
@@ -164,11 +137,6 @@ export default function LoginPage() {
 
           {mode !== 'admin' && (
             <>
-              <div style={{ display: 'flex', alignItems: 'center', margin: '20px 0' }}>
-                <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.1)' }} />
-                <span style={{ padding: '0 10px', fontSize: '12px', color: 'rgba(255,255,255,0.4)' }}>OR</span>
-                <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.1)' }} />
-              </div>
 
               <GoogleAuthButton setError={setError} setLoading={setLoading} loading={loading} />
             </>
