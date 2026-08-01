@@ -12,11 +12,11 @@ function Logo({ size = 26 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
-        <circle cx="16" cy="16" r="12" fill={INK} />
-        <circle cx="20" cy="13" r="10" fill={PAPER} />
+        <path d="M22.5 6.5C11.5 5.5 9.5 13 15.5 15.6C21.5 18.2 23 25.5 11 26.5" stroke={INK} strokeWidth="3.2" strokeLinecap="round"/>
+        <circle cx="23" cy="6.7" r="2.2" fill={INK}/>
       </svg>
       <span style={{ color: INK, fontSize: size * 0.55, fontWeight: 700, letterSpacing: '0.14em' }}>
-        MOONKNIGHT
+        SHESHNAG
       </span>
     </div>
   );
@@ -189,7 +189,7 @@ export default function Home() {
             <div style={{ color: 'rgba(233,233,242,0.45)', fontSize: 12, letterSpacing: '0.08em', marginBottom: 10 }}>BEFORE</div>
             <div style={{ color: '#f3a0a0' }}>base_url = &quot;https://api.openai.com/v1&quot;</div>
             <div style={{ color: 'rgba(233,233,242,0.45)', fontSize: 12, letterSpacing: '0.08em', margin: '18px 0 10px' }}>AFTER</div>
-            <div style={{ color: '#a8e6b8' }}>base_url = &quot;https://moonknight.gamekeepers.in/v1&quot;</div>
+            <div style={{ color: '#a8e6b8' }}>base_url = &quot;https://api.sheshnag.io/v1&quot;</div>
             <div style={{ color: '#9db8ee', marginTop: 4 }}>api_key = &quot;gk-your_personal_key&quot;</div>
             <div style={{ color: 'rgba(233,233,242,0.4)', marginTop: 16, fontSize: 13 }}># Everything else stays the same</div>
           </div>
@@ -248,7 +248,7 @@ export default function Home() {
             <a href="/provider" style={{ color: MUTED, textDecoration: 'none' }}>Provider portal</a>
           </div>
           <span style={{ fontSize: 13, color: 'rgba(22,24,45,0.4)' }}>
-            © {new Date().getFullYear()} Moonknight · Gamekeepers
+            A thousand heads, one platform · © {new Date().getFullYear()} Sheshnag, by Gamekeepers
           </span>
         </div>
       </footer>

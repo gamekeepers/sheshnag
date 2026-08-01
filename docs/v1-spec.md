@@ -568,7 +568,7 @@ Initial simplified approach:
 > in-flight batch; terminal failure after 3 attempts). Checkpointing /
 > resume-from-partial is **NOT** implemented — a requeued batch restarts
 > from prompt 0; progress is reported (`request_counts_*`) but partial
-> results are not persisted. Tracked in [[Moonknight - Batch resumability and checkpointing]].
+> results are not persisted. Tracked in [[Sheshnag - Batch resumability and checkpointing]].
 
 ---
 
@@ -901,7 +901,7 @@ These are intentionally postponed.
 
 ---
 
-I have domain gamekeepers.in as my organization web identity. I intend to host this project as `moonknight.gamekeepers.in` as moonknight domains are expensive.
+I have domain gamekeepers.in as my organization web identity. I intend to host this project as `sheshnag.io` as moonknight domains are expensive.
 Critique and suggest. 
 
 

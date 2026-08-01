@@ -28,10 +28,10 @@ function Logo({ size = 24 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
-        <circle cx="16" cy="16" r="12" fill={INK} />
-        <circle cx="20" cy="13" r="10" fill={PAPER} />
+        <path d="M22.5 6.5C11.5 5.5 9.5 13 15.5 15.6C21.5 18.2 23 25.5 11 26.5" stroke={INK} strokeWidth="3.2" strokeLinecap="round"/>
+        <circle cx="23" cy="6.7" r="2.2" fill={INK}/>
       </svg>
-      <span style={{ color: INK, fontSize: size * 0.55, fontWeight: 700, letterSpacing: '0.14em' }}>MOONKNIGHT</span>
+      <span style={{ color: INK, fontSize: size * 0.55, fontWeight: 700, letterSpacing: '0.14em' }}>SHESHNAG</span>
     </div>
   );
 }

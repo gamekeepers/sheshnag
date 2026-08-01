@@ -1,4 +1,4 @@
-# Moonknight — Distributed Batch AI Compute Platform
+# Sheshnag — Distributed Batch AI Compute Platform
 
 Pools idle GPUs from researchers/labs and schedules asynchronous batch AI
 inference jobs on them. Users submit OpenAI-style JSONL batches through a
