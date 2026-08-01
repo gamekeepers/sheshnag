@@ -60,8 +60,15 @@ export default function ProviderPage() {
   const [orgStatus, setOrgStatus] = useState('');
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('viewer');
-  const [revealedWorkerKey, setRevealedWorkerKey] = useState('');
-  const [isRegenModalOpen, setIsRegenModalOpen] = useState(false);
+
+  // Worker keys tab
+  const [isNewKeyModalOpen, setIsNewKeyModalOpen] = useState(false);
+  const [newKeyName, setNewKeyName] = useState('');
+  const [revealedKey, setRevealedKey] = useState('');
+
+  // Create organization
+  const [isCreateOrgModalOpen, setIsCreateOrgModalOpen] = useState(false);
+  const [newOrgName, setNewOrgName] = useState('');
 
   // Jobs filters
   const [jobsWorkerFilter, setJobsWorkerFilter] = useState('');
@@ -157,6 +164,13 @@ export default function ProviderPage() {
     if (token) loadOrgs();
   }, [token, loadOrgs]);
 
+  // Org context changed → stale per-org data must never leak across orgs.
+  // (Defined before the loader effect below so the clear runs first.)
+  useEffect(() => {
+    setWorkers([]); setServed([]); setStats(null);
+    setOrgKeys([]); setOrgMembers([]); setOrgInvites([]);
+  }, [selectedOrg?.id]);
+
   useEffect(() => {
     if (!selectedOrg) return;
     if (activeTab === 'overview') {
@@ -169,8 +183,10 @@ export default function ProviderPage() {
       loadWorkers();
     } else if (activeTab === 'contribution') {
       loadStats();
+    } else if (activeTab === 'keys') {
+      loadKeys();
     } else if (activeTab === 'organization') {
-      loadMembers(); loadKeys();
+      loadMembers();
     }
   }, [activeTab, selectedOrg, loadWorkers, loadServed, loadStats, loadMembers, loadKeys]);
 
@@ -188,7 +204,6 @@ export default function ProviderPage() {
     setOrgName(org.name);
     localStorage.setItem('mk_active_org_id', org.id);
     setIsOrgDropdownOpen(false);
-    setStats(null); setServed([]); setWorkers([]);
   };
 
   const handleDrain = async (worker) => {
@@ -280,19 +295,51 @@ export default function ProviderPage() {
     } catch (e) { console.error(e); }
   };
 
-  const handleRegenWorkerKey = async () => {
+  const handleCreateKey = async () => {
+    if (!newKeyName.trim()) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/api-keys/regenerate`, {
+      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/api-keys`, {
         method: 'POST', headers: getHeaders(),
+        body: JSON.stringify({ name: newKeyName.trim() }),
       });
       if (res.ok) {
-        // Parked finding #2: the backend returns the raw key exactly once — show it.
+        // The backend returns the raw key exactly once — show it now.
         const data = await res.json();
-        setRevealedWorkerKey(data.api_key || '');
-        setIsRegenModalOpen(false);
+        setRevealedKey(data.api_key || '');
+        setNewKeyName('');
         loadKeys();
       } else {
-        alert((await res.json()).detail || 'Failed to regenerate key');
+        alert((await res.json()).detail || 'Failed to create key');
+      }
+    } catch (e) { console.error(e); }
+  };
+
+  const handleRevokeKey = async (key) => {
+    if (!confirm(`Revoke "${key.name || key.key_prefix}"? Every daemon using it stops registering immediately.`)) return;
+    try {
+      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/api-keys/${key.id}`, {
+        method: 'DELETE', headers: getHeaders(),
+      });
+      if (res.ok) loadKeys();
+      else alert((await res.json()).detail || 'Failed to revoke key');
+    } catch (e) { console.error(e); }
+  };
+
+  const handleCreateOrg = async () => {
+    if (!newOrgName.trim()) return;
+    try {
+      const res = await fetch(`${BACKEND}/v1/me/organizations`, {
+        method: 'POST', headers: getHeaders(),
+        body: JSON.stringify({ name: newOrgName.trim() }),
+      });
+      if (res.ok) {
+        const org = await res.json();
+        setIsCreateOrgModalOpen(false);
+        setNewOrgName('');
+        localStorage.setItem('mk_active_org_id', org.id);
+        loadOrgs();
+      } else {
+        alert((await res.json()).detail || 'Failed to create organization');
       }
     } catch (e) { console.error(e); }
   };
@@ -337,8 +384,6 @@ export default function ProviderPage() {
     return Object.entries(map).map(([model, v]) => ({ model, ...v }));
   })();
 
-  const workerKey = orgKeys.find(k => k.key_type === 'worker') || orgKeys[0];
-
   const badgeFor = (status) => (
     <span className={`badge ${status}`} style={status === 'draining' ? { color: '#EF9F27' } : undefined}>
       <span className="pip"></span>{status}
@@ -347,7 +392,8 @@ export default function ProviderPage() {
 
   const getPageTitle = () => ({
     overview: 'Overview', workers: 'Workers', jobs: 'Jobs served',
-    models: 'Hosted models', contribution: 'Contribution', organization: 'Organization',
+    models: 'Hosted models', contribution: 'Contribution',
+    keys: 'Worker keys', organization: 'Organization',
   }[activeTab] || 'Provider');
 
   // ── Render ──────────────────────────────────────────────
@@ -366,7 +412,7 @@ export default function ProviderPage() {
         <div className={`org-switcher ${isOrgDropdownOpen ? 'open' : ''}`}>
           <button onClick={() => setIsOrgDropdownOpen(!isOrgDropdownOpen)}>
             <span>{selectedOrg ? selectedOrg.name : 'Select org'}</span>
-            {orgs.length > 1 && <span className="chev">▾</span>}
+            <span className="chev">▾</span>
           </button>
           {selectedOrg && (
             <div style={{ padding: '2px 1rem 6px', display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -374,19 +420,20 @@ export default function ProviderPage() {
               <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>{workers.length} worker{workers.length === 1 ? '' : 's'}</span>
             </div>
           )}
-          {orgs.length > 1 && (
-            <div className="org-menu">
-              {orgs.map(org => (
-                <button
-                  key={org.id}
-                  className={selectedOrg && selectedOrg.id === org.id ? 'active' : ''}
-                  onClick={() => handleSelectOrg(org)}
-                >
-                  {org.name} <span style={{ opacity: 0.5, fontSize: 11 }}>({org.role})</span>
-                </button>
-              ))}
-            </div>
-          )}
+          <div className="org-menu">
+            {orgs.map(org => (
+              <button
+                key={org.id}
+                className={selectedOrg && selectedOrg.id === org.id ? 'active' : ''}
+                onClick={() => handleSelectOrg(org)}
+              >
+                {org.name} <span style={{ opacity: 0.5, fontSize: 11 }}>({org.role})</span>
+              </button>
+            ))}
+            <button onClick={() => { setIsOrgDropdownOpen(false); setIsCreateOrgModalOpen(true); }} style={{ color: '#C9C4FF' }}>
+              + New organization
+            </button>
+          </div>
         </div>
 
         <nav className="nav">
@@ -404,6 +451,9 @@ export default function ProviderPage() {
           </div>
           <div className={`nav-item ${activeTab === 'contribution' ? 'active' : ''}`} onClick={() => setActiveTab('contribution')}>
             <span className="ic">📈</span> Contribution
+          </div>
+          <div className={`nav-item ${activeTab === 'keys' ? 'active' : ''}`} onClick={() => setActiveTab('keys')}>
+            <span className="ic">🔑</span> Worker keys
           </div>
           <div className={`nav-item ${activeTab === 'organization' ? 'active' : ''}`} onClick={() => setActiveTab('organization')}>
             <span className="ic">👥</span> Organization
@@ -428,7 +478,8 @@ export default function ProviderPage() {
         <div className="content-body">
           {!selectedOrg && (
             <div className="panel" style={{ textAlign: 'center', color: 'var(--dim)', padding: '3rem' }}>
-              No organizations yet. Create one from the user portal, then register a worker with its API key.
+              <p style={{ marginBottom: '1rem' }}>No organizations yet.</p>
+              <button className="btn primary" onClick={() => setIsCreateOrgModalOpen(true)}>+ Create organization</button>
             </div>
           )}
 
@@ -696,41 +747,72 @@ export default function ProviderPage() {
           </div>
           )}
 
+          {/* ============ WORKER KEYS ============ */}
+          {selectedOrg && (
+          <div className={`page-panel ${activeTab === 'keys' ? 'active' : ''}`}>
+            <div className="page-actions">
+              <div>
+                <h1 className="page-title">Worker keys</h1>
+                <p className="page-sub">Daemons register with an org key — one per lab machine or cluster keeps revocation surgical (spec §8.0).</p>
+              </div>
+              {canManage && (
+                <button className="btn primary" onClick={() => { setRevealedKey(''); setIsNewKeyModalOpen(true); }}>
+                  + {orgKeys.some(k => k.status === 'active') ? 'New key' : 'Generate key'}
+                </button>
+              )}
+            </div>
+
+            <div className="panel" style={{ padding: '0.5rem' }}>
+              <div className="table-container">
+                <table>
+                  <thead><tr><th>Name</th><th>Prefix</th><th>Status</th><th>Last used</th><th>Created</th>{canManage && <th></th>}</tr></thead>
+                  <tbody>
+                    {orgKeys.map(k => (
+                      <tr key={k.id}>
+                        <td>{k.name || 'Unnamed key'}</td>
+                        <td className="mono">{k.key_prefix}••••</td>
+                        <td>
+                          <span className={`badge ${k.status === 'active' ? 'online' : 'offline'}`}>
+                            <span className="pip"></span>{k.status}
+                          </span>
+                        </td>
+                        <td className="dim">{k.last_used_at ? heartbeatAge(k.last_used_at) : 'never'}</td>
+                        <td className="dim">{k.created_at ? new Date(k.created_at * 1000).toLocaleDateString() : '—'}</td>
+                        {canManage && (
+                          <td>
+                            {k.status === 'active' && (
+                              <button className="btn" style={{ color: 'var(--danger)' }} onClick={() => handleRevokeKey(k)}>Revoke</button>
+                            )}
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                    {orgKeys.length === 0 && (
+                      <tr><td colSpan={canManage ? 6 : 5} className="empty-hint">
+                        No worker keys yet — generate one, then start the daemon with it to register your first worker.
+                      </td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          )}
+
           {/* ============ ORGANIZATION ============ */}
           {selectedOrg && (
           <div className={`page-panel ${activeTab === 'organization' ? 'active' : ''}`}>
             <h1 className="page-title">Organization</h1>
             <p className="page-sub">{canManage ? 'Manage this organization: details, members, invites, worker key.' : 'Read-only: you are a viewer in this organization.'}</p>
 
-            <div className="grid-2">
-              <div className="panel">
-                <div className="section-title" style={{ marginTop: 0 }}>Details</div>
-                <div className="field">
-                  <label>Organization name</label>
-                  <input value={orgName} onChange={e => setOrgName(e.target.value)} disabled={!canManage} />
-                </div>
-                {canManage && <button className="btn primary" onClick={handleRenameOrg}>Save</button>}
-                {orgStatus && <p style={{ color: 'var(--accent)', fontSize: '0.8rem', marginTop: '0.6rem' }}>{orgStatus}</p>}
+            <div className="panel">
+              <div className="section-title" style={{ marginTop: 0 }}>Details</div>
+              <div className="field" style={{ maxWidth: 420 }}>
+                <label>Organization name</label>
+                <input value={orgName} onChange={e => setOrgName(e.target.value)} disabled={!canManage} />
               </div>
-
-              <div className="panel">
-                <div className="section-title" style={{ marginTop: 0 }}>Worker API key</div>
-                <div className="mono" style={{ fontSize: '0.85rem', color: 'var(--dim)' }}>
-                  {workerKey ? `${workerKey.key_prefix}••••••••••••` : 'No key generated'}
-                </div>
-                <p className="page-sub" style={{ margin: '0.6rem 0' }}>
-                  Daemons register with this key. Regenerating invalidates it for every worker using it.
-                </p>
-                {canManage && (
-                  <button className="btn" onClick={() => setIsRegenModalOpen(true)}>Regenerate</button>
-                )}
-                {revealedWorkerKey && (
-                  <div style={{ marginTop: '0.8rem' }}>
-                    <div className="key-reveal">{revealedWorkerKey}</div>
-                    <div className="key-warning">Shown once — update every daemon&apos;s config with this key now.</div>
-                  </div>
-                )}
-              </div>
+              {canManage && <button className="btn primary" onClick={handleRenameOrg}>Save</button>}
+              {orgStatus && <p style={{ color: 'var(--accent)', fontSize: '0.8rem', marginTop: '0.6rem' }}>{orgStatus}</p>}
             </div>
 
             <div className="section-title">Members</div>
@@ -806,16 +888,45 @@ export default function ProviderPage() {
         </div>
       </div>
 
-      {isRegenModalOpen && (
+      {isNewKeyModalOpen && (
         <div className="modal-overlay open">
           <div className="modal">
-            <h3>Regenerate worker key?</h3>
-            <p className="modal-sub">
-              Every daemon using the current key stops registering until updated. The new key is shown exactly once.
-            </p>
+            <h3>{orgKeys.some(k => k.status === 'active') ? 'New worker key' : 'Generate worker key'}</h3>
+            <p className="modal-sub">Name it after the machine or cluster that will use it.</p>
+            <div className="field">
+              <label>Key name</label>
+              <input placeholder="e.g. lab-pc-01" value={newKeyName} onChange={e => setNewKeyName(e.target.value)} />
+            </div>
             <div className="modal-actions">
-              <button className="btn" onClick={() => setIsRegenModalOpen(false)}>Cancel</button>
-              <button className="btn danger" onClick={handleRegenWorkerKey}>Regenerate</button>
+              <button className="btn" onClick={() => { setIsNewKeyModalOpen(false); setRevealedKey(''); setNewKeyName(''); }}>
+                {revealedKey ? 'Done' : 'Cancel'}
+              </button>
+              {!revealedKey && (
+                <button className="btn primary" onClick={handleCreateKey} disabled={!newKeyName.trim()}>Create</button>
+              )}
+            </div>
+            {revealedKey && (
+              <div style={{ marginTop: '1rem' }}>
+                <div className="key-reveal">{revealedKey}</div>
+                <div className="key-warning">Shown once — copy it into the daemon&apos;s config now.</div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {isCreateOrgModalOpen && (
+        <div className="modal-overlay open">
+          <div className="modal">
+            <h3>Create organization</h3>
+            <p className="modal-sub">A lab, course, or cluster. You become its owner.</p>
+            <div className="field">
+              <label>Organization name</label>
+              <input placeholder="e.g. Sharma Lab" value={newOrgName} onChange={e => setNewOrgName(e.target.value)} />
+            </div>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => { setIsCreateOrgModalOpen(false); setNewOrgName(''); }}>Cancel</button>
+              <button className="btn primary" onClick={handleCreateOrg} disabled={!newOrgName.trim()}>Create</button>
             </div>
           </div>
         </div>
