@@ -95,8 +95,15 @@ def test_google_only_account_blocked_from_password_login(auth_client, google_tok
 
 def test_invalid_token_rejected(auth_client, monkeypatch):
     """Unmocked verifier with a garbage token → 401 (client id present)."""
-    import auth as auth_module
-    monkeypatch.setattr(auth_module, "GOOGLE_CLIENT_ID", "dummy-client-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "dummy-client-id")
     res = auth_client.post("/v1/auth/google", json={"id_token": "not-a-real-token"})
     assert res.status_code == 401
     assert "Invalid Google token" in res.json()["detail"]
+
+
+def test_unconfigured_client_id_500(auth_client, monkeypatch):
+    """Env fix visibility: the config error must reflect the CURRENT env."""
+    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    res = auth_client.post("/v1/auth/google", json={"id_token": "whatever"})
+    assert res.status_code == 500
+    assert "not configured" in res.json()["detail"]
