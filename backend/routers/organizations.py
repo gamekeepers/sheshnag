@@ -204,7 +204,7 @@ def revoke_api_key(
 
     if api_key.key_type == "worker":
         busy = db.query(Worker).filter(
-            Worker.org_id == org_id,
+            Worker.api_key_id == key_id,
             Worker.activity == "busy",
         ).count()
         if busy > 0:

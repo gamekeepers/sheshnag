@@ -128,6 +128,7 @@ def register_worker(
         ]
 
     if existing:
+        existing.api_key_id = _api_key.id
         existing.os = req.os
         existing.cpu_cores = cpu_cores
         existing.ram_total_gb = ram_gb
@@ -150,6 +151,7 @@ def register_worker(
 
     worker = Worker(
         org_id=org_id,
+        api_key_id=_api_key.id,
         hostname=req.hostname,
         os=req.os,
         cpu_cores=cpu_cores,
