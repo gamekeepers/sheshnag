@@ -3,13 +3,38 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import InteractiveMoon from '../components/InteractiveMoon';
-import FluidCanvas from '../components/FluidCanvas';
 import GoogleAuthButton from '../components/GoogleAuthButton';
 import confetti from 'canvas-confetti';
 import { completeLogin } from '../lib/completeLogin';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
+const INK = '#16182d';
+const MUTED = '#5c5f73';
+const PAPER = '#faf8f5';
+const LINE = 'rgba(22,24,45,0.12)';
+
+const inputStyle = {
+  width: '100%', boxSizing: 'border-box',
+  background: '#fff', border: '1px solid rgba(22,24,45,0.2)',
+  borderRadius: 12, padding: '12px 14px', color: INK, fontSize: 15, outline: 'none',
+};
+
+const labelStyle = {
+  fontSize: 13, color: MUTED, marginBottom: 6, display: 'block',
+};
+
+function Logo({ size = 24 }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
+        <circle cx="16" cy="16" r="12" fill={INK} />
+        <circle cx="20" cy="13" r="10" fill={PAPER} />
+      </svg>
+      <span style={{ color: INK, fontSize: size * 0.55, fontWeight: 700, letterSpacing: '0.14em' }}>MOONKNIGHT</span>
+    </div>
+  );
+}
 
 export default function SignupPage() {
   const [firstName, setFirstName] = useState('');
@@ -19,7 +44,6 @@ export default function SignupPage() {
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [isPasswordFocused, setIsPasswordFocused] = useState(false);
   const router = useRouter();
 
   async function handleSubmit() {
@@ -29,7 +53,6 @@ export default function SignupPage() {
       setError('Please fill in all fields.');
       return;
     }
-
     if (password !== confirm) {
       setError('Passwords do not match.');
       return;
@@ -44,7 +67,6 @@ export default function SignupPage() {
           email,
           password,
           full_name: `${firstName} ${lastName}`,
-          role: 'user',
         }),
       });
       const data = await res.json();
@@ -61,13 +83,7 @@ export default function SignupPage() {
       });
       const loginData = await loginRes.json();
       if (loginRes.ok && loginData.access_token) {
-        // Trigger confetti on success
-        confetti({
-          particleCount: 100,
-          spread: 70,
-          origin: { y: 0.6 },
-          colors: ['#fff', '#cfdbfa', '#8896d3', '#302b5e']
-        });
+        confetti({ particleCount: 80, spread: 65, origin: { y: 0.6 }, colors: [INK, '#4a4fa3', '#c9c4ff'] });
         await completeLogin(loginData.access_token, router, {
           fallbackEmail: email,
           fallbackName: `${firstName} ${lastName}`,
@@ -82,133 +98,67 @@ export default function SignupPage() {
     }
   }
 
-  const labelStyle = {
-    fontSize: '12px',
-    color: 'rgba(255,255,255,0.55)',
-    marginBottom: '6px',
-    display: 'block',
-  };
-  const inputStyle = {
-    width: '100%',
-    background: 'transparent',
-    border: '1px solid rgba(255,255,255,0.25)',
-    borderRadius: '24px',
-    padding: '12px 16px',
-    color: '#fff',
-    fontSize: '14px',
-    outline: 'none',
-    boxSizing: 'border-box',
-    WebkitTextFillColor: '#fff',
-    caretColor: '#fff',
-    WebkitBoxShadow: '0 0 0 1000px #050505 inset',
-  };
-
   return (
-    <div style={{ background: '#04050c', minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', fontFamily: 'sans-serif' }}>
-      <FluidCanvas />
-
-      {/* Top bar */}
-      <div style={{ position: 'relative', zIndex: 3, padding: '20px 28px' }}>
-        <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none' }}>
-          <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
-            <circle cx="16" cy="16" r="12" fill="#fff" />
-            <circle cx="20" cy="13" r="10" fill="#03030a" />
-          </svg>
-          <span style={{ color: '#fff', fontSize: '14px', fontWeight: 500, letterSpacing: '0.12em' }}>MOONKNIGHT</span>
-        </Link>
+    <div style={{ background: PAPER, minHeight: '100vh', display: 'flex', flexDirection: 'column', color: INK, fontFamily: "'Geist', 'Inter', -apple-system, sans-serif" }}>
+      <div style={{ padding: '22px 28px' }}>
+        <Link href="/" style={{ textDecoration: 'none' }}><Logo /></Link>
       </div>
 
-      {/* Body */}
-      <div style={{ position: 'relative', zIndex: 3, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
-        <div style={{ width: '100%', maxWidth: '360px' }}>
-          <InteractiveMoon isPasswordFocused={isPasswordFocused} />
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+        <div style={{ width: '100%', maxWidth: 440, background: '#fff', border: `1px solid ${LINE}`, borderRadius: 20, padding: '36px 32px' }}>
+          <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontWeight: 400, fontSize: 30, textAlign: 'center', margin: '0 0 6px' }}>
+            Create your account
+          </h1>
+          <p style={{ textAlign: 'center', color: MUTED, fontSize: 14.5, margin: '0 0 28px' }}>
+            A personal organization comes with it.
+          </p>
 
-          {/* Name Fields */}
-          <div style={{ display: 'flex', gap: '12px', marginBottom: '14px' }}>
+          <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
             <div style={{ flex: 1 }}>
               <span style={labelStyle}>First name</span>
-              <input
-                type="text"
-                value={firstName}
-                onChange={e => setFirstName(e.target.value)}
-                autoComplete="off"
-                style={inputStyle}
-              />
+              <input type="text" value={firstName} onChange={e => setFirstName(e.target.value)} autoComplete="given-name" style={inputStyle} />
             </div>
             <div style={{ flex: 1 }}>
               <span style={labelStyle}>Last name</span>
-              <input
-                type="text"
-                value={lastName}
-                onChange={e => setLastName(e.target.value)}
-                autoComplete="off"
-                style={inputStyle}
-              />
+              <input type="text" value={lastName} onChange={e => setLastName(e.target.value)} autoComplete="family-name" style={inputStyle} />
             </div>
           </div>
 
-          {/* Email */}
-          <div style={{ marginBottom: '14px' }}>
+          <div style={{ marginBottom: 16 }}>
             <span style={labelStyle}>Email address</span>
-            <input
-              type="email"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              autoComplete="new-email"
-              style={inputStyle}
-            />
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" style={inputStyle} />
           </div>
 
-          {/* Password */}
-          <div style={{ marginBottom: '14px' }}>
+          <div style={{ marginBottom: 16 }}>
             <span style={labelStyle}>Password</span>
-            <input
-              type="password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              onFocus={() => setIsPasswordFocused(true)}
-              onBlur={() => setIsPasswordFocused(false)}
-              autoComplete="new-password"
-              style={inputStyle}
-            />
+            <input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="new-password" style={inputStyle} />
           </div>
 
-          {/* Confirm password */}
-          <div style={{ marginBottom: '14px' }}>
+          <div style={{ marginBottom: 16 }}>
             <span style={labelStyle}>Confirm password</span>
-            <input
-              type="password"
-              value={confirm}
-              onChange={e => setConfirm(e.target.value)}
-              onFocus={() => setIsPasswordFocused(true)}
-              onBlur={() => setIsPasswordFocused(false)}
-              autoComplete="new-password"
-              style={inputStyle}
-            />
+            <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" style={inputStyle} />
           </div>
 
-          {error && <p style={{ color: '#f87171', fontSize: '12px', marginBottom: '12px' }}>{error}</p>}
+          {error && <p style={{ color: '#b3372c', fontSize: 13, marginBottom: 14 }}>{error}</p>}
 
           <button
             onClick={handleSubmit}
             disabled={loading}
             style={{
-              width: '100%', padding: '12px', background: 'transparent',
-              border: '1px solid rgba(255,255,255,0.25)', color: loading ? 'rgba(255,255,255,0.4)' : '#fff',
-              borderRadius: '24px', fontSize: '14px', fontWeight: 500,
-              cursor: loading ? 'default' : 'pointer', marginTop: '6px',
+              width: '100%', padding: '13px', borderRadius: 999, border: `1px solid ${INK}`,
+              background: INK, color: PAPER, fontSize: 15, fontWeight: 500,
+              cursor: loading ? 'default' : 'pointer', opacity: loading ? 0.6 : 1,
             }}
           >
-            {loading ? 'Creating account...' : 'Create account'}
+            {loading ? 'Creating account…' : 'Create account'}
           </button>
 
           <GoogleAuthButton setError={setError} setLoading={setLoading} loading={loading} />
 
-          <p style={{ textAlign: 'center', fontSize: '13px', color: 'rgba(255,255,255,0.45)', marginTop: '18px' }}>
+          <p style={{ textAlign: 'center', fontSize: 13.5, color: MUTED, marginTop: 20 }}>
             Already have an account?{' '}
-            <Link href="/login" style={{ color: '#9bb8e8' }}>Log in</Link>
+            <Link href="/login" style={{ color: '#4a4fa3' }}>Log in</Link>
           </p>
-
         </div>
       </div>
     </div>

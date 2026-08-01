@@ -3,13 +3,38 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import InteractiveMoon from '../components/InteractiveMoon';
-import FluidCanvas from '../components/FluidCanvas';
 import GoogleAuthButton from '../components/GoogleAuthButton';
 import confetti from 'canvas-confetti';
 import { completeLogin } from '../lib/completeLogin';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
+const INK = '#16182d';
+const MUTED = '#5c5f73';
+const PAPER = '#faf8f5';
+const LINE = 'rgba(22,24,45,0.12)';
+
+const inputStyle = {
+  width: '100%', boxSizing: 'border-box',
+  background: '#fff', border: '1px solid rgba(22,24,45,0.2)',
+  borderRadius: 12, padding: '12px 14px', color: INK, fontSize: 15, outline: 'none',
+};
+
+const labelStyle = {
+  fontSize: 13, color: MUTED, marginBottom: 6, display: 'block',
+};
+
+function Logo({ size = 24 }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
+        <circle cx="16" cy="16" r="12" fill={INK} />
+        <circle cx="20" cy="13" r="10" fill={PAPER} />
+      </svg>
+      <span style={{ color: INK, fontSize: size * 0.55, fontWeight: 700, letterSpacing: '0.14em' }}>MOONKNIGHT</span>
+    </div>
+  );
+}
 
 export default function LoginPage() {
   const [mode, setMode] = useState('user'); // 'user' or 'admin'
@@ -17,7 +42,6 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [isPasswordFocused, setIsPasswordFocused] = useState(false);
   const router = useRouter();
 
   async function handleSubmit() {
@@ -40,13 +64,7 @@ export default function LoginPage() {
         return;
       }
 
-      // Trigger confetti on success
-      confetti({
-        particleCount: 100,
-        spread: 70,
-        origin: { y: 0.6 },
-        colors: ['#fff', '#cfdbfa', '#8896d3', '#302b5e']
-      });
+      confetti({ particleCount: 80, spread: 65, origin: { y: 0.6 }, colors: [INK, '#4a4fa3', '#c9c4ff'] });
 
       const result = await completeLogin(data.access_token, router, {
         requireSuperadmin: mode === 'admin',
@@ -61,118 +79,78 @@ export default function LoginPage() {
   }
 
   return (
-    <div style={{ background: '#04050c', minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', fontFamily: 'sans-serif' }}>
-      <FluidCanvas />
-
-      <div style={{ position: 'relative', zIndex: 3, padding: '20px 28px' }}>
-        <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none' }}>
-          <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
-            <circle cx="16" cy="16" r="12" fill="#fff" />
-            <circle cx="20" cy="13" r="10" fill="#03030a" />
-          </svg>
-          <span style={{ color: '#fff', fontSize: '14px', fontWeight: 500, letterSpacing: '0.12em' }}>MOONKNIGHT</span>
-        </Link>
+    <div style={{ background: PAPER, minHeight: '100vh', display: 'flex', flexDirection: 'column', color: INK, fontFamily: "'Geist', 'Inter', -apple-system, sans-serif" }}>
+      <div style={{ padding: '22px 28px' }}>
+        <Link href="/" style={{ textDecoration: 'none' }}><Logo /></Link>
       </div>
 
-      <div style={{ position: 'relative', zIndex: 3, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
-        <div style={{ width: '100%', maxWidth: '340px' }}>
-          <InteractiveMoon isPasswordFocused={isPasswordFocused} />
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+        <div style={{ width: '100%', maxWidth: 400, background: '#fff', border: `1px solid ${LINE}`, borderRadius: 20, padding: '36px 32px' }}>
+          <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontWeight: 400, fontSize: 30, textAlign: 'center', margin: '0 0 6px' }}>
+            {mode === 'admin' ? 'Admin sign in' : 'Welcome back'}
+          </h1>
+          <p style={{ textAlign: 'center', color: MUTED, fontSize: 14.5, margin: '0 0 28px' }}>
+            {mode === 'admin' ? 'Restricted to platform administrators.' : 'Sign in to your account.'}
+          </p>
 
-          {mode === 'admin' && (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: '8px', padding: '8px 14px', fontSize: '12px', color: 'rgba(255,255,255,0.6)', marginBottom: '16px' }}>
-              Admin access only
-            </div>
-          )}
-
-
-          <div style={{ marginBottom: '14px' }}>
-            <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.55)', marginBottom: '6px', display: 'block' }}>Email address</span>
+          <div style={{ marginBottom: 16 }}>
+            <span style={labelStyle}>Email address</span>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              autoComplete="off"
-              style={{
-                width: '100%', background: 'transparent', border: '1px solid rgba(255,255,255,0.25)',
-                borderRadius: '24px', padding: '12px 16px', color: '#fff', fontSize: '14px', outline: 'none',
-                WebkitTextFillColor: '#fff', caretColor: '#fff',
-                WebkitBoxShadow: '0 0 0 1000px #050505 inset',
-              }}
+              autoComplete="email"
+              style={inputStyle}
             />
           </div>
 
-          <div style={{ marginBottom: '14px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-              <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.55)' }}>Password</span>
-              <Link href="/forgot-password" style={{ fontSize: '11px', color: '#9bb8e8', textDecoration: 'none' }}>Forgot password?</Link>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <span style={{ ...labelStyle, marginBottom: 0 }}>Password</span>
+              <Link href="/forgot-password" style={{ fontSize: 12.5, color: '#4a4fa3', textDecoration: 'none' }}>Forgot password?</Link>
             </div>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              onFocus={() => setIsPasswordFocused(true)}
-              onBlur={() => setIsPasswordFocused(false)}
-              autoComplete="new-password"
-              style={{
-                width: '100%', background: 'transparent', border: '1px solid rgba(255,255,255,0.25)',
-                borderRadius: '24px', padding: '12px 16px', color: '#fff', fontSize: '14px', outline: 'none',
-                WebkitTextFillColor: '#fff', caretColor: '#fff',
-                WebkitBoxShadow: '0 0 0 1000px #050505 inset',
-              }}
+              autoComplete="current-password"
+              style={inputStyle}
             />
           </div>
 
-          {error && <p style={{ color: '#f87171', fontSize: '12px', marginBottom: '12px' }}>{error}</p>}
+          {error && <p style={{ color: '#b3372c', fontSize: 13, marginBottom: 14 }}>{error}</p>}
 
           <button
             onClick={handleSubmit}
             disabled={loading}
             style={{
-              width: '100%', padding: '12px', background: 'transparent', border: '1px solid rgba(255,255,255,0.25)',
-              color: loading ? 'rgba(255,255,255,0.4)' : '#fff', borderRadius: '24px', fontSize: '14px', fontWeight: 500, cursor: loading ? 'default' : 'pointer', marginTop: '6px',
+              width: '100%', padding: '13px', borderRadius: 999, border: `1px solid ${INK}`,
+              background: INK, color: PAPER, fontSize: 15, fontWeight: 500,
+              cursor: loading ? 'default' : 'pointer', opacity: loading ? 0.6 : 1,
             }}
           >
-            {loading ? 'Logging in...' : 'Continue'}
+            {loading ? 'Signing in…' : 'Continue'}
           </button>
 
           {mode !== 'admin' && (
-            <>
-
-              <GoogleAuthButton setError={setError} setLoading={setLoading} loading={loading} />
-            </>
+            <GoogleAuthButton setError={setError} setLoading={setLoading} loading={loading} />
           )}
 
-
           {mode !== 'admin' && (
-            <p style={{ textAlign: 'center', fontSize: '13px', color: 'rgba(255,255,255,0.45)', marginTop: '18px' }}>
+            <p style={{ textAlign: 'center', fontSize: 13.5, color: MUTED, marginTop: 20 }}>
               Don&apos;t have an account?{' '}
-              <Link href="/signup" style={{ color: '#9bb8e8' }}>Sign up</Link>
+              <Link href="/signup" style={{ color: '#4a4fa3' }}>Sign up</Link>
             </p>
           )}
 
-          {/* Admin Link at the bottom */}
-          <div style={{ marginTop: '20px', borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: '16px', textAlign: 'center' }}>
-            {mode === 'admin' ? (
-              <button onClick={() => { setMode('user'); setError(''); }} style={{
-                background: 'transparent', border: 'none', cursor: 'pointer',
-                display: 'inline-flex', alignItems: 'center', gap: '6px',
-                fontSize: '12px', color: 'rgba(255,255,255,0.35)',
-                padding: '6px 14px', transition: 'all 0.2s',
-              }}>
-                👤 User Login
-              </button>
-            ) : (
-              <button onClick={() => { setMode('admin'); setError(''); }} style={{
-                background: 'transparent', border: 'none', cursor: 'pointer',
-                display: 'inline-flex', alignItems: 'center', gap: '6px',
-                fontSize: '12px', color: 'rgba(255,255,255,0.35)',
-                padding: '6px 14px', transition: 'all 0.2s',
-              }}>
-                🔒 Admin Login
-              </button>
-            )}
+          <div style={{ marginTop: 20, borderTop: `1px solid ${LINE}`, paddingTop: 14, textAlign: 'center' }}>
+            <button
+              onClick={() => { setMode(mode === 'admin' ? 'user' : 'admin'); setError(''); }}
+              style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 12.5, color: 'rgba(22,24,45,0.45)' }}
+            >
+              {mode === 'admin' ? '👤 User sign in' : '🔒 Admin sign in'}
+            </button>
           </div>
-
         </div>
       </div>
     </div>
