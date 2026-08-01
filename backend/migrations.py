@@ -22,15 +22,12 @@ logger = logging.getLogger(__name__)
 
 # Columns added after their table first shipped: table -> [(name, ddl)]
 _NEW_COLUMNS = {
-    "users": [
-        ("google_id", "TEXT"),
-        ("auth_provider", "TEXT DEFAULT 'local'"),
-    ],
-    "batches": [("attempts", "INTEGER DEFAULT 0")],
+    "batches": [("attempts", "INTEGER DEFAULT 0"),("api_key_id", "TEXT"),],
     "workers": [
         ("activity", "TEXT DEFAULT 'idle'"),
         ("vram_total_gb", "REAL"),
         ("vram_available_gb", "REAL"),
+        ("api_key_id", "TEXT"),
     ],
     "runtime_models": [("digest", "TEXT")],
     "model_catalog": [
@@ -41,6 +38,23 @@ _NEW_COLUMNS = {
         ("task_type", "TEXT"),
         ("parameter_size", "TEXT"),
         ("context_length", "INTEGER"),
+    ],
+    "users": [
+        ("platform_role", "TEXT DEFAULT 'user'"),
+        ("is_active", "BOOLEAN DEFAULT 1"),
+        ("must_change_password", "BOOLEAN DEFAULT 0"),
+        ("google_id", "TEXT"),
+        ("auth_provider", "TEXT DEFAULT 'local'"),
+    ],
+    "api_keys": [
+        ("key_type", "TEXT DEFAULT 'worker'"),
+        ("created_by_user_id", "TEXT"),
+        ("key_prefix", "TEXT"),
+        ("key_hash", "TEXT"),
+        ("status", "TEXT DEFAULT 'active'"),
+        ("last_used_at", "INTEGER"),
+        ("expires_at", "INTEGER"),
+        ("revoked_at", "INTEGER"),
     ],
 }
 
@@ -212,6 +226,18 @@ def _drop_pruned_columns(conn) -> None:
         except Exception:
             # SQLite < 3.35 can't drop columns — unused columns are harmless.
             logger.warning("Could not drop runtime_models.%s", col)
+
+    # Legacy columns superseded by the personal-API-keys restructure.
+    for table, col in (("users", "role"),
+                       ("organizations", "owner_id"),
+                       ("api_keys", "key")):
+        if col not in _columns(conn, table):
+            continue
+        try:
+            conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {col}"))
+        except Exception:
+            # SQLite < 3.35 can't drop columns — unused columns are harmless.
+            logger.warning("Could not drop %s.%s", table, col)
 
 
 def run_startup_migrations(engine) -> None:

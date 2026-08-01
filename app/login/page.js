@@ -3,10 +3,11 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import ParticleField from '../components/ParticleField';
-import CursorEffect from '../components/CursorEffect';
 import InteractiveMoon from '../components/InteractiveMoon';
+import FluidCanvas from '../components/FluidCanvas';
+import GoogleAuthButton from '../components/GoogleAuthButton';
 import confetti from 'canvas-confetti';
+import { completeLogin } from '../lib/completeLogin';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
@@ -47,39 +48,11 @@ export default function LoginPage() {
         colors: ['#fff', '#cfdbfa', '#8896d3', '#302b5e']
       });
 
-      localStorage.setItem('mk_token', data.access_token);
-
-      try {
-        const meRes = await fetch(`${BACKEND}/v1/auth/me`, {
-          headers: { 'Authorization': `Bearer ${data.access_token}`, ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }) },
-        });
-        const me = await meRes.json();
-        const platformRole = me.platform_role || me.role || 'user';
-
-        // Admin mode: only allow superadmin
-        if (mode === 'admin' && platformRole !== 'superadmin') {
-          setError('This account does not have admin access.');
-          localStorage.removeItem('mk_token');
-          return;
-        }
-
-        localStorage.setItem('mk_user', JSON.stringify({
-          id: me.id || '',
-          email: me.email || email,
-          full_name: me.full_name || email,
-          platform_role: platformRole,
-        }));
-
-        if (platformRole === 'superadmin') {
-          router.push('/admin');
-        } else {
-          router.push('/dashboard');
-        }
-      } catch {
-        // Fallback
-        localStorage.setItem('mk_user', JSON.stringify({ email, full_name: email, platform_role: 'user' }));
-        router.push('/dashboard');
-      }
+      const result = await completeLogin(data.access_token, router, {
+        requireSuperadmin: mode === 'admin',
+        fallbackEmail: email,
+      });
+      if (!result.ok) setError(result.error);
     } catch {
       setError('Cannot reach server. Please try again.');
     } finally {
@@ -88,9 +61,8 @@ export default function LoginPage() {
   }
 
   return (
-    <div style={{ background: '#050505', minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', fontFamily: 'sans-serif' }}>
-      <ParticleField />
-      <CursorEffect />
+    <div style={{ background: '#04050c', minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', fontFamily: 'sans-serif' }}>
+      <FluidCanvas />
 
       <div style={{ position: 'relative', zIndex: 3, padding: '20px 28px' }}>
         <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none' }}>
@@ -104,7 +76,6 @@ export default function LoginPage() {
 
       <div style={{ position: 'relative', zIndex: 3, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
         <div style={{ width: '100%', maxWidth: '340px' }}>
-          {/* The Interactive Moon Avatar */}
           <InteractiveMoon isPasswordFocused={isPasswordFocused} />
 
           {mode === 'admin' && (
@@ -112,6 +83,7 @@ export default function LoginPage() {
               Admin access only
             </div>
           )}
+
 
           <div style={{ marginBottom: '14px' }}>
             <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.55)', marginBottom: '6px', display: 'block' }}>Email address</span>
@@ -162,6 +134,14 @@ export default function LoginPage() {
           >
             {loading ? 'Logging in...' : 'Continue'}
           </button>
+
+          {mode !== 'admin' && (
+            <>
+
+              <GoogleAuthButton setError={setError} setLoading={setLoading} loading={loading} />
+            </>
+          )}
+
 
           {mode !== 'admin' && (
             <p style={{ textAlign: 'center', fontSize: '13px', color: 'rgba(255,255,255,0.45)', marginTop: '18px' }}>

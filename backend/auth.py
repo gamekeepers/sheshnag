@@ -14,8 +14,6 @@ import os
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
-
 SECRET_KEY = "batch-ai-platform-secret-change-in-production"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
@@ -278,14 +276,18 @@ def verify_google_token(token: str) -> dict:
 
     Raises HTTPException 401 on invalid/expired tokens.
     """
-    if not GOOGLE_CLIENT_ID:
+    # Read at call time, not import time: an import-time constant freezes
+    # whatever the env held when the module loaded, making config fixes
+    # invisible until a full process restart (and the error message a lie).
+    client_id = os.getenv("GOOGLE_CLIENT_ID")
+    if not client_id:
         raise HTTPException(
             status_code=500,
             detail="Google OAuth is not configured (GOOGLE_CLIENT_ID not set)",
         )
     try:
         idinfo = google_id_token.verify_oauth2_token(
-            token, google_requests.Request(), GOOGLE_CLIENT_ID
+            token, google_requests.Request(), client_id
         )
         if idinfo["iss"] not in ("accounts.google.com", "https://accounts.google.com"):
             raise ValueError("Invalid issuer")
