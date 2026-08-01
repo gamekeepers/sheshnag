@@ -187,7 +187,12 @@ def revoke_api_key(
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Revoke (deactivate) an API key. Owner/Admin only."""
+    """Revoke (deactivate) an API key. Owner/Admin only.
+
+    Refuses revocation when the key is a worker key and any of the org's
+    workers are actively processing a job, to prevent orphaning in-flight
+    batch assignments that could never report results.
+    """
     _require_membership(db, user, org_id, roles=["owner", "admin"])
 
     api_key = db.query(ApiKey).filter(
@@ -196,6 +201,17 @@ def revoke_api_key(
     ).first()
     if not api_key:
         raise HTTPException(status_code=404, detail="API key not found")
+
+    if api_key.key_type == "worker":
+        busy = db.query(Worker).filter(
+            Worker.org_id == org_id,
+            Worker.activity == "busy",
+        ).count()
+        if busy > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot revoke: {busy} worker(s) currently processing jobs. Wait for jobs to finish or force-revoke.",
+            )
 
     api_key.status = "revoked"
     api_key.revoked_at = unix_now()

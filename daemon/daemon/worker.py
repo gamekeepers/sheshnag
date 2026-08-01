@@ -145,6 +145,14 @@ class Worker:
             except asyncio.CancelledError:
                 logger.info("Main loop cancelled")
                 break
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 401:
+                    # API key revoked or expired — non-recoverable, shut down
+                    logger.error(
+                        f"HTTP 401 from backend — API key likely revoked. Shutting down."
+                    )
+                    break
+                logger.error(f"Recoverable HTTP error in main loop: {exc}", exc_info=True)
             except (httpx.HTTPError, OSError, ValueError, json.JSONDecodeError) as exc:
                 # Catch only recoverable errors — let fatal exceptions
                 # (MemoryError, SystemExit, KeyboardInterrupt) propagate
