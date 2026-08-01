@@ -850,6 +850,10 @@ export default function DashboardPage() {
           <div className={`nav-item ${activeTab === 'files' ? 'active' : ''}`} onClick={() => setActiveTab('files')}>
             <span className="ic">📁</span> Files
           </div>
+
+          <div className="nav-item" onClick={() => router.push('/provider')} title="Manage your organization's workers">
+            <span className="ic">🖥️</span> Provider portal →
+          </div>
         </nav>
 
         <div className="sidebar-bottom">
