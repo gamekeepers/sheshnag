@@ -10,7 +10,8 @@ from typing import Optional
 from database import get_db
 from models import (
     ApiKey, Organization, OrganizationMembership, OrganizationInvite,
-    Worker, User, get_org_owner, unix_now,
+    Worker, WorkerRuntime, RuntimeModel, WorkerGpu,
+    Batch, BatchAssignment, User, get_org_owner, unix_now,
     generate_org_id, generate_membership_id,
 )
 from auth import (
@@ -276,6 +277,211 @@ def list_org_workers(
             for w in workers
         ],
     }
+
+
+# ═══════════════════════════════════════════════════════════
+# PROVIDER PORTAL (spec §15 — expanded design 2026-08-01)
+# ═══════════════════════════════════════════════════════════
+
+class OrgRenameRequest(BaseModel):
+    name: str
+
+
+@router.put("/orgs/{org_id}")
+def rename_org(
+    org_id: str,
+    req: OrgRenameRequest,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Rename an organization. Owner/admin only."""
+    _require_membership(db, user, org_id, roles=["owner", "admin"])
+
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Organization name cannot be empty")
+
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    org.name = name
+    db.commit()
+    return {"id": org.id, "name": org.name}
+
+
+@router.get("/orgs/{org_id}/batches")
+def list_org_served_batches(
+    org_id: str,
+    limit: int = 100,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Batches served by this org's workers — provider view (spec §15).
+
+    BatchSummary shape only: metadata, never input files or prompt content.
+    """
+    _require_membership(db, user, org_id)
+
+    rows = (
+        db.query(Batch, BatchAssignment, Worker)
+        .join(BatchAssignment, BatchAssignment.batch_id == Batch.id)
+        .join(Worker, Worker.id == BatchAssignment.worker_id)
+        .filter(Worker.org_id == org_id)
+        .order_by(BatchAssignment.assigned_at.desc())
+        .limit(max(1, min(limit, 500)))
+        .all()
+    )
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": b.id,
+                "object": "batch",
+                "endpoint": b.endpoint,
+                "model": b.model,
+                "status": b.status,
+                "created_at": b.created_at,
+                "completed_at": b.completed_at,
+                "request_counts": {
+                    "total": b.request_counts_total or 0,
+                    "completed": b.request_counts_completed or 0,
+                    "failed": b.request_counts_failed or 0,
+                },
+                "worker_id": w.id,
+                "worker_hostname": w.hostname,
+                "assigned_at": a.assigned_at,
+            }
+            for b, a, w in rows
+        ],
+    }
+
+
+@router.get("/orgs/{org_id}/stats")
+def org_served_stats(
+    org_id: str,
+    days: int = 7,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Contribution aggregates for the provider portal (spec §15).
+
+    Counts requests served (no token accounting on batches yet — that
+    lands with real usage metering, §16).
+    """
+    _require_membership(db, user, org_id)
+
+    since = unix_now() - max(1, min(days, 365)) * 86400
+    rows = (
+        db.query(Batch, BatchAssignment, Worker)
+        .join(BatchAssignment, BatchAssignment.batch_id == Batch.id)
+        .join(Worker, Worker.id == BatchAssignment.worker_id)
+        .filter(Worker.org_id == org_id, BatchAssignment.assigned_at >= since)
+        .all()
+    )
+
+    totals = {"jobs": 0, "completed": 0, "failed": 0, "in_progress": 0, "requests_completed": 0}
+    by_model, by_worker = {}, {}
+    for b, _a, w in rows:
+        totals["jobs"] += 1
+        if b.status in totals:
+            totals[b.status] += 1
+        reqs = b.request_counts_completed or 0
+        totals["requests_completed"] += reqs
+
+        m = by_model.setdefault(b.model or "unknown", {"jobs": 0, "requests_completed": 0})
+        m["jobs"] += 1
+        m["requests_completed"] += reqs
+
+        wk = by_worker.setdefault(w.id, {"hostname": w.hostname, "jobs": 0, "requests_completed": 0})
+        wk["jobs"] += 1
+        wk["requests_completed"] += reqs
+
+    return {
+        "window_days": days,
+        "totals": totals,
+        "by_model": [{"model": k, **v} for k, v in sorted(by_model.items(), key=lambda kv: -kv[1]["requests_completed"])],
+        "by_worker": [{"worker_id": k, **v} for k, v in sorted(by_worker.items(), key=lambda kv: -kv[1]["requests_completed"])],
+    }
+
+
+@router.post("/orgs/{org_id}/workers/{worker_id}/drain")
+def drain_worker(
+    org_id: str,
+    worker_id: str,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Stop routing new jobs to a worker; it finishes its current batch.
+
+    Owner/admin only. Heartbeats preserve the draining state; the sweeper
+    still marks a silent draining worker offline.
+    """
+    _require_membership(db, user, org_id, roles=["owner", "admin"])
+
+    worker = db.query(Worker).filter(Worker.id == worker_id, Worker.org_id == org_id).first()
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found in this organization")
+    if worker.status == "offline":
+        raise HTTPException(status_code=409, detail="Worker is offline; nothing to drain")
+
+    worker.status = "draining"
+    db.commit()
+    return {"id": worker.id, "status": worker.status}
+
+
+@router.post("/orgs/{org_id}/workers/{worker_id}/undrain")
+def undrain_worker(
+    org_id: str,
+    worker_id: str,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return a draining worker to the pool. Owner/admin only."""
+    _require_membership(db, user, org_id, roles=["owner", "admin"])
+
+    worker = db.query(Worker).filter(Worker.id == worker_id, Worker.org_id == org_id).first()
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found in this organization")
+    if worker.status != "draining":
+        raise HTTPException(status_code=409, detail=f"Worker is {worker.status}, not draining")
+
+    worker.status = "online"
+    db.commit()
+    return {"id": worker.id, "status": worker.status}
+
+
+@router.delete("/orgs/{org_id}/workers/{worker_id}")
+def remove_worker(
+    org_id: str,
+    worker_id: str,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove an offline worker and its inventory. Owner/admin only.
+
+    Batch assignment history is kept (the batches themselves are the
+    record); the served-jobs join simply stops resolving the hostname.
+    """
+    _require_membership(db, user, org_id, roles=["owner", "admin"])
+
+    worker = db.query(Worker).filter(Worker.id == worker_id, Worker.org_id == org_id).first()
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found in this organization")
+    if worker.status != "offline":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Worker is {worker.status}; drain it and wait for offline before removing",
+        )
+
+    runtime_ids = [rt.id for rt in worker.runtimes]
+    if runtime_ids:
+        db.query(RuntimeModel).filter(RuntimeModel.runtime_id.in_(runtime_ids)).delete(synchronize_session=False)
+        db.query(WorkerRuntime).filter(WorkerRuntime.id.in_(runtime_ids)).delete(synchronize_session=False)
+    db.query(WorkerGpu).filter(WorkerGpu.worker_id == worker.id).delete(synchronize_session=False)
+    db.delete(worker)
+    db.commit()
+    return {"id": worker_id, "deleted": True}
 
 
 # ═══════════════════════════════════════════════════════════

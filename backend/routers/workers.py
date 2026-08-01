@@ -185,7 +185,10 @@ def worker_heartbeat(
 
     worker = _get_org_worker(db, org, worker_id)
 
-    worker.status = "online"
+    # Heartbeats prove liveness but must not undo an operator's drain
+    # (spec §15: drain = finish current batch, take no more).
+    if worker.status != "draining":
+        worker.status = "online"
     worker.activity = req.activity
     worker.last_heartbeat = unix_now()
     worker.vram_total_gb = req.vram_total_gb
@@ -231,6 +234,10 @@ def poll_job(
 ):
     _api_key, org = ctx
     worker = _get_org_worker(db, org, req.worker_id)
+
+    # A draining worker finishes its current batch but takes nothing new.
+    if worker.status == "draining":
+        return {"job": None}
 
     available_batches = (
         db.query(Batch)

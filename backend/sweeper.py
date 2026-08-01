@@ -55,7 +55,7 @@ def sweep_stale_workers(db) -> tuple[int, int]:
     """
     cutoff = unix_now() - HEARTBEAT_TIMEOUT_SECONDS
     stale_workers = db.query(Worker).filter(
-        Worker.status == "online",
+        Worker.status.in_(("online", "draining")),
         Worker.last_heartbeat < cutoff,
     ).all()
 
