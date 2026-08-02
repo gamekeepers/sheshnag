@@ -2,10 +2,23 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import asyncio
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
+_CORS_ORIGINS = [o for o in os.getenv("CORS_ORIGINS", "*").split(",") if o]
+_ALLOW_CREDS = "*" not in _CORS_ORIGINS
+
+app = FastAPI(title="Batch AI Compute Platform")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_CORS_ORIGINS,
+    allow_credentials=_ALLOW_CREDS,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 from routers import files, batches, workers, auth, users, organizations, models as models_router
 from models import User, Organization, OrganizationMembership
 from auth import hash_password
@@ -16,16 +29,6 @@ from sweeper import run_sweeper
 Base.metadata.create_all(bind=engine)
 run_startup_migrations(engine)
 seed_model_catalog()
-
-app = FastAPI(title="Batch AI Compute Platform")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 app.include_router(auth.router,      prefix="/v1",      tags=["Auth"])
 app.include_router(files.router,     prefix="/v1",      tags=["Files"])

@@ -60,7 +60,7 @@ journalctl --user -u gpu-daemon -f
 1. CLI args passed in the unit's `ExecStart`
 2. Environment variables (`DAEMON_*`) set in `~/.gpu-daemon/.env`
 3. YAML config: `~/.gpu-daemon/config.yaml`
-4. Defaults (see [[docs/setup.md]](setup.md))
+4. Defaults (see [setup.md](setup.md))
 
 The unit reads `EnvironmentFile=-%h/.gpu-daemon/.env` so you can override any daemon setting without editing the unit.
 
@@ -221,5 +221,5 @@ sudo loginctl enable-linger worker-user
 
 ## See also
 
-- **Setup guide** — [[docs/setup.md]](setup.md) (prerequisites, env vars, quick start)
+- **Setup guide** — [setup.md](setup.md) (prerequisites, env vars, quick start)
 - **Daemon README** — [`daemon/README.md`](../daemon/README.md) (architecture, config details, API contract)

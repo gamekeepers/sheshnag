@@ -11,10 +11,27 @@ import secrets
 import hashlib
 import os
 
-from google.oauth2 import id_token as google_id_token
-from google.auth.transport import requests as google_requests
+import logging
 
-SECRET_KEY = os.getenv("SECRET_KEY", "batch-ai-platform-secret-change-in-production")
+from google.oauth2 import id_token as google_id_token
+
+_DEFAULT_SECRET_KEY = "batch-ai-platform-secret-change-in-production"
+_SECRET_KEY_ENV = os.getenv("SECRET_KEY")
+
+if not _SECRET_KEY_ENV:
+    raise RuntimeError(
+        "SECRET_KEY is not set. Generate one with: openssl rand -hex 32\n"
+        "Hint: export SECRET_KEY=$(openssl rand -hex 32) before starting uvicorn."
+    )
+
+SECRET_KEY = _SECRET_KEY_ENV
+
+if SECRET_KEY == _DEFAULT_SECRET_KEY:
+    raise RuntimeError(
+        "SECRET_KEY is still the default value. This is insecure for production.\n"
+        "Generate one with: openssl rand -hex 32"
+    )
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
@@ -24,15 +41,24 @@ security = HTTPBearer()
 # ─── Password Helpers ───────────────────────────────────────
 
 def hash_password(password: str) -> str:
+    p = password.encode("utf-8")
+    if len(p) > 72:
+        raise HTTPException(
+            status_code=400,
+            detail="Password must be 72 bytes or fewer characters",
+        )
     return _bcrypt.hashpw(
-        password.encode("utf-8"),
+        p,
         _bcrypt.gensalt(),
     ).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
+    p = plain.encode("utf-8")
+    if len(p) > 72:
+        return False
     return _bcrypt.checkpw(
-        plain.encode("utf-8"),
+        p,
         hashed.encode("utf-8"),
     )
 

@@ -16,6 +16,7 @@ ExecStart=/bin/sh -c 'cd %h/.sheshnag && npm start -- -p 3000'
 EnvironmentFile=-%h/.sheshnag/.env.local
 Restart=always
 RestartSec=10
+TimeoutStartSec=900
 
 [Install]
 WantedBy=default.target

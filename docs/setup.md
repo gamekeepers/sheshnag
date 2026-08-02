@@ -7,11 +7,11 @@ Single source of truth for getting the platform running. Everything in this doc 
 | Requirement | Version | Notes |
 |---|---|---|
 | Python | 3.10+ | Backend and daemon both need it |
-| Node.js | 18+ (19 recommended) | Next.js 16 runtime; engine field is `>=18.18.0` |
+| Node.js | 20+ (LTS) | Next.js 16 runtime; engine field is `>=18.18.0` |
 | npm | 10+ | Ships with Node.js 20+ |
 | Ollama **or** vLLM | any recent | Runtime for inference; Ollama is default for the daemon |
 
-No sudo required for local development. Production and rootless service setup are covered in [[docs/services.md]](services.md).
+No sudo required for local development. Production and rootless service setup are covered in [docs/services.md](services.md).
 
 ## Quick start (localhost)
 
@@ -28,7 +28,7 @@ cp backend/.env.example backend/.env
 cd backend
 pip install -r requirements.txt
 # Edit backend/.env — at minimum set GOOGLE_CLIENT_ID for OAuth sign-in
-python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 A default superadmin is created on startup: `admin@platform.com` / `admin`. You will be asked to change the password on first login.
@@ -41,7 +41,7 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:3000>.
+Open [http://localhost:3000](http://localhost:3000).
 
 ### 3. Daemon (on a GPU worker machine)
 
@@ -91,15 +91,16 @@ Every variable the platform reads at runtime. Defaults are pulled from live code
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `SECRET_KEY` | yes (change in prod) | `batch-ai-platform-secret-change-in-production` | JWT signing key |
+| `SECRET_KEY` | yes (change in prod) | _(see below)_ | JWT signing key. The code ships a default for dev only; at startup a WARNING is logged if you haven't changed it. Generate one with: `openssl rand -hex 32`. |
 | `DATABASE_URL` | no | `sqlite:///./jobs.db` | SQLAlchemy connection string. Swap for PostgreSQL in production. |
-| `GOOGLE_CLIENT_ID` | if Google OAuth | _(must set)_ | Must match the client ID registered with Google, and must also be the same value as `NEXT_PUBLIC_GOOGLE_CLIENT_ID` |
-| `FRONTEND_URL` | no | `http://localhost:3000` | Base URL used in password-reset and invite email links |
-| `MAILGUN_API_KEY` | no | — | Mailgun API key. If unset, email sending is gracefully skipped |
-| `MAILGUN_DOMAIN` | no | — | Mailgun domain. Required alongside `MAILGUN_API_KEY` for emails to work |
-| `MAILGUN_FROM` | no | `Sheshnag support <noreply@sheshnag.io>` | Default sender address for platform emails |
+| `GOOGLE_CLIENT_ID` | if Google OAuth | _(must set)_ | Must match the client ID registered with Google, and must also be the same value as `NEXT_PUBLIC_GOOGLE_CLIENT_ID`. |
+| `FRONTEND_URL` | no | `http://localhost:3000` | Base URL used in password-reset and invite email links. |
+| `MAILGUN_API_KEY` | no | — | Mailgun API key. If unset, email sending is gracefully skipped. |
+| `MAILGUN_DOMAIN` | no | — | Mailgun domain. Required alongside `MAILGUN_API_KEY` for emails to work. |
+| `MAILGUN_FROM` | no | `Sheshnag support <noreply@sheshnag.io>` | Default sender address for platform emails. |
+| `CORS_ORIGINS` | no | `"*"` (all origins) | Comma-separated list of allowed origins for CORS. Keep the default for local dev; set to your frontend URL(s) in production. See also the [credentials warning](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS/Errors/CORSMissingAllowCredentialsWildcard). |
 
-**Old `.env` caveat:** `CORS_ORIGINS` was listed in `.env.example` but does nothing. CORS origins are hardcoded to `["*"]` in `main.py`. Remove the variable from your `.env`.
+**Old `.env` caveat:** An old `CORS_ORIGINS` entry in `backend/.env.example` did nothing (origins were hardcoded to `["*"]`). This PR wires it via env — no code change needed at deploy time.
 
 ### Daemon (`daemon/`)
 
@@ -128,18 +129,18 @@ See `daemon/README.md` for full CLI flag and YAML config details.
 
 Before deploying to production, address each item and note whether it requires a code change or just configuration.
 
-- [ ] **`SECRET_KEY`** — set a strong, random value in `backend/.env`. Currently configurable via env var (Phase 1 wired it).
+- [ ] **`SECRET_KEY`** — set a strong random value (e.g., `openssl rand -hex 32`). At startup the app logs a WARNING if the default is still in use.
 - [ ] **Database backend** — swap `DATABASE_URL` from SQLite to PostgreSQL. Configurable via env; no code change needed.
-- [ ] **CORS hardening** — `main.py` currently allows all origins (`["*"]`). Tighten by replacing the wildcard for your frontend domain before going live. Requires a one-line edit in `backend/main.py:24`.
-- [ ] **HTTPS** — put a reverse proxy (Nginx, Caddy) in front of both frontend and backend. See [[docs/services.md]](services.md) admin appendix.
+- [ ] **CORS origins** — set `CORS_ORIGINS` to your frontend URL(s) instead of `"*"`. Also review `allow_credentials=True` — browsers reject wildcard origins with credentials enabled, so you must list concrete origins when using cookies or auth headers.
+- [ ] **HTTPS** — put a reverse proxy (Nginx, Caddy) in front of both frontend and backend. See [docs/services.md](services.md) admin appendix.
 - [ ] **Google OAuth** — register your production domain with Google Cloud Console. Set the same `GOOGLE_CLIENT_ID` in both `.env` and `backend/.env`.
 - [ ] **Email (Mailgun)** — configure `MAILGUN_*` vars for password reset, invites, and notifications. Gracefully skipped if unset, but you lose email functionality.
-- [ ] **Reverse proxy** — route `/api/` to backend :8000, `/` to frontend :3000. See [[docs/services.md]](services.md) admin appendix.
+- [ ] **Reverse proxy** — route `/api/` to backend :8000, `/` to frontend :3000. See [docs/services.md](services.md) admin appendix.
 
 ---
 
 ## See also
 
-- **Rootless services (systemd --user)** — [[docs/services.md]](services.md)
-- **Google OAuth setup** — [[docs/google_oauth.md]](google_oauth.md)
+- **Rootless services (systemd --user)** — [docs/services.md](services.md)
+- **Google OAuth setup** — [docs/google_oauth.md](google_oauth.md)
 - **Component-specific details** — [`backend/README.md`](../backend/README.md), [`daemon/README.md`](../daemon/README.md)
