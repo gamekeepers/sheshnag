@@ -59,24 +59,24 @@ export default function GoogleAuthButton({ setError, setLoading, loading }) {
   return (
     <>
     <div style={{ display: 'flex', alignItems: 'center', margin: '20px 0' }}>
-      <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.1)' }} />
-      <span style={{ padding: '0 10px', fontSize: '12px', color: 'rgba(255,255,255,0.4)' }}>OR</span>
-      <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.1)' }} />
+      <div style={{ flex: 1, height: '1px', background: 'rgba(22,24,45,0.12)' }} />
+      <span style={{ padding: '0 10px', fontSize: '12px', color: 'rgba(22,24,45,0.45)' }}>OR</span>
+      <div style={{ flex: 1, height: '1px', background: 'rgba(22,24,45,0.12)' }} />
     </div>
     <div style={{ position: 'relative', width: '100%', marginTop: '12px' }}>
       {/* Custom Button styling to match "Create account" / "Log in" */}
       <button
         disabled={loading}
         style={{
-          width: '100%', 
-          padding: '12px', 
-          background: 'transparent',
-          border: '1px solid rgba(255,255,255,0.25)', 
-          color: loading ? 'rgba(255,255,255,0.4)' : '#fff',
-          borderRadius: '24px', 
-          fontSize: '14px', 
+          width: '100%',
+          padding: '12px',
+          background: '#fff',
+          border: '1px solid rgba(22,24,45,0.2)',
+          color: loading ? 'rgba(22,24,45,0.35)' : '#16182d',
+          borderRadius: '999px',
+          fontSize: '14px',
           fontWeight: 500,
-          cursor: loading ? 'default' : 'pointer', 
+          cursor: loading ? 'default' : 'pointer',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',

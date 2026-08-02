@@ -621,7 +621,7 @@ def invite_member(
         org_name = org.name if org else "an organization"
         send_email(
             req.email,
-            f"You're invited to join {org_name} on Moonknight",
+            f"You're invited to join {org_name} on Sheshnag",
             f"{user.full_name} invited you to join '{org_name}' as {req.role}.\n\n"
             f"Click here to accept: {join_link}\n\n"
             f"This invite expires in 7 days.\n"

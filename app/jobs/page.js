@@ -9,14 +9,14 @@ const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 /* Terminal statuses — leaf states in backend VALID_TRANSITIONS (empty allowed list) */
 const TERMINAL_STATUSES = ['completed', 'failed'];
 
-function MoonknightLogo({ size = 28 }) {
+function SheshnagLogo({ size = 28 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: size / 4 }}>
       <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
-        <circle cx="16" cy="16" r="12" fill="#fff" />
-        <circle cx="20" cy="13" r="10" fill="#0a0a0a" />
+        <path d="M22.5 6.5C11.5 5.5 9.5 13 15.5 15.6C21.5 18.2 23 25.5 11 26.5" stroke="#fff" strokeWidth="3.2" strokeLinecap="round"/>
+        <circle cx="23" cy="6.7" r="2.2" fill="#fff"/>
       </svg>
-      <span style={{ color: '#fff', fontSize: size * 0.45, fontWeight: 500, letterSpacing: '0.12em' }}>MOONKNIGHT</span>
+      <span style={{ color: '#fff', fontSize: size * 0.45, fontWeight: 500, letterSpacing: '0.12em' }}>SHESHNAG</span>
     </div>
   );
 }
@@ -192,7 +192,7 @@ export default function JobsPage() {
       {/* Sidebar */}
       <div className="w-48 bg-[#111] border-r border-[#2a2a2a] flex flex-col py-4 flex-shrink-0">
         <div className="px-4 pb-4 mb-3 border-b border-[#2a2a2a]">
-          <Link href="/"><MoonknightLogo size={24} /></Link>
+          <Link href="/"><SheshnagLogo size={24} /></Link>
         </div>
         <div className="flex-1">
           <p className="px-4 text-[10px] text-[#555] uppercase tracking-widest mb-2">Manage</p>

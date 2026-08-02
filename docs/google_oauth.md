@@ -1,6 +1,6 @@
-# Google sign-in (OAuth/OIDC) — how Moonknight implements it
+# Google sign-in (OAuth/OIDC) — how Sheshnag implements it
 
-This doc covers Moonknight specifics only; for how OAuth/OIDC works as a
+This doc covers Sheshnag specifics only; for how OAuth/OIDC works as a
 mechanism, see any OIDC primer (the flow below assumes you know an ID token
 is a signed JWT verified against Google's public keys).
 
@@ -18,7 +18,7 @@ POST /v1/auth/google {id_token}
              1. lookup users.google_id == token.sub   → login
              2. else lookup by normalized email       → link (auth_provider="both")
              3. else create user + personal org       → is_new_user=true
-        ◀── Moonknight JWT (GoogleTokenOut) — Google token discarded
+        ◀── Sheshnag JWT (GoogleTokenOut) — Google token discarded
 completeLogin(): store token, fetch /v1/auth/me, route by role
 ```
 
