@@ -2,7 +2,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Tuple
 
 from jose import jwt, JWTError
-from passlib.context import CryptContext
+import bcrypt as _bcrypt
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
@@ -14,22 +14,27 @@ import os
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 
-SECRET_KEY = "batch-ai-platform-secret-change-in-production"
+SECRET_KEY = os.getenv("SECRET_KEY", "batch-ai-platform-secret-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
 
 
 # ─── Password Helpers ───────────────────────────────────────
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return _bcrypt.hashpw(
+        password.encode("utf-8"),
+        _bcrypt.gensalt(),
+    ).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    return _bcrypt.checkpw(
+        plain.encode("utf-8"),
+        hashed.encode("utf-8"),
+    )
 
 
 # ─── JWT ────────────────────────────────────────────────────
