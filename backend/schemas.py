@@ -1,5 +1,28 @@
-from pydantic import Field, BaseModel
-from typing import Literal, Optional, List
+from pydantic import AfterValidator, Field, BaseModel
+from typing import Annotated, Literal, Optional, List
+
+
+# bcrypt only hashes the first 72 bytes of a password. Storing the hash of a
+# silently-truncated prefix is worse than refusing the input, so passwords that
+# will be hashed are bounded at the edge.
+BCRYPT_MAX_BYTES = 72
+
+
+def _within_bcrypt_limit(value: str) -> str:
+    if len(value.encode("utf-8")) > BCRYPT_MAX_BYTES:
+        raise ValueError(f"password must be at most {BCRYPT_MAX_BYTES} bytes when UTF-8 encoded")
+    return value
+
+
+# max_length publishes the bound in the OpenAPI schema; the validator does the
+# real check, because 72 characters can exceed 72 bytes once they aren't ASCII.
+# Applied only to passwords being *set* — passwords being *checked* stay plain
+# `str` so a wrong password keeps returning 401 rather than 422.
+NewPassword = Annotated[
+    str,
+    Field(max_length=BCRYPT_MAX_BYTES),
+    AfterValidator(_within_bcrypt_limit),
+]
 
 
 class FileOut(BaseModel):
@@ -97,7 +120,7 @@ class BatchCreate(BaseModel):
 
 class SignupRequest(BaseModel):
     email: str
-    password: str
+    password: NewPassword
     full_name: str
 
 
@@ -108,7 +131,7 @@ class LoginRequest(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     old_password: str
-    new_password: str
+    new_password: NewPassword
 
 
 class UserOut(BaseModel):
@@ -177,7 +200,7 @@ class ForgotPasswordRequest(BaseModel):
 
 class ResetPasswordRequest(BaseModel):
     token: str
-    new_password: str
+    new_password: NewPassword
 
 
 class GoogleAuthRequest(BaseModel):

@@ -3,7 +3,7 @@ uvicorn
 sqlalchemy
 python-multipart
 python-jose[cryptography]   # import: from jose import jwt
-passlib[bcrypt]              # import: from passlib.context import CryptContext
+bcrypt                      # import: bcrypt.hashpw / bcrypt.checkpw (replaces passlib)
 python-dotenv                # import: from dotenv import load_dotenv
 requests                     # for Mailgun email service
 pyyaml>=6.0                  # model catalogue manifest (catalog/models.yaml)

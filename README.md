@@ -17,6 +17,11 @@ results.
 
 ## Quick start
 
+> Canonical setup guide: **[docs/setup.md](docs/setup.md)** — prerequisites,
+> the full environment-variable reference, and the production checklist.
+> Running as services (rootless `systemctl --user`): **[docs/services.md](docs/services.md)**.
+> What follows is the 60-second version.
+
 **Backend** (port 8000):
 
 ```bash

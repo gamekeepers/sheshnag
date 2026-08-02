@@ -13,7 +13,7 @@
 set -euo pipefail
 
 echo "==========================================="
-echo "   MoonKnight Worker Daemon Installer"
+echo "   Sheshnag GPU Worker Daemon Installer"
 echo "==========================================="
 
 if [ "$EUID" -eq 0 ]; then

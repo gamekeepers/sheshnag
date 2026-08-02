@@ -1,0 +1,20 @@
+# systemd USER unit — Sheshnag Control Plane (backend, uvicorn)
+# Install to ~/.config/systemd/user/ and manage with `systemctl --user`.
+# Rootless by design: everything under user's home directory.
+# %h expands to the user's home directory.
+
+[Unit]
+Description=Sheshnag Backend API (uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.sheshnag/backend
+ExecStart=%h/.sheshnag/venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
+EnvironmentFile=-%h/.sheshnag/backend/.env
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

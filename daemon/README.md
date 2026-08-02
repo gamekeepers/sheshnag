@@ -69,8 +69,8 @@ non-interactive installs).
 
 **Terminal 1 — Mock Backend:**
 ```bash
-pip install fastapi uvicorn python-multipart
 cd daemon
+pip install -r tests/requirements.txt
 python -m tests.mock_backend
 ```
 

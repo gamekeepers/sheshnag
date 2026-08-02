@@ -1,0 +1,5 @@
+# Dependencies for the mock backend / mock vLLM harness in this directory.
+# Not needed to run the daemon itself — see ../requirements.txt for that.
+fastapi          # mock_backend.py, mock_vllm.py
+uvicorn          # serves both mocks
+python-multipart # mock_backend.py accepts multipart file uploads

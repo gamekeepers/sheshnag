@@ -1,8 +1,8 @@
 # systemd USER unit — install to ~/.config/systemd/user/ and manage with
-# `systemctl --user`. Rootless by design: the daemon lives entirely under
-# ~/.gpu-daemon (see scripts/install.sh). %h expands to the user's home.
+# `systemctl --user`. Rootless by design: everything under ~/.gpu-daemon.
+# %h expands to the user's home directory.
 [Unit]
-Description=MoonKnight GPU Worker Daemon
+Description=Sheshnag GPU Worker Daemon
 After=network-online.target ollama.service
 Wants=network-online.target
 

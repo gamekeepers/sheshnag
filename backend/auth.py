@@ -2,7 +2,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Tuple
 
 from jose import jwt, JWTError
-from passlib.context import CryptContext
+import bcrypt as _bcrypt
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
@@ -11,25 +11,56 @@ import secrets
 import hashlib
 import os
 
+import logging
+
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 
-SECRET_KEY = "batch-ai-platform-secret-change-in-production"
+logger = logging.getLogger(__name__)
+
+# Dev fallback. Kept so `cp .env.example .env && uvicorn` still boots, but the
+# key is public (it lives in git history), so anything signed with it is
+# forgeable — hence the startup warning.
+_DEFAULT_SECRET_KEY = "batch-ai-platform-secret-change-in-production"
+
+SECRET_KEY = os.getenv("SECRET_KEY") or _DEFAULT_SECRET_KEY
+
+if SECRET_KEY == _DEFAULT_SECRET_KEY:
+    logger.warning(
+        "SECRET_KEY is unset or still the built-in default — JWTs are signed "
+        "with a publicly known key and can be forged. Do not run this way in "
+        "production. Generate one with: openssl rand -hex 32"
+    )
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
 
 
 # ─── Password Helpers ───────────────────────────────────────
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    p = password.encode("utf-8")
+    if len(p) > 72:
+        raise HTTPException(
+            status_code=400,
+            detail="Password must be 72 bytes or fewer characters",
+        )
+    return _bcrypt.hashpw(
+        p,
+        _bcrypt.gensalt(),
+    ).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    p = plain.encode("utf-8")
+    if len(p) > 72:
+        return False
+    return _bcrypt.checkpw(
+        p,
+        hashed.encode("utf-8"),
+    )
 
 
 # ─── JWT ────────────────────────────────────────────────────
