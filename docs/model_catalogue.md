@@ -137,6 +137,6 @@ onto a worker that lacks it — never run an arbitrary id.
 
 ## Related
 
-- Design/decisions (vault): *Moonknight - Batch processing via Ollama runtime*,
-  *Moonknight - Digest-based model matching*.
+- Design/decisions (vault): *Sheshnag - Batch processing via Ollama runtime*,
+  *Sheshnag - Digest-based model matching*.
 - Spec: v1-spec.md §5 (workloads) and §8.3 (model metadata).

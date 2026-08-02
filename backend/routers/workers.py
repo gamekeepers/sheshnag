@@ -128,6 +128,7 @@ def register_worker(
         ]
 
     if existing:
+        existing.api_key_id = _api_key.id
         existing.os = req.os
         existing.cpu_cores = cpu_cores
         existing.ram_total_gb = ram_gb
@@ -150,6 +151,7 @@ def register_worker(
 
     worker = Worker(
         org_id=org_id,
+        api_key_id=_api_key.id,
         hostname=req.hostname,
         os=req.os,
         cpu_cores=cpu_cores,
@@ -185,7 +187,10 @@ def worker_heartbeat(
 
     worker = _get_org_worker(db, org, worker_id)
 
-    worker.status = "online"
+    # Heartbeats prove liveness but must not undo an operator's drain
+    # (spec §15: drain = finish current batch, take no more).
+    if worker.status != "draining":
+        worker.status = "online"
     worker.activity = req.activity
     worker.last_heartbeat = unix_now()
     worker.vram_total_gb = req.vram_total_gb
@@ -231,6 +236,10 @@ def poll_job(
 ):
     _api_key, org = ctx
     worker = _get_org_worker(db, org, req.worker_id)
+
+    # A draining worker finishes its current batch but takes nothing new.
+    if worker.status == "draining":
+        return {"job": None}
 
     available_batches = (
         db.query(Batch)

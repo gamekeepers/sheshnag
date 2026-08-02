@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 MAILGUN_API_KEY = os.getenv("MAILGUN_API_KEY")
 MAILGUN_DOMAIN = os.getenv("MAILGUN_DOMAIN")
-MAILGUN_FROM = os.getenv("MAILGUN_FROM", "Moonknight support <noreply@moonknight.gamekeepers.in>")
+MAILGUN_FROM = os.getenv("MAILGUN_FROM", "Sheshnag support <noreply@sheshnag.io>")
 
 
 def send_email(to_email: str, subject: str, text: str) -> bool:
@@ -48,9 +48,9 @@ def send_password_reset_email(to_email: str, reset_token: str, frontend_url: str
 
     reset_link = f"{frontend_url}/reset-password?token={reset_token}"
 
-    subject = "Password Reset — Moonknight Platform"
+    subject = "Password Reset — Sheshnag Platform"
     text = (
-        f"You requested a password reset for your Moonknight account.\n\n"
+        f"You requested a password reset for your Sheshnag account.\n\n"
         f"Click the link below to reset your password:\n"
         f"{reset_link}\n\n"
         f"This link expires in 1 hour.\n"

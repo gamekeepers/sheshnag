@@ -9,15 +9,15 @@ import './dashboard.css';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
-function MoonknightLogo({ size = 22 }) {
+function SheshnagLogo({ size = 22 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
-        <circle cx="16" cy="16" r="12" fill="#fff" />
-        <circle cx="20" cy="13" r="10" fill="#06060a" />
+        <path d="M22.5 6.5C11.5 5.5 9.5 13 15.5 15.6C21.5 18.2 23 25.5 11 26.5" stroke="#fff" strokeWidth="3.2" strokeLinecap="round"/>
+        <circle cx="23" cy="6.7" r="2.2" fill="#fff"/>
       </svg>
       <span style={{ color: '#fff', fontSize: size * 0.63, fontWeight: 700, letterSpacing: '0.12em', fontFamily: 'IBM Plex Mono, monospace' }}>
-        MOONKNIGHT
+        SHESHNAG
       </span>
     </div>
   );
@@ -828,7 +828,7 @@ export default function DashboardPage() {
       {/* ================= SIDEBAR ================= */}
       <aside className="sidebar">
         <div className="logo">
-          <MoonknightLogo />
+          <SheshnagLogo />
         </div>
 
         <nav className="nav">
@@ -849,6 +849,10 @@ export default function DashboardPage() {
           </div>
           <div className={`nav-item ${activeTab === 'files' ? 'active' : ''}`} onClick={() => setActiveTab('files')}>
             <span className="ic">📁</span> Files
+          </div>
+
+          <div className="nav-item" onClick={() => router.push('/provider')} title="Manage your organization's workers">
+            <span className="ic">🖥️</span> Provider portal →
           </div>
         </nav>
 

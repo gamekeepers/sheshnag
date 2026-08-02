@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "MOONKNIGHT — AI Batch Processing",
+  title: "SHESHNAG — Shared GPU Compute",
   description: "Process thousands of prompts in one shot.",
 };
 

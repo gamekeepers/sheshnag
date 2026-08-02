@@ -16,14 +16,14 @@ function authHeaders() {
 }
 
 /* ── Logo ── */
-function MoonknightLogo({ size = 22 }) {
+function SheshnagLogo({ size = 22 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
-        <circle cx="16" cy="16" r="12" fill="#fff" />
-        <circle cx="20" cy="13" r="10" fill="#0f0f0f" />
+        <path d="M22.5 6.5C11.5 5.5 9.5 13 15.5 15.6C21.5 18.2 23 25.5 11 26.5" stroke="#fff" strokeWidth="3.2" strokeLinecap="round"/>
+        <circle cx="23" cy="6.7" r="2.2" fill="#fff"/>
       </svg>
-      <span style={{ color: '#fff', fontSize: size * 0.63, fontWeight: 500, letterSpacing: '0.1em' }}>MOONKNIGHT</span>
+      <span style={{ color: '#fff', fontSize: size * 0.63, fontWeight: 500, letterSpacing: '0.1em' }}>SHESHNAG</span>
     </div>
   );
 }
@@ -290,7 +290,7 @@ export default function AdminPage() {
       {/* ── SIDEBAR ── */}
       <div style={{ width: '210px', flexShrink: 0, backgroundColor: '#0f0f0f', borderRight: '1px solid #1e1e1e', display: 'flex', flexDirection: 'column', padding: '16px 0' }}>
         <div style={{ padding: '0 16px 16px', borderBottom: '1px solid #1e1e1e', marginBottom: '12px' }}>
-          <Link href="/"><MoonknightLogo size={22} /></Link>
+          <Link href="/"><SheshnagLogo size={22} /></Link>
           <div style={{ marginTop: '8px', padding: '3px 8px', borderRadius: '6px', backgroundColor: '#1a1a1a', border: '1px solid #2a2a2a', fontSize: '10px', color: '#555', letterSpacing: '0.08em', display: 'inline-block' }}>
             ADMIN PANEL
           </div>

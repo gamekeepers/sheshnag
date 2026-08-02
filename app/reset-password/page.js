@@ -2,17 +2,38 @@
 
 import { useState, Suspense } from 'react';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
-import ParticleField from '../components/ParticleField';
+import { useSearchParams } from 'next/navigation';
 
-function MoonknightLogo({ size = 28 }) {
+const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
+const INK = '#16182d';
+const MUTED = '#5c5f73';
+const PAPER = '#faf8f5';
+const LINE = 'rgba(22,24,45,0.12)';
+
+const inputStyle = (disabled) => ({
+  width: '100%', boxSizing: 'border-box',
+  background: disabled ? 'rgba(22,24,45,0.04)' : '#fff',
+  border: '1px solid rgba(22,24,45,0.2)',
+  borderRadius: 12, padding: '12px 14px', color: INK, fontSize: 15, outline: 'none',
+});
+
+const labelStyle = { fontSize: 13, color: MUTED, marginBottom: 6, display: 'block' };
+
+const primaryButtonStyle = (disabled) => ({
+  width: '100%', padding: '13px', borderRadius: 999, border: `1px solid ${INK}`,
+  background: INK, color: PAPER, fontSize: 15, fontWeight: 500,
+  cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.6 : 1,
+});
+
+function Logo({ size = 24 }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: size / 4 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
-        <circle cx="16" cy="16" r="12" fill="#fff" />
-        <circle cx="20" cy="13" r="10" fill="#0a0a0a" />
+        <path d="M22.5 6.5C11.5 5.5 9.5 13 15.5 15.6C21.5 18.2 23 25.5 11 26.5" stroke={INK} strokeWidth="3.2" strokeLinecap="round"/>
+        <circle cx="23" cy="6.7" r="2.2" fill={INK}/>
       </svg>
-      <span style={{ color: '#fff', fontSize: size * 0.45, fontWeight: 500, letterSpacing: '0.12em' }}>MOONKNIGHT</span>
+      <span style={{ color: INK, fontSize: size * 0.55, fontWeight: 700, letterSpacing: '0.14em' }}>SHESHNAG</span>
     </div>
   );
 }
@@ -43,18 +64,18 @@ function ResetPasswordForm() {
     setError('');
 
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'}/v1/auth/reset-password`, {
+      const res = await fetch(`${BACKEND}/v1/auth/reset-password`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+        headers: { 'Content-Type': 'application/json', ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }) },
         body: JSON.stringify({ token, new_password: password }),
       });
-      
+
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setError(data?.detail || 'Failed to reset password. Token may be expired.');
         return;
       }
-      
+
       setSuccess(true);
     } catch {
       setError('Cannot reach server. Please try again.');
@@ -65,18 +86,14 @@ function ResetPasswordForm() {
 
   if (success) {
     return (
-      <div className="text-center">
-        <div className="text-5xl mb-4">✅</div>
-        <h1 className="text-white text-2xl font-medium mb-2">
-          Password reset!
+      <div style={{ textAlign: 'center' }}>
+        <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontWeight: 400, fontSize: 30, margin: '0 0 10px' }}>
+          Password reset
         </h1>
-        <p className="text-[#555] text-sm mb-8">
-          Your password has been reset successfully.
+        <p style={{ color: MUTED, fontSize: 14.5, margin: '0 0 28px' }}>
+          Your password has been updated. Sign in with the new one.
         </p>
-        <Link
-          href="/login"
-          className="w-full block bg-white text-black py-3 rounded-full text-sm font-medium hover:bg-gray-100 text-center"
-        >
+        <Link href="/login" style={{ ...primaryButtonStyle(false), display: 'block', textAlign: 'center', textDecoration: 'none', boxSizing: 'border-box' }}>
           Back to login
         </Link>
       </div>
@@ -85,53 +102,47 @@ function ResetPasswordForm() {
 
   return (
     <>
-      <h1 className="text-white text-2xl font-medium text-center mb-2">
+      <h1 style={{ fontFamily: "Georgia, 'Times New Roman', serif", fontWeight: 400, fontSize: 30, textAlign: 'center', margin: '0 0 6px' }}>
         Reset password
       </h1>
-      <p className="text-[#555] text-sm text-center mb-6">
+      <p style={{ textAlign: 'center', color: MUTED, fontSize: 14.5, margin: '0 0 28px' }}>
         Enter your new password below.
       </p>
 
       {!token && (
-        <div className="bg-red-900/30 border border-red-500/50 p-3 rounded text-red-400 text-xs mb-4 text-center">
+        <div style={{ background: 'rgba(179,55,44,0.07)', border: '1px solid rgba(179,55,44,0.35)', borderRadius: 12, padding: '10px 14px', color: '#b3372c', fontSize: 13, textAlign: 'center', marginBottom: 16 }}>
           No reset token found in URL. Please request a new link.
         </div>
       )}
 
-      <div className="relative mb-4">
-        <label className="absolute -top-2 left-3 bg-[#0a0a0a] px-1 text-[11px] text-[#2d7dd6]">
-          New password
-        </label>
+      <div style={{ marginBottom: 16 }}>
+        <span style={labelStyle}>New password</span>
         <input
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           disabled={!token}
-          className="w-full bg-transparent border border-[#2d7dd6] rounded-full px-4 py-3 text-white text-sm outline-none focus:border-[#4d9cf8]"
+          autoComplete="new-password"
+          style={inputStyle(!token)}
         />
       </div>
 
-      <div className="relative mb-4">
-        <label className="absolute -top-2 left-3 bg-[#0a0a0a] px-1 text-[11px] text-[#2d7dd6]">
-          Confirm password
-        </label>
+      <div style={{ marginBottom: 16 }}>
+        <span style={labelStyle}>Confirm password</span>
         <input
           type="password"
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
           disabled={!token}
-          className="w-full bg-transparent border border-[#2d7dd6] rounded-full px-4 py-3 text-white text-sm outline-none focus:border-[#4d9cf8]"
+          autoComplete="new-password"
+          style={inputStyle(!token)}
         />
       </div>
 
-      {error && <p className="text-red-400 text-xs mb-3">{error}</p>}
+      {error && <p style={{ color: '#b3372c', fontSize: 13, marginBottom: 14 }}>{error}</p>}
 
-      <button
-        onClick={handleReset}
-        disabled={loading || !token}
-        className="w-full bg-white text-black py-3 rounded-full text-sm font-medium hover:bg-gray-100 disabled:opacity-50"
-      >
-        {loading ? 'Resetting...' : 'Reset password'}
+      <button onClick={handleReset} disabled={loading || !token} style={primaryButtonStyle(loading || !token)}>
+        {loading ? 'Resetting…' : 'Reset password'}
       </button>
     </>
   );
@@ -139,36 +150,18 @@ function ResetPasswordForm() {
 
 export default function ResetPasswordPage() {
   return (
-    <div style={{ background: '#050505', minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', fontFamily: 'sans-serif' }}>
-      <ParticleField />
-
-      {/* Top bar */}
-      <div style={{ position: 'relative', zIndex: 3, padding: '20px 28px' }}>
-        <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none' }}>
-          <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
-            <circle cx="16" cy="16" r="12" fill="#fff" />
-            <circle cx="20" cy="13" r="10" fill="#050505" />
-          </svg>
-          <span style={{ color: '#fff', fontSize: '14px', fontWeight: 500, letterSpacing: '0.12em' }}>MOONKNIGHT</span>
-        </Link>
+    <div style={{ background: PAPER, minHeight: '100vh', display: 'flex', flexDirection: 'column', color: INK, fontFamily: "'Geist', 'Inter', -apple-system, sans-serif" }}>
+      <div style={{ padding: '22px 28px' }}>
+        <Link href="/" style={{ textDecoration: 'none' }}><Logo /></Link>
       </div>
 
-      {/* Body */}
-      <div style={{ position: 'relative', zIndex: 3, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
-        <div style={{ width: '100%', maxWidth: '340px' }}>
-          <Suspense fallback={<div className="text-[#555] text-center text-sm">Loading...</div>}>
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+        <div style={{ width: '100%', maxWidth: 400, background: '#fff', border: `1px solid ${LINE}`, borderRadius: 20, padding: '36px 32px' }}>
+          <Suspense fallback={<div style={{ color: MUTED, textAlign: 'center', fontSize: 14 }}>Loading…</div>}>
             <ResetPasswordForm />
           </Suspense>
         </div>
       </div>
-
-      {/* Footer */}
-      <div className="text-center py-4 border-t border-[#1a1a1a]">
-        <Link href="#" className="text-[#444] text-xs underline mx-2">Terms of Use</Link>
-        <span className="text-[#444] text-xs">|</span>
-        <Link href="#" className="text-[#444] text-xs underline mx-2">Privacy Policy</Link>
-      </div>
-
     </div>
   );
 }
