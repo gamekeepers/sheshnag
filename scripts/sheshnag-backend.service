@@ -11,7 +11,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/.sheshnag/backend
-ExecStart=%h/.sheshnag/venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8001
+ExecStart=%h/.sheshnag/venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8000
 EnvironmentFile=-%h/.sheshnag/backend/.env
 Restart=always
 RestartSec=10

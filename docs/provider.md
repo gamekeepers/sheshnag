@@ -120,7 +120,7 @@ Use prefixes like `provider/` and `worker/` for API endpoints.
 2. Daemon developer
 Make daemon easy to install via bash script. For user it should be as simple as:    
 ```bash
-curl -sSL https://raw.githubusercontent.com/moonknight-ai/moonknight/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/gamekeepers/moonknight/main/scripts/install.sh | bash
 ```
 Make worker register upon installation.
 Query details from machine, package into a json payload, and send it to the backendapi.

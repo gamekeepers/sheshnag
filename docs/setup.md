@@ -45,21 +45,9 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ### 3. Daemon (on a GPU worker machine)
 
-Quick test against the backend with mock mode (no real GPUs needed):
-
-```bash
-cd daemon
-pip install fastapi uvicorn python-multipart
-
-# Terminal A — mock backend inside daemon/tests/
-python -m tests.mock_backend
-
-# Terminal B — start Ollama (or vLLM)
-ollama serve
-
-# Terminal C — daemon against mock backend
-python -m daemon.main --config config.yaml --api-key gk-test-anything
-```
+To try the daemon without a real backend or real GPUs, use mock mode — the
+walkthrough lives in [`daemon/README.md`](../daemon/README.md#quick-start),
+which is canonical for daemon-specific detail.
 
 For real usage you need an org worker API key from the dashboard:
 

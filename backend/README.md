@@ -2,6 +2,10 @@
 
 ## Quick Start
 
+Setup, environment variables, and the three-terminal walkthrough live in
+**[docs/setup.md](../docs/setup.md)** — the canonical setup guide. The short
+version:
+
 ```bash
 cd backend
 pip install -r requirements.txt
@@ -9,6 +13,9 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 **Interactive API docs:** [http://localhost:8000/docs](http://localhost:8000/docs) (Swagger UI)
+
+The rest of this file documents the API contract and is the reference for
+backend behaviour; it does not repeat setup instructions.
 
 ---
 

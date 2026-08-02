@@ -14,22 +14,22 @@ import os
 import logging
 
 from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
 
+logger = logging.getLogger(__name__)
+
+# Dev fallback. Kept so `cp .env.example .env && uvicorn` still boots, but the
+# key is public (it lives in git history), so anything signed with it is
+# forgeable — hence the startup warning.
 _DEFAULT_SECRET_KEY = "batch-ai-platform-secret-change-in-production"
-_SECRET_KEY_ENV = os.getenv("SECRET_KEY")
 
-if not _SECRET_KEY_ENV:
-    raise RuntimeError(
-        "SECRET_KEY is not set. Generate one with: openssl rand -hex 32\n"
-        "Hint: export SECRET_KEY=$(openssl rand -hex 32) before starting uvicorn."
-    )
-
-SECRET_KEY = _SECRET_KEY_ENV
+SECRET_KEY = os.getenv("SECRET_KEY") or _DEFAULT_SECRET_KEY
 
 if SECRET_KEY == _DEFAULT_SECRET_KEY:
-    raise RuntimeError(
-        "SECRET_KEY is still the default value. This is insecure for production.\n"
-        "Generate one with: openssl rand -hex 32"
+    logger.warning(
+        "SECRET_KEY is unset or still the built-in default — JWTs are signed "
+        "with a publicly known key and can be forged. Do not run this way in "
+        "production. Generate one with: openssl rand -hex 32"
     )
 
 ALGORITHM = "HS256"

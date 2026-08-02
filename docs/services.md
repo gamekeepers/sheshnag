@@ -12,6 +12,8 @@ Before running any of these:
    ```bash
    git clone https://github.com/gamekeepers/moonknight.git ~/.sheshnag
    ```
+   The remote is still named `moonknight` — the repository name lags the
+   product rename to Sheshnag. This is not a typo; clone it as shown.
 2. **Environment files ready** — copy and edit from `.env.example`:
    ```bash
    cp .env.example .env.local              # frontend
