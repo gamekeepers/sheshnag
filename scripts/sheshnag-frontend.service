@@ -1,0 +1,21 @@
+# systemd USER unit — Sheshnag Frontend (Next.js production server)
+# Install to ~/.config/systemd/user/ and manage with `systemctl --user`.
+# Rootless by design: everything under user's home directory.
+# %h expands to the user's home directory.
+
+[Unit]
+Description=Sheshnag Frontend (Next.js)
+After=network-online.target sheshnag-backend.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.sheshnag
+ExecStartPre=/bin/sh -c 'cd %h/.sheshnag && npm run build'
+ExecStart=/bin/sh -c 'cd %h/.sheshnag && npm start -- -p 3000'
+EnvironmentFile=-%h/.sheshnag/.env.local
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
