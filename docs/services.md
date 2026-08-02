@@ -120,7 +120,26 @@ Adjust the paths in the unit if your layout differs.
 
 ### Production note: CORS
 
-The backend currently allows all origins (`allow_origins=["*"]`). Before exposing the service publicly, edit `backend/main.py:24` to restrict origins to your frontend URL. This is a code change; env-backed CORS hardening would be nicer but requires touching one line.
+CORS origins are configured through `CORS_ORIGINS` in the backend env file — no
+code change is needed. It defaults to `*`, which is fine on a loopback dev box
+but should be narrowed before the service is reachable from anywhere else:
+
+```bash
+# in ~/.sheshnag/backend/.env
+CORS_ORIGINS=https://sheshnag.example.com
+```
+
+Comma-separate multiple origins. Setting concrete origins also flips
+`allow_credentials` on — browsers reject a wildcard origin when credentials are
+allowed, so the backend derives the two together rather than letting them be set
+independently. Restart the unit to pick up the change:
+
+```bash
+systemctl --user restart sheshnag-backend
+```
+
+See the [environment variable reference](setup.md#backend-backend) in the setup
+guide for the full list.
 
 ## 3. Frontend as user-level service
 
