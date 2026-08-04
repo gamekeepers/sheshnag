@@ -3,11 +3,38 @@ import logging
 from typing import Optional, List, Callable, Awaitable
 
 import httpx
+import jsonschema
 
 from daemon.executors.base import BaseExecutor
 from daemon.models import CompletionResult, PromptRequest
 
 logger = logging.getLogger(__name__)
+
+def parse_version(version_str: Optional[str]) -> tuple[int, ...]:
+    """Semantic version parser that handles pre-releases and v prefix."""
+    if not version_str:
+        return (0, 0, 0)
+    version_str = version_str.lower().strip()
+    if version_str.startswith("v"):
+        version_str = version_str[1:]
+    version_str = version_str.split("-")[0]
+    version_str = version_str.split("+")[0]
+    
+    parts = []
+    for part in version_str.split("."):
+        numeric_chars = []
+        for char in part:
+            if char.isdigit():
+                numeric_chars.append(char)
+            else:
+                break
+        if numeric_chars:
+            parts.append(int("".join(numeric_chars)))
+        else:
+            parts.append(0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts)
 
 class OllamaExecutor(BaseExecutor):
     """
@@ -19,12 +46,14 @@ class OllamaExecutor(BaseExecutor):
         GET  /api/tags     - list available models
         POST /api/pull     - download a model
         GET  /api/ps       - list running models
+        GET  /api/version  - get version info
     """
     
     def __init__(self, base_url: str = "http://localhost:11434", timeout: float = 300.0):
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._client: Optional[httpx.AsyncClient] = None
+        self.version: Optional[str] = None
         
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -39,6 +68,30 @@ class OllamaExecutor(BaseExecutor):
         Execute a prompt via Ollama's /api/chat endpoint.
         Translates from OpenAI format to Ollama's format, then back.
         """
+        # Lazy check version if not set
+        if self.version is None:
+            await self.health_check()
+            
+        response_format = prompt.body.get("response_format")
+        
+        # Version Gating: Refuse JSON mode if Ollama version < 0.5.0 (or undetermined)
+        if response_format is not None:
+            if self.version is None:
+                logger.error("Ollama version undetermined. Server might be unreachable.")
+                return CompletionResult(
+                    custom_id=prompt.custom_id,
+                    error="OLLAMA_UNREACHABLE: could not determine Ollama version — server may be down"
+                )
+            v_tuple = parse_version(self.version)
+            if v_tuple < (0, 5, 0):
+                logger.error(
+                    f"Ollama version {self.version} < 0.5.0 does not support structured outputs."
+                )
+                return CompletionResult(
+                    custom_id=prompt.custom_id,
+                    error=f"VERSION_MISMATCH: Ollama version {self.version} < 0.5.0 does not support structured outputs"
+                )
+
         client = self._get_client()
         ollama_body = self._translate_request(prompt.body)
         
@@ -47,6 +100,39 @@ class OllamaExecutor(BaseExecutor):
             response.raise_for_status()
             
             openai_response = self._translate_response(response.json())
+            
+            # Post-inference Validation
+            if response_format is not None:
+                # Extract message content
+                choices = openai_response.get("choices", [])
+                if not choices:
+                    raise ValueError("Response contains no choices")
+                content = choices[0].get("message", {}).get("content", "")
+                
+                # Parse JSON (for both loose and strict modes)
+                try:
+                    parsed_json = json.loads(content)
+                except json.JSONDecodeError as jde:
+                    logger.warning(f"Failed to parse JSON response for {prompt.custom_id}: {jde}")
+                    return CompletionResult(
+                        custom_id=prompt.custom_id,
+                        error=f"JSON_PARSE_ERROR: Response is not valid JSON: {str(jde)}"
+                    )
+                
+                # If strict mode, validate against schema
+                rf_type = response_format.get("type")
+                if rf_type == "json_schema":
+                    schema = response_format.get("json_schema", {}).get("schema")
+                    if schema is not None:
+                        try:
+                            jsonschema.validate(instance=parsed_json, schema=schema)
+                        except jsonschema.ValidationError as ve:
+                            logger.warning(f"Schema validation failed for {prompt.custom_id}: {ve}")
+                            return CompletionResult(
+                                custom_id=prompt.custom_id,
+                                error=f"SCHEMA_VIOLATION: Response JSON violates requested schema: {ve.message}"
+                            )
+            
             return CompletionResult(
                 custom_id=prompt.custom_id, 
                 response=openai_response
@@ -59,12 +145,22 @@ class OllamaExecutor(BaseExecutor):
             )
     
     async def health_check(self) -> bool:
-        """Check Ollama is running via GET /api/tags."""
+        """Check Ollama is running via GET /api/version and GET /api/tags."""
         client = self._get_client()
         try:
+            # Query version and cache it
+            version_response = await client.get("/api/version", timeout=5.0)
+            version_response.raise_for_status()
+            self.version = version_response.json().get("version")
+            if not self.version:
+                logger.warning("Retrieved empty version from Ollama")
+                return False
+            logger.info(f"Ollama version detected: {self.version}")
+                
             response = await client.get("/api/tags", timeout=5.0)
             return response.status_code == 200
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Ollama health check or version retrieval failed: {e}")
             return False
             
     async def pull_model(self, model_name: str, progress_callback: Optional[Callable[[dict], Awaitable[None]]] = None) -> bool:
@@ -124,7 +220,7 @@ class OllamaExecutor(BaseExecutor):
             
     def _translate_request(self, openai_body: dict) -> dict:
         """OpenAI chat format -> Ollama chat format."""
-        return {
+        translated = {
             "model": openai_body.get("model", ""),
             "messages": openai_body.get("messages", []),
             "stream": False,
@@ -133,6 +229,19 @@ class OllamaExecutor(BaseExecutor):
                 "num_predict": openai_body.get("max_tokens", 512),
             }
         }
+        
+        # Translate response_format to format per contract
+        response_format = openai_body.get("response_format")
+        if isinstance(response_format, dict):
+            rf_type = response_format.get("type")
+            if rf_type == "json_object":
+                translated["format"] = "json"
+            elif rf_type == "json_schema":
+                schema = response_format.get("json_schema", {}).get("schema")
+                if schema is not None:
+                    translated["format"] = schema
+                    
+        return translated
         
     def _translate_response(self, ollama_response: dict) -> dict:
         """Ollama response -> OpenAI-compatible response format."""
