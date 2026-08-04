@@ -165,7 +165,9 @@ async def test_execute_loose_mode_invalid_json():
         {
             "message": {"role": "assistant", "content": 'Sure, here is the result: {key: value}'},
             "done": True,
-            "model": "llama3:8b"
+            "model": "llama3:8b",
+            "prompt_eval_count": 10,
+            "eval_count": 20
         }
     )
     
@@ -174,6 +176,13 @@ async def test_execute_loose_mode_invalid_json():
         res = await executor.execute(prompt)
         assert not res.is_success
         assert "JSON_PARSE_ERROR" in res.error
+        assert res.response is not None
+        assert res.response["choices"][0]["message"]["content"] == 'Sure, here is the result: {key: value}'
+        assert res.usage == {
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+            "total_tokens": 30
+        }
 
 
 @pytest.mark.asyncio
@@ -242,7 +251,9 @@ async def test_execute_strict_mode_schema_violation():
         {
             "message": {"role": "assistant", "content": '{"age": "twenty-five"}'},
             "done": True,
-            "model": "llama3:8b"
+            "model": "llama3:8b",
+            "prompt_eval_count": 15,
+            "eval_count": 25
         }
     )
     
@@ -251,6 +262,13 @@ async def test_execute_strict_mode_schema_violation():
         res = await executor.execute(prompt)
         assert not res.is_success
         assert "SCHEMA_VIOLATION" in res.error
+        assert res.response is not None
+        assert res.response["choices"][0]["message"]["content"] == '{"age": "twenty-five"}'
+        assert res.usage == {
+            "prompt_tokens": 15,
+            "completion_tokens": 25,
+            "total_tokens": 40
+        }
 
 
 @pytest.mark.asyncio

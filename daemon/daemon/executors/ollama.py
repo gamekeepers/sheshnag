@@ -116,6 +116,7 @@ class OllamaExecutor(BaseExecutor):
                     logger.warning(f"Failed to parse JSON response for {prompt.custom_id}: {jde}")
                     return CompletionResult(
                         custom_id=prompt.custom_id,
+                        response=openai_response,
                         error=f"JSON_PARSE_ERROR: Response is not valid JSON: {str(jde)}"
                     )
                 
@@ -130,6 +131,7 @@ class OllamaExecutor(BaseExecutor):
                             logger.warning(f"Schema validation failed for {prompt.custom_id}: {ve}")
                             return CompletionResult(
                                 custom_id=prompt.custom_id,
+                                response=openai_response,
                                 error=f"SCHEMA_VIOLATION: Response JSON violates requested schema: {ve.message}"
                             )
             
