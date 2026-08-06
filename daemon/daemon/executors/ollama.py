@@ -65,12 +65,32 @@ class OllamaExecutor(BaseExecutor):
     
     async def execute(self, prompt: PromptRequest) -> CompletionResult:
         """
-        Execute a prompt via Ollama's /api/chat endpoint.
-        Translates from OpenAI format to Ollama's format, then back.
+        Execute a prompt via Ollama's endpoints.
+        Routes to /api/embed if prompt.url is /v1/embeddings,
+        otherwise routes to /api/chat.
         """
         # Lazy check version if not set
         if self.version is None:
             await self.health_check()
+
+        client = self._get_client()
+
+        if prompt.url == "/v1/embeddings":
+            ollama_body = self._translate_embeddings_request(prompt.body)
+            try:
+                response = await client.post("/api/embed", json=ollama_body)
+                response.raise_for_status()
+                openai_response = self._translate_embeddings_response(response.json())
+                return CompletionResult(
+                    custom_id=prompt.custom_id,
+                    response=openai_response
+                )
+            except Exception as e:
+                logger.error(f"Ollama embedding execution failed for {prompt.custom_id}: {e}")
+                return CompletionResult(
+                    custom_id=prompt.custom_id,
+                    error=str(e)
+                )
             
         response_format = prompt.body.get("response_format")
         
@@ -92,7 +112,6 @@ class OllamaExecutor(BaseExecutor):
                     error=f"VERSION_MISMATCH: Ollama version {self.version} < 0.5.0 does not support structured outputs"
                 )
 
-        client = self._get_client()
         ollama_body = self._translate_request(prompt.body)
         
         try:
@@ -261,5 +280,47 @@ class OllamaExecutor(BaseExecutor):
                     ollama_response.get("prompt_eval_count", 0) +
                     ollama_response.get("eval_count", 0)
                 ),
+            }
+        }
+
+    def _translate_embeddings_request(self, openai_body: dict) -> dict:
+        """OpenAI embeddings format -> Ollama embed format."""
+        translated = {
+            "model": openai_body.get("model", ""),
+            "input": openai_body.get("input", "")
+        }
+        if "truncate" in openai_body:
+            translated["truncate"] = openai_body["truncate"]
+        return translated
+
+    def _translate_embeddings_response(self, ollama_response: dict) -> dict:
+        """Ollama embed response -> OpenAI-compatible response format."""
+        embeddings = ollama_response.get("embeddings")
+        if embeddings is None and "embedding" in ollama_response:
+            single_emb = ollama_response["embedding"]
+            if isinstance(single_emb, list) and len(single_emb) > 0 and not isinstance(single_emb[0], list):
+                embeddings = [single_emb]
+            else:
+                embeddings = single_emb
+        if embeddings is None:
+            embeddings = []
+
+        data = []
+        for idx, emb in enumerate(embeddings):
+            data.append({
+                "object": "embedding",
+                "embedding": emb,
+                "index": idx
+            })
+        
+        prompt_tokens = ollama_response.get("prompt_eval_count", 0)
+        
+        return {
+            "object": "list",
+            "data": data,
+            "model": ollama_response.get("model", ""),
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "total_tokens": prompt_tokens
             }
         }

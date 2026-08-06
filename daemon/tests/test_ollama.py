@@ -321,3 +321,76 @@ async def test_execute_version_unreachable():
         assert "OLLAMA_UNREACHABLE" in res.error
 
 
+def test_translate_embeddings_request():
+    executor = OllamaExecutor()
+    openai_body = {
+        "model": "nomic-embed-text",
+        "input": "hello world",
+        "truncate": True
+    }
+    translated = executor._translate_embeddings_request(openai_body)
+    assert translated["model"] == "nomic-embed-text"
+    assert translated["input"] == "hello world"
+    assert translated["truncate"] is True
+
+
+def test_translate_embeddings_response():
+    executor = OllamaExecutor()
+    ollama_response = {
+        "model": "nomic-embed-text",
+        "embeddings": [[0.1, 0.2, 0.3]],
+        "prompt_eval_count": 5
+    }
+    translated = executor._translate_embeddings_response(ollama_response)
+    assert translated["object"] == "list"
+    assert len(translated["data"]) == 1
+    assert translated["data"][0]["object"] == "embedding"
+    assert translated["data"][0]["embedding"] == [0.1, 0.2, 0.3]
+    assert translated["data"][0]["index"] == 0
+    assert translated["usage"] == {
+        "prompt_tokens": 5,
+        "total_tokens": 5
+    }
+
+
+@pytest.mark.asyncio
+async def test_execute_embeddings_routing():
+    executor = OllamaExecutor()
+    # Ensure health check does not throw version gating issues (even if version is old)
+    executor.version = "0.4.0"
+    
+    prompt = PromptRequest(
+        custom_id="req-embed-1",
+        url="/v1/embeddings",
+        body={
+            "model": "nomic-embed-text",
+            "input": "test text"
+        }
+    )
+    
+    mock_response = create_mock_response(
+        200,
+        {
+            "model": "nomic-embed-text",
+            "embeddings": [[0.5, 0.6]],
+            "prompt_eval_count": 10
+        }
+    )
+    
+    with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = mock_response
+        res = await executor.execute(prompt)
+        assert res.is_success
+        assert res.response["object"] == "list"
+        assert res.response["data"][0]["embedding"] == [0.5, 0.6]
+        assert res.usage == {
+            "prompt_tokens": 10,
+            "total_tokens": 10
+        }
+        # Verify it went to /api/embed and not /api/chat
+        mock_post.assert_called_once_with("/api/embed", json={
+            "model": "nomic-embed-text",
+            "input": "test text"
+        })
+
+

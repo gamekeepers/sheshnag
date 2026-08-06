@@ -21,6 +21,7 @@ MAX_STORED_ERRORS = 100
 
 SUPPORTED_ENDPOINTS = frozenset({
     "/v1/chat/completions",
+    "/v1/embeddings",
 })
 
 ALLOWED_TOP_LEVEL_KEYS = frozenset({
