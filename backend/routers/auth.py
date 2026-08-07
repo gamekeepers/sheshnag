@@ -466,6 +466,9 @@ def add_allowed_domain(
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail=f"Domain '{domain}' is already allowed")
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(entry)
     return {
         "id": entry.id,
