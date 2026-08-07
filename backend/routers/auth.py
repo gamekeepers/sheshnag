@@ -445,7 +445,7 @@ def add_allowed_domain(
     until then signup is unrestricted.
     """
     domain = normalize_domain(req.domain)
-    if not domain or "@" in domain or "/" in domain or " " in domain or "." not in domain:
+    if not domain or "@" in domain or "/" in domain or any(c.isspace() for c in domain) or "." not in domain:
         raise HTTPException(
             status_code=400,
             detail="Enter a bare domain such as 'dau.ac.in' — no '@', no path, no spaces.",
@@ -461,7 +461,11 @@ def add_allowed_domain(
         created_by_id=admin.id,
     )
     db.add(entry)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"Domain '{domain}' is already allowed")
     db.refresh(entry)
     return {
         "id": entry.id,
