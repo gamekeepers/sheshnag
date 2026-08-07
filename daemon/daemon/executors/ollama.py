@@ -69,12 +69,11 @@ class OllamaExecutor(BaseExecutor):
         Routes to /api/embed if prompt.url is /v1/embeddings,
         otherwise routes to /api/chat.
         """
-        # Lazy check version if not set
-        if self.version is None:
-            await self.health_check()
-
         client = self._get_client()
 
+        # Embeddings first: the version gate below is about structured outputs,
+        # which do not apply here. Probing /api/version for an embedding row
+        # would cost a 5s timeout per prompt when the server is unreachable.
         if prompt.url == "/v1/embeddings":
             ollama_body = self._translate_embeddings_request(prompt.body)
             try:
@@ -89,9 +88,13 @@ class OllamaExecutor(BaseExecutor):
                 logger.error(f"Ollama embedding execution failed for {prompt.custom_id}: {e}")
                 return CompletionResult(
                     custom_id=prompt.custom_id,
-                    error=str(e)
+                    error=f"EMBEDDING_FAILED: {e}"
                 )
-            
+
+        # Lazy check version if not set (chat path only — gates structured outputs)
+        if self.version is None:
+            await self.health_check()
+
         response_format = prompt.body.get("response_format")
         
         # Version Gating: Refuse JSON mode if Ollama version < 0.5.0 (or undetermined)
@@ -294,10 +297,19 @@ class OllamaExecutor(BaseExecutor):
         return translated
 
     def _translate_embeddings_response(self, ollama_response: dict) -> dict:
-        """Ollama embed response -> OpenAI-compatible response format."""
+        """Ollama embed response -> OpenAI-compatible response format.
+
+        `/api/embed` (Ollama 0.3+) returns `embeddings`: a list of vectors,
+        one per input. The deprecated `/api/embeddings` returns `embedding`:
+        a single flat vector. We only call the former, but the latter is
+        handled because a proxy or an older server on the Ollama port can
+        still answer in the legacy shape — and silently returning zero
+        vectors would be worse than normalising it.
+        """
         embeddings = ollama_response.get("embeddings")
         if embeddings is None and "embedding" in ollama_response:
             single_emb = ollama_response["embedding"]
+            # Flat vector (legacy) -> wrap. Already-nested -> take as-is.
             if isinstance(single_emb, list) and len(single_emb) > 0 and not isinstance(single_emb[0], list):
                 embeddings = [single_emb]
             else:

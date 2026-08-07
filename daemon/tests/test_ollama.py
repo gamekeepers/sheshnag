@@ -394,3 +394,81 @@ async def test_execute_embeddings_routing():
         })
 
 
+
+
+def test_translate_embeddings_response_legacy_singular():
+    """Legacy /api/embeddings returns a flat `embedding` vector, not `embeddings`.
+
+    We call /api/embed, but a proxy or older server on the Ollama port can
+    answer in the legacy shape. Normalising beats silently returning nothing.
+    """
+    executor = OllamaExecutor()
+    translated = executor._translate_embeddings_response({
+        "model": "nomic-embed-text:latest",
+        "embedding": [0.1, 0.2, 0.3],
+        "prompt_eval_count": 4,
+    })
+    assert len(translated["data"]) == 1
+    assert translated["data"][0]["embedding"] == [0.1, 0.2, 0.3]
+    assert translated["data"][0]["index"] == 0
+    assert translated["usage"]["total_tokens"] == 4
+
+
+def test_translate_embeddings_response_empty():
+    """No embeddings key at all -> empty data, not a crash."""
+    executor = OllamaExecutor()
+    translated = executor._translate_embeddings_response({"model": "x"})
+    assert translated["data"] == []
+    assert translated["object"] == "list"
+
+
+def test_translate_embeddings_response_multiple_inputs():
+    """Indices must track input order for custom_id correlation."""
+    executor = OllamaExecutor()
+    translated = executor._translate_embeddings_response({
+        "model": "nomic-embed-text:latest",
+        "embeddings": [[0.1], [0.2], [0.3]],
+        "prompt_eval_count": 9,
+    })
+    assert [d["index"] for d in translated["data"]] == [0, 1, 2]
+    assert [d["embedding"] for d in translated["data"]] == [[0.1], [0.2], [0.3]]
+
+
+@pytest.mark.asyncio
+async def test_embeddings_failure_carries_error_code():
+    """Embedding failures use the same PREFIX: convention as every other path."""
+    executor = OllamaExecutor()
+    prompt = PromptRequest(
+        custom_id="req-embed-fail",
+        url="/v1/embeddings",
+        body={"model": "nomic-embed-text:latest", "input": "x"},
+    )
+    with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = create_mock_response(500, {"error": "boom"})
+        res = await executor.execute(prompt)
+    assert not res.is_success
+    assert res.error.startswith("EMBEDDING_FAILED:")
+
+
+@pytest.mark.asyncio
+async def test_embeddings_path_skips_version_probe():
+    """Structured-output version gating is irrelevant to embeddings.
+
+    Probing /api/version per embedding row costs a 5s timeout each when the
+    server is unreachable, since a failed probe leaves self.version None.
+    """
+    executor = OllamaExecutor()
+    assert executor.version is None
+    prompt = PromptRequest(
+        custom_id="req-embed-noprobe",
+        url="/v1/embeddings",
+        body={"model": "nomic-embed-text:latest", "input": "x"},
+    )
+    with patch.object(OllamaExecutor, "health_check", new_callable=AsyncMock) as hc:
+        with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = create_mock_response(
+                200, {"model": "m", "embeddings": [[0.1]], "prompt_eval_count": 1}
+            )
+            res = await executor.execute(prompt)
+    assert res.is_success
+    hc.assert_not_called()
