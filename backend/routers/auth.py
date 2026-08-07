@@ -2,11 +2,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from database import get_db
-from models import User, Organization, OrganizationMembership, ApiKey, Worker, PasswordResetToken, unix_now, get_org_owner
+from models import (
+    User, Organization, OrganizationMembership, ApiKey, Worker,
+    PasswordResetToken, AllowedEmailDomain, unix_now, get_org_owner,
+)
 from schemas import (
     SignupRequest, LoginRequest, ChangePasswordRequest,
     ForgotPasswordRequest, ResetPasswordRequest,
     GoogleAuthRequest, GoogleTokenOut,
+    AllowedDomainCreate,
     UserOut, TokenOut,
 )
 from auth import (
@@ -30,12 +34,45 @@ def normalize_email(email: str) -> str:
     return (email or "").strip().lower()
 
 
+def normalize_domain(domain: str) -> str:
+    """Canonical form for a stored/compared domain: lower-case, no leading '@'."""
+    return (domain or "").strip().lower().lstrip("@").rstrip(".")
+
+
+def assert_domain_allowed(email: str, db: Session) -> None:
+    """Gate self-service account creation on the allowed-domain list.
+
+    An empty list means unrestricted — see AllowedEmailDomain. Called only from
+    paths that *create* an account; authenticating an existing user is never
+    gated, or removing a domain would lock out everyone who signed up under it.
+    """
+    allowed = db.query(AllowedEmailDomain).all()
+    if not allowed:
+        return
+
+    domain = normalize_email(email).rsplit("@", 1)[-1]
+    for entry in allowed:
+        if domain == entry.domain:
+            return
+        # Suffix match must include the dot: 'dau.ac.in' must not admit
+        # 'dau.ac.in.attacker.com', and must not admit 'notdau.ac.in'.
+        if entry.include_subdomains and domain.endswith("." + entry.domain):
+            return
+
+    raise HTTPException(
+        status_code=403,
+        detail="Sign-ups are restricted to approved email domains. "
+               "Contact your administrator if you believe this is an error.",
+    )
+
+
 # ─── Auth ───────────────────────────────────────────────────
 
 @router.post("/auth/signup", response_model=UserOut)
 def signup(req: SignupRequest, db: Session = Depends(get_db)):
     """Unified signup: creates user + personal org + membership."""
     email = normalize_email(req.email)
+    assert_domain_allowed(email, db)
     existing = db.query(User).filter(User.email == email).first()
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -108,7 +145,12 @@ def google_auth(req: GoogleAuthRequest, db: Session = Depends(get_db)):
             user.auth_provider = "both" if user.password_hash else "google"
             db.commit()
         else:
-            # 4. Create new Google-only user
+            # 4. Create new Google-only user.
+            # Gate here and nowhere else in this handler: the returning-user
+            # fast path and the account-linking branch above authenticate
+            # people who already exist, and must keep working even if their
+            # domain is later removed from the list.
+            assert_domain_allowed(email, db)
             created = True
             try:
                 user = User(
@@ -344,6 +386,113 @@ def list_all_organizations(
             }
             for o in orgs
         ],
+    }
+
+
+# ─── Allowed Signup Domains ────────────────────────────────
+
+@router.get("/auth/signup-policy")
+def signup_policy(db: Session = Depends(get_db)):
+    """Public: what the signup form needs to show a useful hint.
+
+    Unauthenticated by necessity — it is read before anyone has an account.
+    This does publish the institution's domain list; on a campus deployment
+    that is not a secret, and the alternative is users hitting an unexplained
+    403 after filling in the form.
+    """
+    entries = db.query(AllowedEmailDomain).order_by(AllowedEmailDomain.domain).all()
+    return {
+        "restricted": bool(entries),
+        "domains": [e.domain for e in entries],
+    }
+
+
+@router.get("/admin/allowed-domains")
+def list_allowed_domains(
+    admin=Depends(require_role("superadmin")),
+    db: Session = Depends(get_db),
+):
+    """Superadmin: list domains permitted to self-register."""
+    entries = db.query(AllowedEmailDomain).order_by(AllowedEmailDomain.domain).all()
+    return {
+        "restricted": bool(entries),
+        "data": [
+            {
+                "id": e.id,
+                "domain": e.domain,
+                "include_subdomains": bool(e.include_subdomains),
+                "note": e.note,
+                "created_by_id": e.created_by_id,
+                "created_at": e.created_at,
+            }
+            for e in entries
+        ],
+    }
+
+
+@router.post("/admin/allowed-domains", status_code=201)
+def add_allowed_domain(
+    req: AllowedDomainCreate,
+    admin=Depends(require_role("superadmin")),
+    db: Session = Depends(get_db),
+):
+    """Superadmin: permit a domain to self-register.
+
+    Adding the first entry switches enforcement on for the whole platform —
+    until then signup is unrestricted.
+    """
+    domain = normalize_domain(req.domain)
+    if not domain or "@" in domain or "/" in domain or " " in domain or "." not in domain:
+        raise HTTPException(
+            status_code=400,
+            detail="Enter a bare domain such as 'dau.ac.in' — no '@', no path, no spaces.",
+        )
+
+    if db.query(AllowedEmailDomain).filter(AllowedEmailDomain.domain == domain).first():
+        raise HTTPException(status_code=409, detail=f"Domain '{domain}' is already allowed")
+
+    entry = AllowedEmailDomain(
+        domain=domain,
+        include_subdomains=bool(req.include_subdomains),
+        note=req.note,
+        created_by_id=admin.id,
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return {
+        "id": entry.id,
+        "domain": entry.domain,
+        "include_subdomains": bool(entry.include_subdomains),
+        "note": entry.note,
+    }
+
+
+@router.delete("/admin/allowed-domains/{domain_id}")
+def remove_allowed_domain(
+    domain_id: str,
+    admin=Depends(require_role("superadmin")),
+    db: Session = Depends(get_db),
+):
+    """Superadmin: stop permitting a domain to self-register.
+
+    Existing accounts are unaffected — this governs new signups only. Removing
+    the last entry returns the platform to unrestricted signup, which is why
+    the response says so explicitly.
+    """
+    entry = db.query(AllowedEmailDomain).filter(AllowedEmailDomain.id == domain_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Domain not found")
+
+    db.delete(entry)
+    db.commit()
+
+    remaining = db.query(AllowedEmailDomain).count()
+    return {
+        "deleted": domain_id,
+        "restricted": bool(remaining),
+        "warning": None if remaining else
+        "No domains remain — signup is now open to any email address.",
     }
 
 

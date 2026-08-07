@@ -28,6 +28,13 @@ export default function GoogleAuthButton({ setError, setLoading, loading }) {
       
       if (!res.ok) {
         setError(data?.detail || 'Google sign-in failed.');
+        // A 403 here is usually the sign-up domain restriction, and the fix is
+        // to choose a different Google account. Google auto-selects the last
+        // one used, so without this the next attempt silently reuses the
+        // rejected account and appears to fail for no reason.
+        if (res.status === 403) {
+          window.google?.accounts?.id?.disableAutoSelect?.();
+        }
         setLoading(false);
         return;
       }
