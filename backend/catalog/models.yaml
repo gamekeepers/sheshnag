@@ -190,3 +190,19 @@
   source_revision: null
   homepage_url: https://ollama.com/library/qwen3.6
   enabled: true
+- id: nomic-embed-text-ollama
+  display_name: nomic-embed-text
+  runtime: ollama
+  runtime_model_id: nomic-embed-text:latest
+  digest: 0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f
+  quantization: F16
+  parameter_size: 137M
+  context_length: 8192
+  vram_gb: 1.0
+  size_gb: 0.27
+  task_type: embedding
+  source_type: ollama-library
+  source_ref: nomic-embed-text
+  source_revision: null
+  homepage_url: https://ollama.com/library/nomic-embed-text
+  enabled: true

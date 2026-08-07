@@ -307,9 +307,10 @@ class Worker:
                     raw = json.loads(line)
                     prompt = PromptRequest(**raw)
 
-                    # Apply job-level defaults if not in prompt body
-                    prompt.body.setdefault("max_tokens", job.max_tokens)
-                    prompt.body.setdefault("temperature", job.temperature)
+                    # Apply job-level defaults if not in prompt body (only for non-embedding requests)
+                    if prompt.url != "/v1/embeddings":
+                        prompt.body.setdefault("max_tokens", job.max_tokens)
+                        prompt.body.setdefault("temperature", job.temperature)
 
                     # body.model is the platform catalogue id the user
                     # submitted; run the runtime id the backend resolved
