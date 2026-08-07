@@ -50,7 +50,10 @@ def assert_domain_allowed(email: str, db: Session) -> None:
     if not allowed:
         return
 
-    domain = normalize_email(email).rsplit("@", 1)[-1]
+    normalized = normalize_email(email)
+    if "@" not in normalized:
+        raise HTTPException(status_code=400, detail="Invalid email address.")
+    domain = normalized.rsplit("@", 1)[-1]
     for entry in allowed:
         if domain == entry.domain:
             return
