@@ -143,7 +143,7 @@ guide for the full list.
 
 ## 3. Frontend as user-level service
 
-Next.js in production runs `next build` once (ahead of time) then `next start`. The systemd unit wraps both steps: the `ExecStartPre` builds, then `ExecStart` serves on port 3000.
+Next.js in production runs `next build` once (ahead of time) then `next start`. The systemd unit wraps both steps: the `ExecStartPre` builds, then `ExecStart` serves on port 3005.
 
 ### Create the unit
 
@@ -196,33 +196,33 @@ server {
     server_name sheshnag.example.com;
 
     location /api/ {
-        proxy_pass http://127.0.0.1:8000/v1/;
+        proxy_pass http://127.0.0.1:8005/v1/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
     location /v1/ {
         # Direct backend API access (e.g. daemon calls)
-        proxy_pass http://127.0.0.1:8000/v1/;
+        proxy_pass http://127.0.0.1:8005/v1/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
     location /workers/ {
-        proxy_pass http://127.0.0.1:8000/workers/;
+        proxy_pass http://127.0.0.1:8005/workers/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
     location / {
-        proxy_pass http://127.0.0.1:3000;
+        proxy_pass http://127.0.0.1:3005;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 }
 ```
 
-Adjust port mappings and paths for your deployment. The backend serves on `:8000`, frontend on `:3000`.
+Adjust port mappings and paths for your deployment. The backend serves on `:8005`, frontend on `:3005`.
 
 ### HTTPS (certbot)
 

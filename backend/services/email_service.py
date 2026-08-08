@@ -44,7 +44,7 @@ def send_email(to_email: str, subject: str, text: str) -> bool:
 def send_password_reset_email(to_email: str, reset_token: str, frontend_url: str = None) -> bool:
     """Send password reset email with token."""
     if not frontend_url:
-        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3005")
 
     reset_link = f"{frontend_url}/reset-password?token={reset_token}"
 

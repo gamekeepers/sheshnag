@@ -13,7 +13,7 @@
 # worker_id: "my-gpu-worker-01"
 
 # Control plane backend URL
-backend_url: "http://localhost:8000"
+backend_url: "http://localhost:8005"
 
 # Local vLLM server URL (OpenAI-compatible API)
 vllm_url: "http://localhost:8100"

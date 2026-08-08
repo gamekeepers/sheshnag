@@ -310,13 +310,13 @@ async def download_outputs(job_id: str):
 async def startup():
     """Seed a test job on server start."""
     _seed_job()
-    print("\n🚀 Mock backend running at http://localhost:8000")
+    print("\n🚀 Mock backend running at http://localhost:8005")
     print("   Waiting for worker to poll...\n")
 
 
 def main():
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+    uvicorn.run(app, host="0.0.0.0", port=8005, log_level="warning")
 
 
 if __name__ == "__main__":

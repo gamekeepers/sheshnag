@@ -4,7 +4,7 @@ import { useState, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8005';
 
 const INK = '#16182d';
 const MUTED = '#5c5f73';

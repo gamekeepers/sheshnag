@@ -46,7 +46,7 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Examples:\n"
             "  python -m daemon.main --config config.yaml\n"
-            "  python -m daemon.main --backend-url http://localhost:8000\n"
+            "  python -m daemon.main --backend-url http://localhost:8005\n"
             "  python -m daemon.main --worker-id my-gpu-01 --vllm-url http://localhost:8100\n"
             "  python -m daemon.main --api-key my-secret-key --gpu-name 'RTX 4090'\n"
         ),
@@ -67,7 +67,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--backend-url",
         type=str,
         default=None,
-        help="Control plane API URL (default: http://localhost:8000)",
+        help="Control plane API URL (default: http://localhost:8005)",
     )
 
     parser.add_argument(

@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8005';
 
 function authHeaders() {
   const token = typeof window !== 'undefined' ? localStorage.getItem('mk_token') : '';

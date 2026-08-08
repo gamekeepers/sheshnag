@@ -7,7 +7,7 @@ import GoogleAuthButton from '../components/GoogleAuthButton';
 import confetti from 'canvas-confetti';
 import { completeLogin } from '../lib/completeLogin';
 
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8005';
 
 const INK = '#16182d';
 const MUTED = '#5c5f73';

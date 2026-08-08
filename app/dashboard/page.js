@@ -7,7 +7,7 @@ import confetti from 'canvas-confetti';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import './dashboard.css';
 
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8005';
 
 function SheshnagLogo({ size = 22 }) {
   return (

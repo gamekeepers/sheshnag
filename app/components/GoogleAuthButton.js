@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import confetti from 'canvas-confetti';
 import { completeLogin } from '../lib/completeLogin';
 
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8005';
 
 export default function GoogleAuthButton({ setError, setLoading, loading }) {
   const router = useRouter();

@@ -615,7 +615,7 @@ def invite_member(
     try:
         from services.email_service import send_email
         import os
-        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3005")
         join_link = f"{frontend_url}/join?token={token}"
         org = db.query(Organization).filter(Organization.id == org_id).first()
         org_name = org.name if org else "an organization"

@@ -122,7 +122,7 @@ class DaemonConfig(BaseModel):
     """
 
     worker_id: str = Field(default_factory=_generate_worker_id)
-    backend_url: str = "http://localhost:8000"
+    backend_url: str = "http://localhost:8005"
     vllm_url: str = "http://localhost:8100"
     ollama_url: str = "http://localhost:11434"
     poll_interval: int = Field(default=5, gt=0, description="Seconds between poll attempts, must be > 0")

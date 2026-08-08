@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8005';
 
 const INK = '#16182d';
 const MUTED = '#5c5f73';
