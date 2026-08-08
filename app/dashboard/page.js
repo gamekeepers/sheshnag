@@ -6,8 +6,8 @@ import { useRouter } from 'next/navigation';
 import confetti from 'canvas-confetti';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import './dashboard.css';
+import { api, eventSource } from '../lib/api';
 
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8005';
 
 function SheshnagLogo({ size = 22 }) {
   return (
@@ -89,21 +89,11 @@ export default function DashboardPage() {
     setToken(tk);
   }, [router]);
 
-  // Utility auth headers
-  const getHeaders = useCallback(() => {
-    const h = {
-      'Authorization': `Bearer ${localStorage.getItem('mk_token')}`,
-      'Content-Type': 'application/json',
-    };
-    if (process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true') h['ngrok-skip-browser-warning'] = 'true';
-    return h;
-  }, []);
-
   // Fetch Files list — the server is the source of truth; localStorage only
   // caches client-side sniffed metadata (body.model) the backend doesn't store.
   const loadFiles = useCallback(async () => {
     try {
-      const res = await fetch(`${BACKEND}/v1/files`, { headers: getHeaders() });
+      const res = await api(`/v1/files`);
       if (res.ok) {
         const data = await res.json();
         const meta = JSON.parse(localStorage.getItem('moonknight_file_meta') || '{}');
@@ -125,7 +115,7 @@ export default function DashboardPage() {
     } catch (e) {
       console.error('Failed to fetch files:', e);
     }
-  }, [getHeaders]);
+  }, []);
 
   // Fetch profiles & Orgs
   const loadProfile = useCallback(async () => {
@@ -133,8 +123,7 @@ export default function DashboardPage() {
     setLoadingProfile(true);
     try {
       // 1. Fetch profile
-      const profileRes = await fetch(`${BACKEND}/v1/auth/me`, {
-        headers: getHeaders()
+      const profileRes = await api(`/v1/auth/me`, {
       });
       if (profileRes.ok) {
         const data = await profileRes.json();
@@ -143,7 +132,7 @@ export default function DashboardPage() {
         setSettingsProfileEmail(data.email || '');
         
         // 2. Fetch Organizations
-        const orgsRes = await fetch(`${BACKEND}/v1/orgs`, { headers: getHeaders() });
+        const orgsRes = await api(`/v1/orgs`);
         let orgsList = [];
         if (orgsRes.ok) {
           const orgsData = await orgsRes.json();
@@ -171,7 +160,7 @@ export default function DashboardPage() {
     } finally {
       setLoadingProfile(false);
     }
-  }, [router, getHeaders]);
+  }, [router]);
 
   useEffect(() => {
     if (token) {
@@ -185,12 +174,12 @@ export default function DashboardPage() {
     if (!selectedOrg) return;
     setSettingsLoading(true);
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members`, { headers: getHeaders() });
+      const res = await api(`/v1/orgs/${selectedOrg.id}/members`);
       if (res.ok) {
         const data = await res.json();
         setOrgMembers(data.data || []);
       }
-      const invRes = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members/invites`, { headers: getHeaders() });
+      const invRes = await api(`/v1/orgs/${selectedOrg.id}/members/invites`);
       if (invRes.ok) {
         const data = await invRes.json();
         setOrgInvites(data.data || []);
@@ -200,7 +189,7 @@ export default function DashboardPage() {
     } finally {
       setSettingsLoading(false);
     }
-  }, [selectedOrg, getHeaders]);
+  }, [selectedOrg]);
 
   // Fetch API Keys (Personal & Organization Worker Key)
   const loadKeys = useCallback(async () => {
@@ -208,14 +197,14 @@ export default function DashboardPage() {
     setLoadingKeys(true);
     try {
       // Fetch Personal Keys
-      const personalRes = await fetch(`${BACKEND}/v1/users/me/api-keys`, { headers: getHeaders() });
+      const personalRes = await api(`/v1/users/me/api-keys`);
       if (personalRes.ok) {
         const pKeys = await personalRes.json();
         setPersonalKeys(pKeys.data || []);
       }
 
       // Fetch Org Worker Keys
-      const orgKeysRes = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/api-keys`, { headers: getHeaders() });
+      const orgKeysRes = await api(`/v1/orgs/${selectedOrg.id}/api-keys`);
       if (orgKeysRes.ok) {
         const oKeys = await orgKeysRes.json();
         setOrgKeys(oKeys.data || []);
@@ -225,14 +214,14 @@ export default function DashboardPage() {
     } finally {
       setLoadingKeys(false);
     }
-  }, [selectedOrg, getHeaders]);
+  }, [selectedOrg]);
 
   // Fetch Workers list
   const loadWorkers = useCallback(async () => {
     if (!selectedOrg) return;
     setLoadingWorkers(true);
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/workers`, { headers: getHeaders() });
+      const res = await api(`/v1/orgs/${selectedOrg.id}/workers`);
       if (res.ok) {
         const data = await res.json();
         setWorkers(data.data || []);
@@ -242,13 +231,13 @@ export default function DashboardPage() {
     } finally {
       setLoadingWorkers(false);
     }
-  }, [selectedOrg, getHeaders]);
+  }, [selectedOrg]);
 
   // Fetch Batches list
   const loadBatches = useCallback(async () => {
     setLoadingBatches(true);
     try {
-      const res = await fetch(`${BACKEND}/v1/batches`, { headers: getHeaders() });
+      const res = await api(`/v1/batches`);
       if (res.ok) {
         const data = await res.json();
         const raw = data.data || [];
@@ -274,12 +263,12 @@ export default function DashboardPage() {
     } finally {
       setLoadingBatches(false);
     }
-  }, [getHeaders]);
+  }, []);
 
   // Load available models from /v1/models
   const loadModels = useCallback(async () => {
     try {
-      const res = await fetch(`${BACKEND}/v1/models`, { headers: getHeaders() });
+      const res = await api(`/v1/models`);
       if (res.ok) {
         const data = await res.json();
         const entries = data.data || [];
@@ -289,7 +278,7 @@ export default function DashboardPage() {
     } catch (e) {
       console.error('Failed to fetch models:', e);
     }
-  }, [getHeaders]);
+  }, []);
 
   // Refresh tab specific data
   useEffect(() => {
@@ -328,7 +317,7 @@ export default function DashboardPage() {
       if (!hasActiveJobs) return; // Only poll if there's an active job
 
       try {
-        const res = await fetch(`${BACKEND}/v1/batches`, { headers: getHeaders() });
+        const res = await api(`/v1/batches`);
         if (res.ok) {
           const data = await res.json();
           const raw = data.data || [];
@@ -358,7 +347,7 @@ export default function DashboardPage() {
       active = false;
       clearInterval(interval);
     };
-  }, [getHeaders]);
+  }, []);
 
   // SSE subscription for batches still in 'validating'
   useEffect(() => {
@@ -376,7 +365,7 @@ export default function DashboardPage() {
 
     validatingJobs.forEach(job => {
       try {
-        const es = new EventSource(`${BACKEND}/v1/batches/${job.id}/events`);
+        const es = eventSource(`/v1/batches/${job.id}/events`);
         es.addEventListener('validation_complete', () => {
           loadBatches();
           es.close();
@@ -414,10 +403,9 @@ export default function DashboardPage() {
   const handleCreatePersonalKey = async () => {
     if (!newKeyName.trim()) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/users/me/api-keys`, {
+      const res = await api(`/v1/users/me/api-keys`, {
         method: 'POST',
-        headers: getHeaders(),
-        body: JSON.stringify({ name: newKeyName })
+        json: { name: newKeyName }
       });
       if (res.ok) {
         const data = await res.json();
@@ -438,9 +426,8 @@ export default function DashboardPage() {
   const handleRevokePersonalKey = async (keyId) => {
     if (!confirm('Are you sure you want to revoke this API key?')) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/users/me/api-keys/${keyId}`, {
+      const res = await api(`/v1/users/me/api-keys/${keyId}`, {
         method: 'DELETE',
-        headers: getHeaders()
       });
       if (res.ok) {
         loadKeys();
@@ -454,9 +441,8 @@ export default function DashboardPage() {
   const handleRegenOrgKey = async () => {
     if (!selectedOrg) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/api-keys/regenerate`, {
+      const res = await api(`/v1/orgs/${selectedOrg.id}/api-keys/regenerate`, {
         method: 'POST',
-        headers: getHeaders()
       });
       if (res.ok) {
         loadKeys();
@@ -511,12 +497,8 @@ export default function DashboardPage() {
       const formData = new FormData();
       formData.append('file', uploadFile);
 
-      const res = await fetch(`${BACKEND}/v1/files`, {
+      const res = await api(`/v1/files`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('mk_token')}`,
-          ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }),
-        },
         body: formData
       });
 
@@ -552,14 +534,13 @@ export default function DashboardPage() {
     }
     setSubmitStatus('Submitting batch...');
     try {
-      const res = await fetch(`${BACKEND}/v1/batches`, {
+      const res = await api(`/v1/batches`, {
         method: 'POST',
-        headers: getHeaders(),
-        body: JSON.stringify({
+        json: {
           input_file_id: batchFileId,
           endpoint: batchEndpoint,
           completion_window: '24h'
-        })
+        }
       });
 
       if (res.ok) {
@@ -583,15 +564,14 @@ export default function DashboardPage() {
     if (!settingsOrgName || !selectedOrg) return;
     setSettingsStatus('Saving org settings...');
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}`, {
+      const res = await api(`/v1/orgs/${selectedOrg.id}`, {
         method: 'PUT',
-        headers: getHeaders(),
-        body: JSON.stringify({ name: settingsOrgName })
+        json: { name: settingsOrgName }
       });
       if (res.ok) {
         setSettingsStatus('Org settings saved!');
         // Refresh org list to reflect new name
-        const orgRes = await fetch(`${BACKEND}/v1/me/organizations`, { headers: getHeaders() });
+        const orgRes = await api(`/v1/me/organizations`);
         if (orgRes.ok) {
            const body = await orgRes.json();
            setOrgs(body.data);
@@ -612,15 +592,14 @@ export default function DashboardPage() {
     if (!settingsProfileName) return;
     setSettingsStatus('Saving profile...');
     try {
-      const res = await fetch(`${BACKEND}/v1/auth/me`, {
+      const res = await api(`/v1/auth/me`, {
         method: 'PUT',
-        headers: getHeaders(),
-        body: JSON.stringify({ full_name: settingsProfileName })
+        json: { full_name: settingsProfileName }
       });
       if (res.ok) {
         setSettingsStatus('Profile saved!');
         // Refresh user profile state
-        const profRes = await fetch(`${BACKEND}/v1/auth/me`, { headers: getHeaders() });
+        const profRes = await api(`/v1/auth/me`);
         if (profRes.ok) {
            setUserProfile(await profRes.json());
         }
@@ -638,10 +617,9 @@ export default function DashboardPage() {
     if (!inviteEmail) return;
     setSettingsLoading(true);
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members/invite`, {
+      const res = await api(`/v1/orgs/${selectedOrg.id}/members/invite`, {
         method: 'POST',
-        headers: getHeaders(),
-        body: JSON.stringify({ email: inviteEmail, role: inviteRole })
+        json: { email: inviteEmail, role: inviteRole }
       });
       if (res.ok) {
         setInviteEmail('');
@@ -662,9 +640,8 @@ export default function DashboardPage() {
   const handleRevokeInvite = async (token) => {
     if (!confirm('Revoke this invite?')) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members/invites/${token}`, {
+      const res = await api(`/v1/orgs/${selectedOrg.id}/members/invites/${token}`, {
         method: 'DELETE',
-        headers: getHeaders()
       });
       if (res.ok) loadMembers();
     } catch (e) { console.error(e); }
@@ -672,10 +649,9 @@ export default function DashboardPage() {
 
   const handleUpdateRole = async (userId, newRole) => {
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members/${userId}`, {
+      const res = await api(`/v1/orgs/${selectedOrg.id}/members/${userId}`, {
         method: 'PUT',
-        headers: getHeaders(),
-        body: JSON.stringify({ role: newRole })
+        json: { role: newRole }
       });
       if (res.ok) loadMembers();
       else {
@@ -688,9 +664,8 @@ export default function DashboardPage() {
   const handleRemoveMember = async (userId) => {
     if (!confirm('Remove this member?')) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members/${userId}`, {
+      const res = await api(`/v1/orgs/${selectedOrg.id}/members/${userId}`, {
         method: 'DELETE',
-        headers: getHeaders()
       });
       if (res.ok) loadMembers();
       else {
@@ -703,11 +678,7 @@ export default function DashboardPage() {
   // Download File helper
   const handleDownloadFile = async (fileId, filename) => {
     try {
-      const res = await fetch(`${BACKEND}/v1/files/${fileId}/content`, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('mk_token')}`,
-          ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' })
-        }
+      const res = await api(`/v1/files/${fileId}/content`, {
       });
       if (res.ok) {
         const blob = await res.blob();
@@ -730,9 +701,8 @@ export default function DashboardPage() {
   const handleDeleteFile = async (fileId) => {
     if (!confirm('Delete this file? This cannot be undone.')) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/files/${fileId}`, {
+      const res = await api(`/v1/files/${fileId}`, {
         method: 'DELETE',
-        headers: getHeaders()
       });
       if (res.ok) {
         const meta = JSON.parse(localStorage.getItem('moonknight_file_meta') || '{}');

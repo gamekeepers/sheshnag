@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from database import get_db
+from settings import settings
 from models import (
     ApiKey, Organization, OrganizationMembership, OrganizationInvite,
     Worker, WorkerRuntime, RuntimeModel, WorkerGpu,
@@ -615,7 +616,7 @@ def invite_member(
     try:
         from services.email_service import send_email
         import os
-        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3005")
+        frontend_url = settings.frontend_url
         join_link = f"{frontend_url}/join?token={token}"
         org = db.query(Organization).filter(Organization.id == org_id).first()
         org_name = org.name if org else "an organization"
