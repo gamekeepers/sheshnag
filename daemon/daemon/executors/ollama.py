@@ -115,9 +115,8 @@ class OllamaExecutor(BaseExecutor):
                     error=f"VERSION_MISMATCH: Ollama version {self.version} < 0.5.0 does not support structured outputs"
                 )
 
-        ollama_body = self._translate_request(prompt.body)
-        
         try:
+            ollama_body = self._translate_request(prompt.body)
             response = await client.post("/api/chat", json=ollama_body)
             response.raise_for_status()
             
@@ -242,8 +241,47 @@ class OllamaExecutor(BaseExecutor):
             logger.error(f"Failed to list models: {e}")
             return []
             
+    # ── OpenAI → Ollama parameter mappings ────────────────────
+    #
+    # Ollama nests most sampling parameters under an "options"
+    # object rather than top-level. This mapping is the single
+    # source of truth for which OpenAI keys map to which Ollama
+    # options keys. See docs/openai_compatibility.md for the
+    # full matrix.
+
+    _OPTION_TRANSLATIONS = {
+        "top_p":              "top_p",
+        "top_k":              "top_k",
+        "stop":               "stop",
+        "seed":               "seed",
+        "frequency_penalty":  "frequency_penalty",
+        "presence_penalty":   "presence_penalty",
+    }
+
+    # Parameters that have NO Ollama equivalent. Each is logged
+    # with its reason — no silent drops, that is the whole point
+    # of issue #39.
+    _UNSUPPORTED_PARAMS = {
+        "logprobs":     "Ollama does not support logprobs",
+        "top_logprobs": "Ollama does not support top_logprobs",
+        "tool_choice":  ("Ollama does not support tool_choice — tool "
+                         "selection is determined by the model from "
+                         "the tools list"),
+    }
+
     def _translate_request(self, openai_body: dict) -> dict:
-        """OpenAI chat format -> Ollama chat format."""
+        """OpenAI chat format -> Ollama chat format.
+
+        Translates every supported sampling parameter into Ollama's
+        ``options`` object, warns on unsupported parameters (never
+        drops silently), and rejects parameters that are fundamentally
+        incompatible (``n > 1``, ``stream``).
+
+        Raises:
+            ValueError: if ``n > 1`` (Ollama produces exactly 1
+                completion per request).  Callers must catch this
+                and convert to a CompletionResult.
+        """
         translated = {
             "model": openai_body.get("model", ""),
             "messages": openai_body.get("messages", []),
@@ -253,8 +291,32 @@ class OllamaExecutor(BaseExecutor):
                 "num_predict": openai_body.get("max_tokens", 512),
             }
         }
-        
-        # Translate response_format to format per contract
+
+        # ── Sampling parameters → options.* ──────────────────
+        for openai_key, ollama_key in self._OPTION_TRANSLATIONS.items():
+            if openai_key in openai_body:
+                translated["options"][ollama_key] = openai_body[openai_key]
+
+        # ── Unsupported parameters → warn-and-drop ───────────
+        for param, reason in self._UNSUPPORTED_PARAMS.items():
+            if param in openai_body:
+                logger.warning("Parameter '%s' dropped: %s", param, reason)
+
+        # ── n > 1 → reject ───────────────────────────────────
+        # Ollama produces exactly 1 completion per request.
+        # n=1 is fine (it is the default); n>1 is unsupported.
+        n_value = openai_body.get("n")
+        if n_value is not None and n_value != 1:
+            raise ValueError(
+                f"Parameter 'n={n_value}' is not supported by Ollama "
+                f"(exactly 1 completion per request)"
+            )
+
+        # ── tools → top-level (Ollama native since ~0.3) ─────
+        if "tools" in openai_body:
+            translated["tools"] = openai_body["tools"]
+
+        # ── response_format → format (existing, from #41) ────
         response_format = openai_body.get("response_format")
         if isinstance(response_format, dict):
             rf_type = response_format.get("type")
@@ -264,7 +326,7 @@ class OllamaExecutor(BaseExecutor):
                 schema = response_format.get("json_schema", {}).get("schema")
                 if schema is not None:
                     translated["format"] = schema
-                    
+
         return translated
         
     def _translate_response(self, ollama_response: dict) -> dict:
