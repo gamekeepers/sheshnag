@@ -1,0 +1,29 @@
+# systemd USER unit — Sheshnag backend, DEV mode (uvicorn --reload)
+#
+# Differs from scripts/sheshnag-backend.service (production):
+#   - WorkingDirectory is the git working tree, not ~/.sheshnag
+#   - --reload is on, so edits take effect without a restart
+#   - Restart=no: a crash stays crashed so you actually see it
+#
+# @REPO@ is substituted at install time by scripts/dev/dev-units.sh.
+
+[Unit]
+Description=Sheshnag backend API — dev (uvicorn --reload)
+PartOf=sheshnag-dev.target
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO@/backend
+EnvironmentFile=-@REPO@/backend/.env
+ExecStart=@REPO@/.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8005 --reload
+Restart=no
+# uvicorn --reload forks a reloader child; control-group kill takes the whole
+# tree down, otherwise the child keeps port 8005 bound after a stop.
+KillMode=control-group
+TimeoutStopSec=10
+SyslogIdentifier=sheshnag-backend-dev
+
+[Install]
+WantedBy=sheshnag-dev.target

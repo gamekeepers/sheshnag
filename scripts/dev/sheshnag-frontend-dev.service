@@ -1,0 +1,37 @@
+# systemd USER unit — Sheshnag frontend, DEV mode (next dev)
+#
+# Differs from scripts/sheshnag-frontend.service (production):
+#   - `npm run dev` instead of build + start, so there is no ExecStartPre
+#     build step and no 900s start timeout
+#   - WorkingDirectory is the git working tree, not ~/.sheshnag
+#
+# Next.js loads the repo-root .env itself, so this unit deliberately does NOT
+# declare an EnvironmentFile — one loader, one source of truth.
+#
+# @REPO@ and @NODE_BIN@ are substituted at install time by dev-units.sh.
+# systemd user units inherit no shell PATH, so @NODE_BIN@ (resolved from
+# `command -v npm`) must be explicit — under nvm it is version-specific, so
+# re-run `dev-units.sh install` after switching Node versions.
+
+[Unit]
+Description=Sheshnag frontend — dev (next dev, port 3005)
+PartOf=sheshnag-dev.target
+After=network-online.target sheshnag-backend-dev.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO@
+Environment=PATH=@NODE_BIN@:/usr/local/bin:/usr/bin:/bin
+# The port comes from package.json's `next dev -p 3005`, which is the single
+# source of truth for the frontend port — do not add -p here, an explicit flag
+# would silently diverge from `npm run dev` run by hand.
+ExecStart=@NODE_BIN@/npm run dev
+Restart=no
+# next dev spawns worker children; kill the whole cgroup or port 3005 leaks.
+KillMode=control-group
+TimeoutStopSec=10
+SyslogIdentifier=sheshnag-frontend-dev
+
+[Install]
+WantedBy=sheshnag-dev.target

@@ -1,0 +1,36 @@
+# systemd USER unit — Sheshnag GPU worker daemon, DEV mode
+#
+# Differs from scripts/gpu-daemon.service (production):
+#   - Runs from the git working tree and daemon/.venv, not ~/.gpu-daemon
+#   - Points at the local backend on port 8005 (dev), overriding the 8000
+#     default in daemon/config.yaml via --backend-url
+#
+# Requires DAEMON_API_KEY (a gk-... org worker key) in daemon/.env — the
+# daemon exits at startup without one. See daemon/.env.example.
+#
+# @REPO@ is substituted at install time by scripts/dev/dev-units.sh.
+
+[Unit]
+Description=Sheshnag GPU worker daemon — dev (local backend)
+PartOf=sheshnag-dev.target
+After=network-online.target sheshnag-backend-dev.service
+Wants=network-online.target
+# Rate limiting lives in [Unit] since systemd 230, not [Service].
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO@/daemon
+EnvironmentFile=-@REPO@/daemon/.env
+ExecStart=@REPO@/daemon/.venv/bin/python -m daemon.main --config config.yaml --backend-url http://localhost:8005
+# The daemon can lose its first poll while the backend is still binding, so
+# retry — but cap it, or a bad API key restart-loops until you notice.
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=10
+SyslogIdentifier=sheshnag-daemon-dev
+
+[Install]
+WantedBy=sheshnag-dev.target
