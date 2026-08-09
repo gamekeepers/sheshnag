@@ -32,6 +32,12 @@ run_suite() {
 want() { local n="$1"; shift; [[ $# -eq 0 || " $* " == *" $n "* ]]; }
 
 TARGETS=("$@")
+for target in "${TARGETS[@]}"; do
+  case "$target" in
+    backend|daemon|frontend) ;;
+    *) printf '\033[31merror:\033[0m unknown suite: %s\n' "$target" >&2; exit 2 ;;
+  esac
+done
 
 if want backend "${TARGETS[@]}"; then
   run_suite backend backend "$REPO/.venv/bin/python" -m pytest tests/ -q
