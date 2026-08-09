@@ -16,9 +16,11 @@ uploads/
 outputs/
 files/
 
-# Test files
+# Scratch test scripts dropped in the backend root
 test_*.jsonl
 test_*.py
+# ...but not the suite, which the pattern above otherwise swallows.
+!tests/test_*.py
 
 # IDE
 .vscode/

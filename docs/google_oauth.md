@@ -35,7 +35,7 @@ completeLogin(): store token, fetch /v1/auth/me, route by role
 ## Setup
 
 1. Google Cloud Console → OAuth client (Web application); authorized JS origin
-   `http://localhost:3000` (exact origin, incl. port). No redirect URI needed
+   `http://localhost:3005` (exact origin, incl. port). No redirect URI needed
    (ID-token flow). Consent screen in Testing → add yourself as a test user.
 2. `.env.local`: `NEXT_PUBLIC_GOOGLE_CLIENT_ID=<id>` (untracked; see `.env.example`)
 3. `backend/.env`: `GOOGLE_CLIENT_ID=<same id>` (backend verifies token audience against it)

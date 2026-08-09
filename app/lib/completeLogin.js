@@ -1,11 +1,4 @@
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
-
-function authHeaders(token) {
-  return {
-    'Authorization': `Bearer ${token}`,
-    ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }),
-  };
-}
+import { api, TOKEN_KEY, USER_KEY } from './api';
 
 // Shared post-auth completion for login, signup and Google sign-in:
 // store the token, fetch the profile, store mk_user, route by role.
@@ -13,18 +6,20 @@ function authHeaders(token) {
 // fallbackName seeds mk_user when the profile fetch fails.
 // Returns { ok: true } or { ok: false, error } — caller shows the error.
 export async function completeLogin(token, router, { requireSuperadmin = false, fallbackEmail = '', fallbackName = '' } = {}) {
-  localStorage.setItem('mk_token', token);
+  localStorage.setItem(TOKEN_KEY, token);
   try {
-    const res = await fetch(`${BACKEND}/v1/auth/me`, { headers: authHeaders(token) });
+    // Pass the token explicitly: it was just issued and the read-back from
+    // storage is not worth depending on here.
+    const res = await api('/v1/auth/me', { token });
     const me = await res.json();
     const platformRole = me.platform_role || 'user';
 
     if (requireSuperadmin && platformRole !== 'superadmin') {
-      localStorage.removeItem('mk_token');
+      localStorage.removeItem(TOKEN_KEY);
       return { ok: false, error: 'This account does not have admin access.' };
     }
 
-    localStorage.setItem('mk_user', JSON.stringify({
+    localStorage.setItem(USER_KEY, JSON.stringify({
       id: me.id || '',
       email: me.email || fallbackEmail,
       full_name: me.full_name || fallbackName || fallbackEmail,
@@ -35,10 +30,10 @@ export async function completeLogin(token, router, { requireSuperadmin = false, 
   } catch {
     if (requireSuperadmin) {
       // Never grant the admin surface on an unverified role.
-      localStorage.removeItem('mk_token');
+      localStorage.removeItem(TOKEN_KEY);
       return { ok: false, error: 'Could not verify admin access. Please try again.' };
     }
-    localStorage.setItem('mk_user', JSON.stringify({
+    localStorage.setItem(USER_KEY, JSON.stringify({
       email: fallbackEmail,
       full_name: fallbackName || fallbackEmail,
       platform_role: 'user',

@@ -92,7 +92,7 @@ python -m daemon.main --config config.yaml --api-key gk-anything-for-mock
 ```bash
 cd daemon
 python -m daemon.main \
-  --backend-url http://localhost:8000 \
+  --backend-url http://localhost:8005 \
   --api-key gk-your-org-worker-key
 ```
 
@@ -112,7 +112,7 @@ Precedence (highest → lowest):
 ### Config File (`config.yaml`)
 
 ```yaml
-backend_url: "http://localhost:8000"
+backend_url: "http://localhost:8005"
 api_key: "gk-your-org-worker-key"
 runtime: "ollama"                  # or "vllm"
 ollama_url: "http://localhost:11434"

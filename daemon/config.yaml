@@ -5,7 +5,7 @@
 # All values shown here are defaults.
 #
 # Override any value via environment variables:
-#   DAEMON_BACKEND_URL=http://remote-server:8000
+#   DAEMON_BACKEND_URL=http://remote-server:8005
 #   DAEMON_WORKER_ID=my-gpu-01
 # ─────────────────────────────────────────────────────────────
 
@@ -13,7 +13,7 @@
 # worker_id: "my-gpu-worker-01"
 
 # Control plane backend URL
-backend_url: "http://localhost:8000"
+backend_url: "http://localhost:8005"
 
 # Local vLLM server URL (OpenAI-compatible API)
 vllm_url: "http://localhost:8100"

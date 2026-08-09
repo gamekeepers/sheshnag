@@ -2,8 +2,8 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { api } from '../lib/api';
 
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
 const INK = '#16182d';
 const MUTED = '#5c5f73';
@@ -51,10 +51,10 @@ export default function ForgotPasswordPage() {
     setError('');
 
     try {
-      const res = await fetch(`${BACKEND}/v1/auth/forgot-password`, {
+      const res = await api(`/v1/auth/forgot-password`, {
+        auth: false,
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }) },
-        body: JSON.stringify({ email }),
+        json: { email },
       });
 
       if (!res.ok) {

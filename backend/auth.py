@@ -7,9 +7,9 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from database import get_db
+from settings import settings
 import secrets
 import hashlib
-import os
 
 import logging
 
@@ -17,20 +17,6 @@ from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 
 logger = logging.getLogger(__name__)
-
-# Dev fallback. Kept so `cp .env.example .env && uvicorn` still boots, but the
-# key is public (it lives in git history), so anything signed with it is
-# forgeable — hence the startup warning.
-_DEFAULT_SECRET_KEY = "batch-ai-platform-secret-change-in-production"
-
-SECRET_KEY = os.getenv("SECRET_KEY") or _DEFAULT_SECRET_KEY
-
-if SECRET_KEY == _DEFAULT_SECRET_KEY:
-    logger.warning(
-        "SECRET_KEY is unset or still the built-in default — JWTs are signed "
-        "with a publicly known key and can be forged. Do not run this way in "
-        "production. Generate one with: openssl rand -hex 32"
-    )
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
@@ -68,7 +54,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 def create_access_token(user_id: str, platform_role: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {"sub": user_id, "platform_role": platform_role, "exp": expire}
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
 
 
 # ─── API Key Helpers ────────────────────────────────────────
@@ -95,7 +81,7 @@ def _resolve_jwt(token: str, db: Session):
     from models import User
 
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
         user_id = payload.get("sub")
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token")
@@ -307,10 +293,8 @@ def verify_google_token(token: str) -> dict:
 
     Raises HTTPException 401 on invalid/expired tokens.
     """
-    # Read at call time, not import time: an import-time constant freezes
-    # whatever the env held when the module loaded, making config fixes
-    # invisible until a full process restart (and the error message a lie).
-    client_id = os.getenv("GOOGLE_CLIENT_ID")
+    # settings reads this at call time, not import time — see settings.py.
+    client_id = settings.google_client_id
     if not client_id:
         raise HTTPException(
             status_code=500,

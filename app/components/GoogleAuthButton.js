@@ -4,8 +4,8 @@ import { GoogleLogin } from '@react-oauth/google';
 import { useRouter } from 'next/navigation';
 import confetti from 'canvas-confetti';
 import { completeLogin } from '../lib/completeLogin';
+import { api } from '../lib/api';
 
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
 export default function GoogleAuthButton({ setError, setLoading, loading }) {
   const router = useRouter();
@@ -15,13 +15,10 @@ export default function GoogleAuthButton({ setError, setLoading, loading }) {
     setError('');
     
     try {
-      const res = await fetch(`${BACKEND}/v1/auth/google`, {
+      const res = await api(`/v1/auth/google`, {
+        auth: false,
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' })
-        },
-        body: JSON.stringify({ id_token: credentialResponse.credential }),
+        json: { id_token: credentialResponse.credential },
       });
       
       const data = await res.json();

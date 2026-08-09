@@ -8,7 +8,7 @@ that a real vLLM server exposes when started with:
 Use this on machines WITHOUT a GPU (your Mac) to test the full
 end-to-end flow:
 
-    Terminal 1 — mock backend (port 8000):
+    Terminal 1 — mock backend (port 8005):
         cd daemon
         python -m tests.mock_backend
 

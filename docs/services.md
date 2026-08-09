@@ -4,6 +4,12 @@ Modelled after the repo's own `scripts/install.sh` pattern: everything under you
 
 All three services are documented here so you can run Sheshnag hands-free on a worker machine or dev server.
 
+> **Just want to start and stop the stack while developing?** Skip to
+> [Dev stack](#dev-stack-one-command-up-and-down) at the end. The sections
+> below describe the *production* units, which run from `~/.sheshnag` and
+> `~/.gpu-daemon`; the dev units run from your git working tree with
+> hot-reload on.
+
 ## Prerequisites
 
 Before running any of these:
@@ -143,7 +149,7 @@ guide for the full list.
 
 ## 3. Frontend as user-level service
 
-Next.js in production runs `next build` once (ahead of time) then `next start`. The systemd unit wraps both steps: the `ExecStartPre` builds, then `ExecStart` serves on port 3000.
+Next.js in production runs `next build` once (ahead of time) then `next start`. The systemd unit wraps both steps: the `ExecStartPre` builds, then `ExecStart` serves on port 3005.
 
 ### Create the unit
 
@@ -175,7 +181,11 @@ journalctl --user -u sheshnag-frontend -f
 
 The unit assumes:
 - Repo cloned at `~/.sheshnag/`
-- Production env file at `~/.sheshnag/.env.local`
+- Production env file at `~/.sheshnag/.env.local` — **required**, not optional.
+  `NEXT_PUBLIC_BACKEND_URL` is inlined into the bundle at build time and has no
+  safe production default, so `ExecStartPre`'s `npm run build` fails without
+  it. The unit declares the file without a `-` prefix so a missing file fails
+  the unit with a clear message rather than an opaque build error.
 
 **Rebuild after env changes:** whenever you edit `.env.local`, restart the service to trigger a fresh build:
 ```bash
@@ -196,33 +206,33 @@ server {
     server_name sheshnag.example.com;
 
     location /api/ {
-        proxy_pass http://127.0.0.1:8000/v1/;
+        proxy_pass http://127.0.0.1:8005/v1/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
     location /v1/ {
         # Direct backend API access (e.g. daemon calls)
-        proxy_pass http://127.0.0.1:8000/v1/;
+        proxy_pass http://127.0.0.1:8005/v1/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
     location /workers/ {
-        proxy_pass http://127.0.0.1:8000/workers/;
+        proxy_pass http://127.0.0.1:8005/workers/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
     location / {
-        proxy_pass http://127.0.0.1:3000;
+        proxy_pass http://127.0.0.1:3005;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
 }
 ```
 
-Adjust port mappings and paths for your deployment. The backend serves on `:8000`, frontend on `:3000`.
+Adjust port mappings and paths for your deployment. The backend serves on `:8005`, frontend on `:3005`.
 
 ### HTTPS (certbot)
 
@@ -239,6 +249,97 @@ If you're setting up services for a team (e.g., each worker user runs their own 
 ```bash
 sudo loginctl enable-linger worker-user
 ```
+
+## Dev stack: one command up and down
+
+The three-terminal walkthrough in [setup.md](setup.md) is fine for a first run
+and stays the reference for what each component actually does. For day-to-day
+work, `scripts/dev/` installs the same three components as `systemctl --user`
+units pointed at **your git working tree** instead of `~/.sheshnag`.
+
+Differences from the production units above:
+
+| | Production | Dev |
+|---|---|---|
+| Backend | `~/.sheshnag/backend`, no reload | working tree, `uvicorn --reload` |
+| Frontend | `next build` + `next start` | `npm run dev` (no build step) |
+| Daemon | `~/.gpu-daemon/src` | working tree, `daemon/.venv` |
+| On crash | `Restart=always` | backend/frontend stay down so you see it |
+
+### Install once
+
+The units require dedicated virtual environments at `.venv` and
+`daemon/.venv`. Create them (and install frontend dependencies) before the
+first install:
+
+    python -m venv .venv
+    .venv/bin/pip install -r backend/requirements.txt
+    python -m venv daemon/.venv
+    (cd daemon && .venv/bin/pip install -e ".[dev]")
+    npm install
+    scripts/dev/dev-units.sh install
+
+This templates the repo path and your Node bin directory into the unit files
+and drops them in `~/.config/systemd/user/`. It checks up front that `.venv`,
+`daemon/.venv`, and `node_modules/` exist, and warns about missing `.env`
+files, rather than failing later with an opaque `status=203/EXEC`.
+
+Re-run `install` after moving the repo or switching Node versions — both paths
+are baked in at install time, because systemd user units inherit no shell
+`PATH` and nvm's Node path is version-specific.
+
+### Daily use
+
+```bash
+scripts/dev/dev-units.sh up          # all three
+scripts/dev/dev-units.sh down        # all three
+scripts/dev/dev-units.sh restart
+scripts/dev/dev-units.sh status      # state + whether 8005/3005 are listening
+scripts/dev/dev-units.sh logs        # follow all three, interleaved
+scripts/dev/dev-units.sh logs backend
+```
+
+Plain `systemctl` works too — the script is only a wrapper:
+
+```bash
+systemctl --user start sheshnag-dev.target
+systemctl --user restart sheshnag-backend-dev.service   # one service
+journalctl --user -u sheshnag-daemon-dev.service -f
+```
+
+Two details worth knowing:
+
+- **`status` checks ports, not just unit state.** `active` only means the
+  process launched; it does not mean uvicorn bound 8005.
+- **`down` stops the services by name, not just the target.** Stopping a
+  target returns as soon as the *target* job completes, while the `PartOf=`
+  propagation is still queued — so a naive `stop` reports success while
+  uvicorn still holds port 8005, and a following `up` races it.
+
+### Running the tests
+
+```bash
+scripts/dev/test-all.sh              # backend + daemon + frontend lint
+scripts/dev/test-all.sh backend      # one suite
+```
+
+Each suite runs with the venv it actually needs — the backend uses the
+repo-root `.venv`, the daemon uses `daemon/.venv`. No suite needs a running
+server, so this is safe to run with the dev stack up.
+
+The runner checks for `pytest-asyncio` in `daemon/.venv` before running the
+daemon suite and warns if it is missing, since without it the async tests are
+skipped rather than failed — a green run that did not test anything. See
+[CONTRIBUTING.md](../CONTRIBUTING.md#testing).
+
+### Uninstall
+
+```bash
+scripts/dev/dev-units.sh uninstall
+```
+
+Without `loginctl enable-linger "$USER"` the dev services stop when you log
+out. That is usually what you want on a laptop.
 
 ## See also
 

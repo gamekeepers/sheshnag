@@ -22,21 +22,21 @@ results.
 > Running as services (rootless `systemctl --user`): **[docs/services.md](docs/services.md)**.
 > What follows is the 60-second version.
 
-**Backend** (port 8000):
+**Backend** (port 8005):
 
 ```bash
 cd backend && pip install -r requirements.txt
-python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+python -m uvicorn main:app --host 127.0.0.1 --port 8005 --reload
 ```
 
-**Frontend** (this Next.js app, port 3000):
+**Frontend** (this Next.js app, port 3005):
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). Default admin:
+Open [http://localhost:3005](http://localhost:3005). Default admin:
 `admin@platform.com` / `admin` (forced password change on first login).
 
 **Worker daemon** (on a GPU machine, needs an org worker API key from the
@@ -44,7 +44,7 @@ dashboard):
 
 ```bash
 cd daemon && pip install -r requirements.txt
-python -m daemon.main --backend-url http://localhost:8000 --api-key gk-...
+python -m daemon.main --backend-url http://localhost:8005 --api-key gk-...
 ```
 
 Or the guided installer: `scripts/install.sh` (rootless — no sudo needed; installs to `~/.gpu-daemon` with `systemctl --user` services).

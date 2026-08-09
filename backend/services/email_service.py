@@ -2,29 +2,26 @@
 Mailgun email service.
 Credentials are loaded from environment variables (set in .env file).
 """
-import os
 import logging
 import requests
 
-logger = logging.getLogger(__name__)
+from settings import settings
 
-MAILGUN_API_KEY = os.getenv("MAILGUN_API_KEY")
-MAILGUN_DOMAIN = os.getenv("MAILGUN_DOMAIN")
-MAILGUN_FROM = os.getenv("MAILGUN_FROM", "Sheshnag support <noreply@sheshnag.io>")
+logger = logging.getLogger(__name__)
 
 
 def send_email(to_email: str, subject: str, text: str) -> bool:
     """Send an email via Mailgun. Returns True on success."""
-    if not MAILGUN_API_KEY or not MAILGUN_DOMAIN:
+    if not settings.email_configured:
         logger.warning("Mailgun not configured — skipping email to %s", to_email)
         return False
 
     try:
         response = requests.post(
-            f"https://api.mailgun.net/v3/{MAILGUN_DOMAIN}/messages",
-            auth=("api", MAILGUN_API_KEY),
+            f"https://api.mailgun.net/v3/{settings.mailgun_domain}/messages",
+            auth=("api", settings.mailgun_api_key),
             data={
-                "from": MAILGUN_FROM,
+                "from": settings.mailgun_from,
                 "to": to_email,
                 "subject": subject,
                 "text": text,
@@ -44,7 +41,7 @@ def send_email(to_email: str, subject: str, text: str) -> bool:
 def send_password_reset_email(to_email: str, reset_token: str, frontend_url: str = None) -> bool:
     """Send password reset email with token."""
     if not frontend_url:
-        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+        frontend_url = settings.frontend_url
 
     reset_link = f"{frontend_url}/reset-password?token={reset_token}"
 

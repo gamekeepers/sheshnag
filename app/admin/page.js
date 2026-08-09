@@ -3,17 +3,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { api } from '../lib/api';
 
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
-
-function authHeaders() {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('mk_token') : '';
-  return {
-    'Authorization': `Bearer ${token}`,
-    ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }),
-    'Content-Type': 'application/json',
-  };
-}
 
 /* ── Logo ── */
 function SheshnagLogo({ size = 22 }) {
@@ -123,10 +114,9 @@ function EditUserModal({ user, onClose, onSaved }) {
   async function handleSave() {
     setSaving(true); setErr('');
     try {
-      const res = await fetch(`${BACKEND}/v1/users/${user.id}`, {
+      const res = await api(`/v1/users/${user.id}`, {
         method: 'PUT',
-        headers: authHeaders(),
-        body: JSON.stringify({ full_name: fullName, platform_role: platformRole }),
+        json: { full_name: fullName, platform_role: platformRole },
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
@@ -209,7 +199,7 @@ export default function AdminPage() {
   /* ── load admin profile ── */
   async function loadAdminProfile() {
     try {
-      const res = await fetch(`${BACKEND}/v1/auth/me`, { headers: authHeaders() });
+      const res = await api(`/v1/auth/me`);
       if (res.ok) {
         const d = await res.json();
         setAdminUser({ name: d.full_name || d.email || 'Admin', platform_role: d.platform_role || 'superadmin' });
@@ -221,7 +211,7 @@ export default function AdminPage() {
   const loadJobs = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await fetch(`${BACKEND}/v1/batches`, { headers: authHeaders() });
+      const res = await api(`/v1/batches`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setJobs((data.data || data || []).map(mapBatch));
@@ -237,7 +227,7 @@ export default function AdminPage() {
   /* ── load all users ── */
   const loadUsers = useCallback(async () => {
     try {
-      const res = await fetch(`${BACKEND}/v1/admin/users`, { headers: authHeaders() });
+      const res = await api(`/v1/admin/users`);
       if (res.ok) {
         const d = await res.json();
         setUsers(Array.isArray(d) ? d : (d.data || d.users || []));
@@ -248,7 +238,7 @@ export default function AdminPage() {
   /* ── load all workers ── */
   const loadWorkers = useCallback(async () => {
     try {
-      const res = await fetch(`${BACKEND}/v1/admin/workers`, { headers: authHeaders() });
+      const res = await api(`/v1/admin/workers`);
       if (res.ok) {
         const d = await res.json();
         setWorkers(Array.isArray(d) ? d : (d.data || []));
@@ -259,7 +249,7 @@ export default function AdminPage() {
   /* ── load allowed signup domains ── */
   const loadDomains = useCallback(async () => {
     try {
-      const res = await fetch(`${BACKEND}/v1/admin/allowed-domains`, { headers: authHeaders() });
+      const res = await api(`/v1/admin/allowed-domains`);
       if (res.ok) {
         const d = await res.json();
         setDomains(d.data || []);
@@ -272,14 +262,13 @@ export default function AdminPage() {
     setDomainErr('');
     setDomainBusy(true);
     try {
-      const res = await fetch(`${BACKEND}/v1/admin/allowed-domains`, {
+      const res = await api(`/v1/admin/allowed-domains`, {
         method: 'POST',
-        headers: authHeaders(),
-        body: JSON.stringify({
+        json: {
           domain: domainForm.domain,
           include_subdomains: domainForm.include_subdomains,
           note: domainForm.note || null,
-        }),
+        },
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
@@ -304,9 +293,8 @@ export default function AdminPage() {
     if (!window.confirm(warning)) return;
     setDomainErr('');
     try {
-      const res = await fetch(`${BACKEND}/v1/admin/allowed-domains/${id}`, {
-        method: 'DELETE', headers: authHeaders(),
-      });
+      const res = await api(`/v1/admin/allowed-domains/${id}`, {
+        method: 'DELETE',      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await loadDomains();
     } catch (err) {

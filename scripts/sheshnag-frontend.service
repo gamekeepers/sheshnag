@@ -12,8 +12,11 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/.sheshnag
 ExecStartPre=/bin/sh -c 'cd %h/.sheshnag && npm run build'
-ExecStart=/bin/sh -c 'cd %h/.sheshnag && npm start -- -p 3000'
-EnvironmentFile=-%h/.sheshnag/.env.local
+ExecStart=/bin/sh -c 'cd %h/.sheshnag && npm start -- -p 3005'
+# Not optional (no `-` prefix): ExecStartPre builds the bundle, and the build
+# fails without NEXT_PUBLIC_BACKEND_URL. Requiring the file turns a missing
+# config into "unit failed, file not found" instead of an opaque build error.
+EnvironmentFile=%h/.sheshnag/.env.local
 Restart=always
 RestartSec=10
 TimeoutStartSec=900

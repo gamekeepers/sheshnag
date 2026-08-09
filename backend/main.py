@@ -1,11 +1,12 @@
-from dotenv import load_dotenv
-load_dotenv()
-
 import asyncio
-import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from settings import settings, warn_on_insecure_defaults
 from database import engine, Base
 from routers import files, batches, workers, auth, users, organizations, models as models_router
 from models import User, Organization, OrganizationMembership
@@ -14,24 +15,19 @@ from migrations import run_startup_migrations
 from catalog_seed import seed_model_catalog
 from sweeper import run_sweeper
 
+warn_on_insecure_defaults()
+
 Base.metadata.create_all(bind=engine)
 run_startup_migrations(engine)
 seed_model_catalog()
 
-# Comma-separated origins, or "*" for all. Browsers reject a wildcard origin
-# when credentials are allowed, so the two settings are derived together
-# rather than configured independently.
-_CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
-if not _CORS_ORIGINS:  # blank or all-empty value means "unset", not "block everything"
-    _CORS_ORIGINS = ["*"]
-_ALLOW_CREDS = "*" not in _CORS_ORIGINS
 
 app = FastAPI(title="Batch AI Compute Platform")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_CORS_ORIGINS,
-    allow_credentials=_ALLOW_CREDS,
+    allow_origins=settings.cors_origins,
+    allow_credentials=settings.cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )

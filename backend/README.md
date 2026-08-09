@@ -9,10 +9,10 @@ version:
 ```bash
 cd backend
 pip install -r requirements.txt
-python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+python -m uvicorn main:app --host 127.0.0.1 --port 8005 --reload
 ```
 
-**Interactive API docs:** [http://localhost:8000/docs](http://localhost:8000/docs) (Swagger UI)
+**Interactive API docs:** [http://localhost:8005/docs](http://localhost:8005/docs) (Swagger UI)
 
 The rest of this file documents the API contract and is the reference for
 backend behaviour; it does not repeat setup instructions.
