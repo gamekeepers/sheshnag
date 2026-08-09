@@ -310,7 +310,7 @@ journalctl --user -u sheshnag-daemon-dev.service -f
 Two details worth knowing:
 
 - **`status` checks ports, not just unit state.** `active` only means the
-  process launched; it does not mean uvicorn bound 8000.
+  process launched; it does not mean uvicorn bound 8005.
 - **`down` stops the services by name, not just the target.** Stopping a
   target returns as soon as the *target* job completes, while the `PartOf=`
   propagation is still queued — so a naive `stop` reports success while
