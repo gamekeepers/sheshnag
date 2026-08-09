@@ -69,7 +69,7 @@ Every variable the platform reads at runtime. Defaults are pulled from live code
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `NEXT_PUBLIC_BACKEND_URL` | no | `http://localhost:8005` | Backend API base URL |
+| `NEXT_PUBLIC_BACKEND_URL` | for production builds | `http://localhost:8005` (dev only) | Backend API base URL. `npm run dev` falls back to the default; `npm run build` **fails** if it is unset, because `NEXT_PUBLIC_*` values are inlined into the bundle at build time — an unset variable ships a production bundle pointing at the builder's own laptop, which surfaces later as a confusing CORS or network error. |
 | `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | if Google OAuth | _(must set)_ | Google OAuth client ID |
 | `NEXT_PUBLIC_NGROK_ENABLED` | no | unset / falsy | Set `"true"` behind ngrok tunnels to skip browser warnings |
 

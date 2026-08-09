@@ -1,0 +1,21 @@
+# systemd USER target — Sheshnag dev stack (backend + frontend + daemon)
+#
+# Not installed directly: `scripts/dev/dev-units.sh install` substitutes the
+# repo path and copies this into ~/.config/systemd/user/.
+#
+#   systemctl --user start sheshnag-dev.target   # all three up
+#   systemctl --user stop  sheshnag-dev.target   # all three down
+#
+# Each service declares PartOf= this target, which is what makes `stop`
+# propagate. Wants= (not Requires=) so one service failing to start does not
+# tear the other two down — in dev you usually want the survivors running.
+
+[Unit]
+Description=Sheshnag dev stack (backend + frontend + daemon)
+Wants=sheshnag-backend-dev.service
+Wants=sheshnag-frontend-dev.service
+Wants=sheshnag-daemon-dev.service
+After=sheshnag-backend-dev.service
+
+[Install]
+WantedBy=default.target

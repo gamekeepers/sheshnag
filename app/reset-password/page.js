@@ -3,8 +3,8 @@
 import { useState, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
+import { api } from '../lib/api';
 
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8005';
 
 const INK = '#16182d';
 const MUTED = '#5c5f73';
@@ -64,10 +64,10 @@ function ResetPasswordForm() {
     setError('');
 
     try {
-      const res = await fetch(`${BACKEND}/v1/auth/reset-password`, {
+      const res = await api(`/v1/auth/reset-password`, {
+        auth: false,
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }) },
-        body: JSON.stringify({ token, new_password: password }),
+        json: { token, new_password: password },
       });
 
       if (!res.ok) {

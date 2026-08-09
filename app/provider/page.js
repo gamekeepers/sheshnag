@@ -4,8 +4,8 @@ import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import '../dashboard/dashboard.css';
+import { api } from '../lib/api';
 
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8005';
 
 function SheshnagLogo({ size = 22 }) {
   return (
@@ -86,20 +86,11 @@ export default function ProviderPage() {
     setToken(tk);
   }, [router]);
 
-  const getHeaders = useCallback(() => {
-    const h = {
-      'Authorization': `Bearer ${localStorage.getItem('mk_token')}`,
-      'Content-Type': 'application/json',
-    };
-    if (process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true') h['ngrok-skip-browser-warning'] = 'true';
-    return h;
-  }, []);
-
   // ── Loaders (all org-scoped, /v1/orgs — the single source of org data) ──
 
   const loadOrgs = useCallback(async () => {
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs`, { headers: getHeaders() });
+      const res = await api(`/v1/orgs`);
       if (!res.ok) return;
       const data = await res.json();
       const list = data.data || [];
@@ -114,51 +105,51 @@ export default function ProviderPage() {
     } catch (e) {
       console.error('Failed to load orgs:', e);
     }
-  }, [getHeaders]);
+  }, []);
 
   const loadWorkers = useCallback(async () => {
     if (!selectedOrg) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/workers`, { headers: getHeaders() });
+      const res = await api(`/v1/orgs/${selectedOrg.id}/workers`);
       if (res.ok) setWorkers((await res.json()).data || []);
     } catch (e) { console.error('Failed to load workers:', e); }
-  }, [selectedOrg, getHeaders]);
+  }, [selectedOrg]);
 
   const loadServed = useCallback(async () => {
     if (!selectedOrg) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/batches?limit=200`, { headers: getHeaders() });
+      const res = await api(`/v1/orgs/${selectedOrg.id}/batches?limit=200`);
       if (res.ok) setServed((await res.json()).data || []);
     } catch (e) { console.error('Failed to load served jobs:', e); }
-  }, [selectedOrg, getHeaders]);
+  }, [selectedOrg]);
 
   const loadStats = useCallback(async () => {
     if (!selectedOrg) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/stats?days=7`, { headers: getHeaders() });
+      const res = await api(`/v1/orgs/${selectedOrg.id}/stats?days=7`);
       if (res.ok) setStats(await res.json());
     } catch (e) { console.error('Failed to load stats:', e); }
-  }, [selectedOrg, getHeaders]);
+  }, [selectedOrg]);
 
   const loadKeys = useCallback(async () => {
     if (!selectedOrg) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/api-keys`, { headers: getHeaders() });
+      const res = await api(`/v1/orgs/${selectedOrg.id}/api-keys`);
       if (res.ok) setOrgKeys((await res.json()).data || []);
     } catch (e) { console.error('Failed to load keys:', e); }
-  }, [selectedOrg, getHeaders]);
+  }, [selectedOrg]);
 
   const loadMembers = useCallback(async () => {
     if (!selectedOrg) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members`, { headers: getHeaders() });
+      const res = await api(`/v1/orgs/${selectedOrg.id}/members`);
       if (res.ok) setOrgMembers((await res.json()).data || []);
       if (canManage) {
-        const inv = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members/invites`, { headers: getHeaders() });
+        const inv = await api(`/v1/orgs/${selectedOrg.id}/members/invites`);
         if (inv.ok) setOrgInvites((await inv.json()).data || []);
       }
     } catch (e) { console.error('Failed to load members:', e); }
-  }, [selectedOrg, canManage, getHeaders]);
+  }, [selectedOrg, canManage]);
 
   useEffect(() => {
     if (token) loadOrgs();
@@ -210,9 +201,8 @@ export default function ProviderPage() {
     const action = worker.status === 'draining' ? 'undrain' : 'drain';
     if (action === 'drain' && !confirm(`Drain ${worker.hostname}? It finishes its current batch and takes no new jobs.`)) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/workers/${worker.id}/${action}`, {
-        method: 'POST', headers: getHeaders(),
-      });
+      const res = await api(`/v1/orgs/${selectedOrg.id}/workers/${worker.id}/${action}`, {
+        method: 'POST',      });
       if (res.ok) loadWorkers();
       else alert((await res.json()).detail || `Failed to ${action}`);
     } catch (e) { console.error(e); }
@@ -221,9 +211,8 @@ export default function ProviderPage() {
   const handleRemoveWorker = async (worker) => {
     if (!confirm(`Remove ${worker.hostname} and its inventory? Job history is kept.`)) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/workers/${worker.id}`, {
-        method: 'DELETE', headers: getHeaders(),
-      });
+      const res = await api(`/v1/orgs/${selectedOrg.id}/workers/${worker.id}`, {
+        method: 'DELETE',      });
       if (res.ok) loadWorkers();
       else alert((await res.json()).detail || 'Failed to remove worker');
     } catch (e) { console.error(e); }
@@ -233,8 +222,8 @@ export default function ProviderPage() {
     if (!orgName.trim() || !selectedOrg) return;
     setOrgStatus('Saving…');
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}`, {
-        method: 'PUT', headers: getHeaders(), body: JSON.stringify({ name: orgName }),
+      const res = await api(`/v1/orgs/${selectedOrg.id}`, {
+        method: 'PUT', json: { name: orgName },
       });
       if (res.ok) {
         setOrgStatus('Saved');
@@ -249,9 +238,8 @@ export default function ProviderPage() {
   const handleInvite = async () => {
     if (!inviteEmail) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members/invite`, {
-        method: 'POST', headers: getHeaders(),
-        body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
+      const res = await api(`/v1/orgs/${selectedOrg.id}/members/invite`, {
+        method: 'POST',        json: { email: inviteEmail, role: inviteRole },
       });
       if (res.ok) { setInviteEmail(''); loadMembers(); }
       else alert((await res.json()).detail || 'Failed to invite');
@@ -261,9 +249,8 @@ export default function ProviderPage() {
   const handleRevokeInvite = async (tok) => {
     if (!confirm('Revoke this invite?')) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members/invites/${tok}`, {
-        method: 'DELETE', headers: getHeaders(),
-      });
+      const res = await api(`/v1/orgs/${selectedOrg.id}/members/invites/${tok}`, {
+        method: 'DELETE',      });
       if (res.ok) loadMembers();
     } catch (e) { console.error(e); }
   };
@@ -276,8 +263,8 @@ export default function ProviderPage() {
       return;
     }
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members/${member.user_id}`, {
-        method: 'PUT', headers: getHeaders(), body: JSON.stringify({ role: newRole }),
+      const res = await api(`/v1/orgs/${selectedOrg.id}/members/${member.user_id}`, {
+        method: 'PUT', json: { role: newRole },
       });
       if (res.ok) loadMembers();
       else { alert((await res.json()).detail || 'Failed to update role'); loadMembers(); }
@@ -287,9 +274,8 @@ export default function ProviderPage() {
   const handleRemoveMember = async (member) => {
     if (!confirm(`Remove ${member.full_name || member.email} from ${selectedOrg.name}?`)) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/members/${member.user_id}`, {
-        method: 'DELETE', headers: getHeaders(),
-      });
+      const res = await api(`/v1/orgs/${selectedOrg.id}/members/${member.user_id}`, {
+        method: 'DELETE',      });
       if (res.ok) loadMembers();
       else alert((await res.json()).detail || 'Failed to remove member');
     } catch (e) { console.error(e); }
@@ -298,9 +284,8 @@ export default function ProviderPage() {
   const handleCreateKey = async () => {
     if (!newKeyName.trim()) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/api-keys`, {
-        method: 'POST', headers: getHeaders(),
-        body: JSON.stringify({ name: newKeyName.trim() }),
+      const res = await api(`/v1/orgs/${selectedOrg.id}/api-keys`, {
+        method: 'POST',        json: { name: newKeyName.trim() },
       });
       if (res.ok) {
         // The backend returns the raw key exactly once — show it now.
@@ -317,9 +302,8 @@ export default function ProviderPage() {
   const handleRevokeKey = async (key) => {
     if (!confirm(`Revoke "${key.name || key.key_prefix}"? Every daemon using it stops registering immediately.`)) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/api-keys/${key.id}`, {
-        method: 'DELETE', headers: getHeaders(),
-      });
+      const res = await api(`/v1/orgs/${selectedOrg.id}/api-keys/${key.id}`, {
+        method: 'DELETE',      });
       if (res.ok) loadKeys();
       else alert((await res.json()).detail || 'Failed to revoke key');
     } catch (e) { console.error(e); }
@@ -328,9 +312,8 @@ export default function ProviderPage() {
   const handleCreateOrg = async () => {
     if (!newOrgName.trim()) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/me/organizations`, {
-        method: 'POST', headers: getHeaders(),
-        body: JSON.stringify({ name: newOrgName.trim() }),
+      const res = await api(`/v1/me/organizations`, {
+        method: 'POST',        json: { name: newOrgName.trim() },
       });
       if (res.ok) {
         const org = await res.json();

@@ -44,7 +44,9 @@ signal the task needs a human, not a signal to find a way around the rule.
 | `backend/` | FastAPI REST API + SQLite | Python, no Alembic |
 | `daemon/` | GPU worker daemon | Python 3.12+, polls backend for jobs, runs Ollama (default) or vLLM |
 
-Frontend reads `NEXT_PUBLIC_BACKEND_URL` (default `http://localhost:8005`).
+Frontend reads `NEXT_PUBLIC_BACKEND_URL` — it defaults to
+`http://localhost:8005` in dev, but `npm run build` fails without it, since
+the value is inlined into the bundle and there is no safe production default.
 Copy `.env.example` → `.env` for the frontend and `backend/.env.example` →
 `backend/.env` for the backend.
 
