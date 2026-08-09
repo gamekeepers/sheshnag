@@ -16,8 +16,7 @@ export const USER_KEY = 'mk_user';
 // one: NEXT_PUBLIC_* values are inlined at build time, so without this the
 // bundle silently ships pointing at the builder's own laptop and fails later
 // as a confusing CORS or network error. `npm run dev` keeps the localhost
-// fallback. Documented as required for builds in docs/setup.md, and the
-// production unit declares its env file as required to match.
+// fallback.
 if (!process.env.NEXT_PUBLIC_BACKEND_URL && process.env.NODE_ENV === 'production') {
   throw new Error(
     'NEXT_PUBLIC_BACKEND_URL must be set for production builds — put it in ' +
@@ -128,12 +127,10 @@ function parseFrame(frame) {
  *   es.addEventListener('validation_complete', () => { ...; es.close(); });
  *   es.addEventListener('error', () => es.close());
  *
- * Deliberately not `new EventSource()`. EventSource cannot set request
+ * Deliberately not `new EventSource()`: EventSource cannot set request
  * headers, so it cannot send the bearer token, and every SSE route here sits
- * behind `get_human_context` — the connection was rejected before the first
- * event and callers waited for a `validation_complete` that never arrived.
- * This reads the stream over fetch(), which does carry the Authorization
- * header, and parses the frames itself.
+ * behind `get_human_context`. This reads the stream over fetch(), which does
+ * carry the Authorization header, and parses the frames itself.
  *
  * The returned handle is EventSource-shaped for the two methods call sites
  * use — addEventListener(type, fn) and close() — but does not reconnect:

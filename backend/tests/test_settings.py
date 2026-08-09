@@ -1,13 +1,8 @@
 """Settings accessor tests.
 
-These cover the two properties with real logic in them — `cors_origins`'s
-parsing and the `cors_allow_credentials` value derived from it. The pairing
-matters: a wildcard origin combined with `allow_credentials=True` is rejected
-outright by browsers, so every parse result is asserted together with the
-credentials flag it produces rather than separately.
-
-Also pins the lazy read: the accessors call `os.getenv` on access, so
-`monkeypatch.setenv` must be visible without re-importing the module.
+A wildcard origin combined with `allow_credentials=True` is rejected outright
+by browsers, so every `cors_origins` parse result is asserted together with the
+`cors_allow_credentials` it produces rather than separately.
 """
 
 import pytest

@@ -37,28 +37,21 @@ info() { printf '\033[32m==>\033[0m %s\n' "$*"; }
 
 # ── Templating ───────────────────────────────────────────────
 #
-# A checkout path is not guaranteed to be tame: `~/work/Sheshnag Dev` is
-# perfectly legal, and so are `&`, `|`, `%` and backslashes. Two separate
-# hazards follow from that, so neither substitution nor systemd quoting can be
-# done naively.
+# A checkout path is not guaranteed to be tame — `~/work/Sheshnag Dev`, `&`,
+# `|`, `%` and backslashes are all legal — and systemd is fussy in different
+# ways per setting. Verified against systemd 255:
 #
-# 1. `sed` would interpret the replacement text — `&` means "the whole match"
-#    and `|` was the delimiter — so paths containing either produced silently
-#    wrong units. Substitution is therefore done with bash string replacement,
-#    which treats the value as literal text and has nothing to escape.
+#   WorkingDirectory=, EnvironmentFile=  take the rest of the line verbatim.
+#     Spaces are fine unquoted, and wrapping the value in quotes actively
+#     breaks them ("path is not absolute").
+#   ExecStart=, Environment=             are split like a shell command line,
+#     so any value containing a space must be quoted.
+#   All of them expand %-specifiers (%h, %i, …), so a literal `%` has to be
+#     doubled or it is eaten.
 #
-# 2. systemd is fussy in *different ways per setting*. Verified against
-#    systemd 255:
-#      WorkingDirectory=, EnvironmentFile=  take the rest of the line
-#        verbatim. Spaces are fine unquoted — and wrapping the value in quotes
-#        actively breaks them ("path is not absolute").
-#      ExecStart=, Environment=             are split like a shell command
-#        line, so any value containing a space *must* be quoted.
-#      All of them expand %-specifiers (%h, %i, …), so a literal `%` in the
-#        path has to be doubled or it is eaten.
-#    Hence two escaping helpers and placeholders that name their context: a
-#    template must use @REPO@ only where the value is taken verbatim, and a
-#    whole-value placeholder wherever it lands in a command line.
+# Hence two escaping helpers, and placeholders that name their context: a
+# template uses @REPO@ only where the value is taken verbatim, and a
+# whole-value placeholder wherever it lands in a command line.
 
 # Value for a setting that takes the line verbatim (WorkingDirectory=, …).
 sd_raw() { printf '%s' "${1//%/%%}"; }
@@ -74,11 +67,10 @@ sd_quote() {
 
 # Replace every occurrence of a literal token, literally.
 #
-# Not `${s//tok/val}`: since bash 5.2 an unquoted `&` in the replacement
-# expands to the matched text, so a checkout under `~/Sheshnag & Co` put the
-# token back into its own substitution. Prefix/suffix removal plus plain
-# concatenation has no such rule — this is the same class of bug as sed's `&`,
-# which is what the substitution used to be written with.
+# Neither sed nor `${s//tok/val}` is safe here: both give `&` in the
+# replacement a meaning ("the matched text"), so a path containing one
+# corrupts its own substitution. Prefix/suffix removal plus plain
+# concatenation has no such rule.
 subst() {
   local s="$1" tok="$2" val="$3" out=''
   while [[ "$s" == *"$tok"* ]]; do
