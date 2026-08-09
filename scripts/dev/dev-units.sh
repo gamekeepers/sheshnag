@@ -35,6 +35,72 @@ die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 warn() { printf '\033[33mwarn:\033[0m %s\n' "$*" >&2; }
 info() { printf '\033[32m==>\033[0m %s\n' "$*"; }
 
+# ── Templating ───────────────────────────────────────────────
+#
+# A checkout path is not guaranteed to be tame: `~/work/Sheshnag Dev` is
+# perfectly legal, and so are `&`, `|`, `%` and backslashes. Two separate
+# hazards follow from that, so neither substitution nor systemd quoting can be
+# done naively.
+#
+# 1. `sed` would interpret the replacement text — `&` means "the whole match"
+#    and `|` was the delimiter — so paths containing either produced silently
+#    wrong units. Substitution is therefore done with bash string replacement,
+#    which treats the value as literal text and has nothing to escape.
+#
+# 2. systemd is fussy in *different ways per setting*. Verified against
+#    systemd 255:
+#      WorkingDirectory=, EnvironmentFile=  take the rest of the line
+#        verbatim. Spaces are fine unquoted — and wrapping the value in quotes
+#        actively breaks them ("path is not absolute").
+#      ExecStart=, Environment=             are split like a shell command
+#        line, so any value containing a space *must* be quoted.
+#      All of them expand %-specifiers (%h, %i, …), so a literal `%` in the
+#        path has to be doubled or it is eaten.
+#    Hence two escaping helpers and placeholders that name their context: a
+#    template must use @REPO@ only where the value is taken verbatim, and a
+#    whole-value placeholder wherever it lands in a command line.
+
+# Value for a setting that takes the line verbatim (WorkingDirectory=, …).
+sd_raw() { printf '%s' "${1//%/%%}"; }
+
+# Value for a setting parsed as a command line (ExecStart=, Environment=):
+# escaped and wrapped in quotes, which systemd strips back off.
+sd_quote() {
+  local v="${1//%/%%}"
+  v="${v//\\/\\\\}"
+  v="${v//\"/\\\"}"
+  printf '"%s"' "$v"
+}
+
+# Replace every occurrence of a literal token, literally.
+#
+# Not `${s//tok/val}`: since bash 5.2 an unquoted `&` in the replacement
+# expands to the matched text, so a checkout under `~/Sheshnag & Co` put the
+# token back into its own substitution. Prefix/suffix removal plus plain
+# concatenation has no such rule — this is the same class of bug as sed's `&`,
+# which is what the substitution used to be written with.
+subst() {
+  local s="$1" tok="$2" val="$3" out=''
+  while [[ "$s" == *"$tok"* ]]; do
+    out+="${s%%"$tok"*}$val"
+    s="${s#*"$tok"}"
+  done
+  printf '%s' "$out$s"
+}
+
+render_unit() {
+  local src="$1" dst="$2" line
+  # `read -r` so a backslash in the template survives verbatim.
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="$(subst "$line" '@REPO@'           "$SD_REPO")"
+    line="$(subst "$line" '@BACKEND_PYTHON@' "$SD_BACKEND_PYTHON")"
+    line="$(subst "$line" '@DAEMON_PYTHON@'  "$SD_DAEMON_PYTHON")"
+    line="$(subst "$line" '@NPM@'            "$SD_NPM")"
+    line="$(subst "$line" '@NODE_PATH@'      "$SD_NODE_PATH")"
+    printf '%s\n' "$line"
+  done < "$src" > "$dst"
+}
+
 cmd_install() {
   # Fail loudly at install time rather than with an opaque status=203 later.
   [[ -x "$REPO/.venv/bin/python" ]] \
@@ -64,13 +130,36 @@ cmd_install() {
     warn "  fix: cd daemon && .venv/bin/pip install -e \".[dev]\""
   fi
 
+  # A newline in a path cannot be represented in a unit file at all — say so
+  # here rather than emitting a file that fails to parse.
+  [[ "$REPO" == *$'\n'* || "$node_dir" == *$'\n'* ]] \
+    && die "path contains a newline, which systemd unit files cannot express"
+
+  SD_REPO="$(sd_raw "$REPO")"
+  SD_BACKEND_PYTHON="$(sd_quote "$REPO/.venv/bin/python")"
+  SD_DAEMON_PYTHON="$(sd_quote "$REPO/daemon/.venv/bin/python")"
+  SD_NPM="$(sd_quote "$node_dir/npm")"
+  SD_NODE_PATH="$(sd_quote "$node_dir:/usr/local/bin:/usr/bin:/bin")"
+
   mkdir -p "$UNIT_DIR"
   local u
   for u in "${UNITS[@]}"; do
-    sed -e "s|@REPO@|$REPO|g" -e "s|@NODE_BIN@|$node_dir|g" \
-      "$REPO/scripts/dev/$u" > "$UNIT_DIR/$u"
+    render_unit "$REPO/scripts/dev/$u" "$UNIT_DIR/$u"
   done
   systemctl --user daemon-reload
+
+  # The units are generated, so a path this script mishandled shows up as a
+  # parse error here rather than as an opaque failure on first start.
+  if command -v systemd-analyze >/dev/null; then
+    local problems
+    for u in "${SERVICES[@]}"; do
+      problems="$(systemd-analyze --user verify "$UNIT_DIR/$u" 2>&1 || true)"
+      if [[ -n "$problems" ]]; then
+        printf '%s\n' "$problems" >&2
+        die "generated $u is not a valid unit — see above"
+      fi
+    done
+  fi
 
   info "installed ${#UNITS[@]} units into $UNIT_DIR"
   info "  repo: $REPO"

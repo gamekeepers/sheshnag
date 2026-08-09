@@ -181,7 +181,11 @@ journalctl --user -u sheshnag-frontend -f
 
 The unit assumes:
 - Repo cloned at `~/.sheshnag/`
-- Production env file at `~/.sheshnag/.env.local`
+- Production env file at `~/.sheshnag/.env.local` — **required**, not optional.
+  `NEXT_PUBLIC_BACKEND_URL` is inlined into the bundle at build time and has no
+  safe production default, so `ExecStartPre`'s `npm run build` fails without
+  it. The unit declares the file without a `-` prefix so a missing file fails
+  the unit with a clear message rather than an opaque build error.
 
 **Rebuild after env changes:** whenever you edit `.env.local`, restart the service to trigger a fresh build:
 ```bash

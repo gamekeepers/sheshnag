@@ -7,7 +7,10 @@
 # Uses DAEMON_API_KEY from daemon/.env, or falls back to saved credentials at
 # ~/.gpu-daemon/credentials. See daemon/.env.example.
 #
-# @REPO@ is substituted at install time by scripts/dev/dev-units.sh.
+# Substituted at install time by scripts/dev/dev-units.sh. @REPO@ is only
+# valid in settings that take the line verbatim; anything landing in a command
+# line gets a whole-value placeholder (@DAEMON_PYTHON@) so the script can
+# quote it — see the escaping notes there.
 
 [Unit]
 Description=Sheshnag GPU worker daemon — dev (local backend)
@@ -22,7 +25,7 @@ StartLimitBurst=5
 Type=simple
 WorkingDirectory=@REPO@/daemon
 EnvironmentFile=-@REPO@/daemon/.env
-ExecStart=@REPO@/daemon/.venv/bin/python -m daemon.main --config config.yaml --backend-url http://localhost:8005
+ExecStart=@DAEMON_PYTHON@ -m daemon.main --config config.yaml --backend-url http://localhost:8005
 # The daemon can lose its first poll while the backend is still binding, so
 # retry — but cap it, or a bad API key restart-loops until you notice.
 Restart=on-failure

@@ -8,10 +8,14 @@
 # Next.js loads the repo-root .env itself, so this unit deliberately does NOT
 # declare an EnvironmentFile — one loader, one source of truth.
 #
-# @REPO@ and @NODE_BIN@ are substituted at install time by dev-units.sh.
-# systemd user units inherit no shell PATH, so @NODE_BIN@ (resolved from
-# `command -v npm`) must be explicit — under nvm it is version-specific, so
-# re-run `dev-units.sh install` after switching Node versions.
+# Substituted at install time by dev-units.sh. @REPO@ is only valid in
+# settings that take the line verbatim; @NODE_PATH@ and @NPM@ are whole-value
+# placeholders because their settings are parsed as command lines and the
+# script has to quote them — see the escaping notes there.
+#
+# systemd user units inherit no shell PATH, so the node directory (resolved
+# from `command -v npm`) must be explicit — under nvm it is version-specific,
+# so re-run `dev-units.sh install` after switching Node versions.
 
 [Unit]
 Description=Sheshnag frontend — dev (next dev, port 3005)
@@ -22,11 +26,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=@REPO@
-Environment=PATH=@NODE_BIN@:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=@NODE_PATH@
 # The port comes from package.json's `next dev -p 3005`, which is the single
 # source of truth for the frontend port — do not add -p here, an explicit flag
 # would silently diverge from `npm run dev` run by hand.
-ExecStart=@NODE_BIN@/npm run dev
+ExecStart=@NPM@ run dev
 Restart=no
 # next dev spawns worker children; kill the whole cgroup or port 3005 leaks.
 KillMode=control-group

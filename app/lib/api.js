@@ -13,10 +13,16 @@ export const TOKEN_KEY = 'mk_token';
 export const USER_KEY = 'mk_user';
 
 // A missing backend URL in a production build is a deploy bug, not a runtime
-// one: without this the bundle silently ships pointing at the developer's own
-// laptop and fails later as a confusing CORS or network error.
+// one: NEXT_PUBLIC_* values are inlined at build time, so without this the
+// bundle silently ships pointing at the builder's own laptop and fails later
+// as a confusing CORS or network error. `npm run dev` keeps the localhost
+// fallback. Documented as required for builds in docs/setup.md, and the
+// production unit declares its env file as required to match.
 if (!process.env.NEXT_PUBLIC_BACKEND_URL && process.env.NODE_ENV === 'production') {
-  throw new Error('NEXT_PUBLIC_BACKEND_URL must be set for production builds');
+  throw new Error(
+    'NEXT_PUBLIC_BACKEND_URL must be set for production builds — put it in ' +
+    '.env (or .env.local for the deployed service). See docs/setup.md.'
+  );
 }
 
 /** Absolute URL for a backend path. Only needed where fetch isn't used. */
