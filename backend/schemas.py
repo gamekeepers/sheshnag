@@ -203,6 +203,12 @@ class ResetPasswordRequest(BaseModel):
     new_password: NewPassword
 
 
+class AllowedDomainCreate(BaseModel):
+    domain: str                          # bare domain, e.g. "dau.ac.in"
+    include_subdomains: bool = False
+    note: Optional[str] = None
+
+
 class GoogleAuthRequest(BaseModel):
     id_token: str   # Google ID token from the frontend
 

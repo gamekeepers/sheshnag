@@ -12,6 +12,10 @@ def generate_user_id():
     return f"user-{uuid.uuid4().hex[:24]}"
 
 
+def generate_allowed_domain_id():
+    return f"domain-{uuid.uuid4().hex[:24]}"
+
+
 def generate_org_id():
     return f"org-{uuid.uuid4().hex[:24]}"
 
@@ -73,6 +77,29 @@ class User(Base):
     created_at           = Column(Integer, default=unix_now)
 
     memberships = relationship("OrganizationMembership", back_populates="user")
+
+
+class AllowedEmailDomain(Base):
+    """A domain permitted to self-register.
+
+    Governs *self-service* signup only — both the password and Google paths.
+    Invites and superadmin-created users are deliberately exempt: inviting an
+    external collaborator is a considered act, and gating it would break
+    cross-institution work.
+
+    **An empty table means no restriction.** Fail-open is deliberate: a fresh
+    install has no superadmin yet, so failing closed would lock out the very
+    account needed to add the first domain. Enforcement is opt-in, switched on
+    by adding one row.
+    """
+    __tablename__ = "allowed_email_domains"
+
+    id                 = Column(String, primary_key=True, default=generate_allowed_domain_id)
+    domain             = Column(String, unique=True, nullable=False)  # lower-case, no leading '@'
+    include_subdomains = Column(Boolean, default=False)
+    note               = Column(String, nullable=True)   # e.g. "Students"
+    created_by_id      = Column(String, ForeignKey("users.id"), nullable=True)
+    created_at         = Column(Integer, default=unix_now)
 
 
 class Organization(Base):
