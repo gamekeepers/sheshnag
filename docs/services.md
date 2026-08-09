@@ -264,9 +264,16 @@ Differences from the production units above:
 
 ### Install once
 
-```bash
-scripts/dev/dev-units.sh install
-```
+The units require dedicated virtual environments at `.venv` and
+`daemon/.venv`. Create them (and install frontend dependencies) before the
+first install:
+
+    python -m venv .venv
+    .venv/bin/pip install -r backend/requirements.txt
+    python -m venv daemon/.venv
+    (cd daemon && .venv/bin/pip install -e ".[dev]")
+    npm install
+    scripts/dev/dev-units.sh install
 
 This templates the repo path and your Node bin directory into the unit files
 and drops them in `~/.config/systemd/user/`. It checks up front that `.venv`,
