@@ -2,8 +2,10 @@ import asyncio
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-# First local import: importing settings is what calls load_dotenv(), so it must
-# precede any module that reads the environment.
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from settings import settings, warn_on_insecure_defaults
 from database import engine, Base
 from routers import files, batches, workers, auth, users, organizations, models as models_router

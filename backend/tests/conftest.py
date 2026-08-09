@@ -6,8 +6,11 @@ Creates a fresh DB session per request (matching production get_db behaviour).
 """
 
 import pytest
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
+
+load_dotenv()
 
 # Import models to register their tables with Base.metadata BEFORE creating the engine.
 from database import Base, get_db

@@ -12,20 +12,13 @@ Two deliberate design points:
    `monkeypatch.setenv` without re-importing modules; runtime `.env` or service
    environment changes still require a process restart.
 
-2. **`load_dotenv()` is called here.** It used to live only at the top of
-   `main.py`, so anything imported before it (or without it, like a test
-   importing `database` directly) silently saw an unpopulated environment.
-   Importing settings now guarantees `.env` is loaded, whatever the entrypoint.
+2. **Environment loading happens in entrypoints.** `load_dotenv()` is called
+   from application/test bootstrap code before modules import `settings`, so
+   importing this module itself has no config-file I/O side effects.
 """
 
 import logging
 import os
-
-from dotenv import load_dotenv
-
-# Idempotent, and does not override variables already set in the real
-# environment — so container/systemd config still wins over a stray .env file.
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 
