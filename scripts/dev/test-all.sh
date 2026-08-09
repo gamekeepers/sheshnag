@@ -42,8 +42,9 @@ if want daemon "${TARGETS[@]}"; then
   # Without it the async tests are skipped silently rather than failing —
   # check up front so a green run means what it looks like.
   if ! "$REPO/daemon/.venv/bin/python" -c "import pytest_asyncio" 2>/dev/null; then
-    printf '\033[33mwarn:\033[0m pytest-asyncio missing in daemon/.venv — async tests will not run.\n' >&2
-    printf '      fix: cd daemon && .venv/bin/pip install -e ".[dev]"\n' >&2
+    printf '\033[31merror:\033[0m pytest-asyncio missing in daemon/.venv — async tests cannot run.\n' >&2
+    printf '       fix: cd daemon && .venv/bin/pip install -e ".[dev]"\n' >&2
+    FAILED+=("daemon (missing pytest-asyncio)")
   fi
   run_suite daemon daemon "$REPO/daemon/.venv/bin/python" -m pytest tests/ -q
 fi
