@@ -92,7 +92,116 @@ export async function apiJson(path, opts) {
   return data;
 }
 
-/** Server-sent events stream for a backend path. */
-export function eventSource(path) {
-  return new EventSource(`${BASE}${path}`);
+/**
+ * One SSE frame -> { type, data }, per the event-stream field grammar:
+ * `field: value`, a leading space after the colon dropped, `:` comments and
+ * unknown fields ignored, repeated `data` lines joined with newlines.
+ */
+function parseFrame(frame) {
+  let type = 'message';
+  const data = [];
+
+  for (const line of frame.split(/\r\n|\n|\r/)) {
+    if (!line || line.startsWith(':')) continue;
+    const colon = line.indexOf(':');
+    const field = colon === -1 ? line : line.slice(0, colon);
+    let value = colon === -1 ? '' : line.slice(colon + 1);
+    if (value.startsWith(' ')) value = value.slice(1);
+
+    if (field === 'event') type = value;
+    else if (field === 'data') data.push(value);
+  }
+
+  return { type, data: data.join('\n') };
+}
+
+/**
+ * Server-sent events stream for a backend path, authenticated.
+ *
+ *   const es = eventStream(`/v1/batches/${id}/events`);
+ *   es.addEventListener('validation_complete', () => { ...; es.close(); });
+ *   es.addEventListener('error', () => es.close());
+ *
+ * Deliberately not `new EventSource()`. EventSource cannot set request
+ * headers, so it cannot send the bearer token, and every SSE route here sits
+ * behind `get_human_context` — the connection was rejected before the first
+ * event and callers waited for a `validation_complete` that never arrived.
+ * This reads the stream over fetch(), which does carry the Authorization
+ * header, and parses the frames itself.
+ *
+ * The returned handle is EventSource-shaped for the two methods call sites
+ * use — addEventListener(type, fn) and close() — but does not reconnect:
+ * these streams terminate after their one terminal event, and the caller
+ * closes on 'error' rather than retrying.
+ */
+export function eventStream(path, { auth = true, token, headers } = {}) {
+  const listeners = new Map();
+  const controller = new AbortController();
+  let closed = false;
+
+  function emit(type, event) {
+    // Copied: a handler calling close() or removeEventListener() must not
+    // mutate the list being iterated.
+    for (const fn of [...(listeners.get(type) || [])]) {
+      try {
+        fn(event);
+      } catch (err) {
+        console.error(`SSE ${type} handler failed:`, err);
+      }
+    }
+  }
+
+  (async () => {
+    try {
+      const res = await api(path, {
+        auth,
+        token,
+        headers: { ...headers, Accept: 'text/event-stream' },
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`SSE stream failed (${res.status})`);
+      if (!res.body) throw new Error('SSE stream has no body');
+
+      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buffer = '';
+
+      while (!closed) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += value;
+
+        // Frames are separated by a blank line. Whatever follows the last
+        // separator is a partial frame and stays buffered for the next chunk.
+        const frames = buffer.split(/\r\n\r\n|\n\n|\r\r/);
+        buffer = frames.pop();
+        for (const frame of frames) {
+          if (!frame.trim()) continue;
+          const event = parseFrame(frame);
+          if (!closed) emit(event.type, event);
+        }
+      }
+    } catch (err) {
+      // An abort is our own close(), not a failure worth reporting.
+      if (!closed) emit('error', { type: 'error', error: err });
+    }
+  })();
+
+  return {
+    addEventListener(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push(fn);
+    },
+    removeEventListener(type, fn) {
+      const fns = listeners.get(type);
+      if (!fns) return;
+      const i = fns.indexOf(fn);
+      if (i !== -1) fns.splice(i, 1);
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      controller.abort();
+    },
+  };
 }

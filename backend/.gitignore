@@ -16,9 +16,13 @@ uploads/
 outputs/
 files/
 
-# Test files
+# Scratch test scripts dropped in the backend root
 test_*.jsonl
 test_*.py
+# ...but not the actual suite, which this pattern otherwise swallows: every
+# file in tests/ had to be force-added, so a newly written test silently
+# never reached the commit.
+!tests/test_*.py
 
 # IDE
 .vscode/

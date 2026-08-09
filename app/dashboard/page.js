@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import confetti from 'canvas-confetti';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import './dashboard.css';
-import { api, eventSource } from '../lib/api';
+import { api, eventStream } from '../lib/api';
 
 
 function SheshnagLogo({ size = 22 }) {
@@ -365,7 +365,7 @@ export default function DashboardPage() {
 
     validatingJobs.forEach(job => {
       try {
-        const es = eventSource(`/v1/batches/${job.id}/events`);
+        const es = eventStream(`/v1/batches/${job.id}/events`);
         es.addEventListener('validation_complete', () => {
           loadBatches();
           es.close();

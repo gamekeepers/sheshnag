@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { api, eventSource } from '../lib/api';
+import { api, eventStream } from '../lib/api';
 
 
 /* Terminal statuses — leaf states in backend VALID_TRANSITIONS (empty allowed list) */
@@ -159,7 +159,7 @@ export default function JobsPage() {
       if (job.status !== 'validating') continue;
 
       try {
-        const es = eventSource(`/v1/batches/${job.id}/events`);
+        const es = eventStream(`/v1/batches/${job.id}/events`);
         es.addEventListener('validation_complete', () => {
           fetchJobs();
           es.close();
