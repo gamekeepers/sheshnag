@@ -3,8 +3,8 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { api } from '../lib/api';
 
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8005';
 
 function SheshnagLogo({ size = 28 }) {
   return (
@@ -41,13 +41,8 @@ async function handleSubmit() {
       const fileData = new FormData();
       fileData.append('file', file);
 
-      const token = localStorage.getItem('mk_token') || '';
-      const fileRes = await fetch(`${BACKEND}/v1/files`, {
+      const fileRes = await api(`/v1/files`, {
         method: 'POST',
-        headers: {
-          ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }),
-          'Authorization': `Bearer ${token}`,
-        },
         body: fileData,
       });
 
@@ -65,18 +60,13 @@ localStorage.setItem('moonknight_file_map', JSON.stringify(fileMap));
       setStatus('Creating batch job...');
 
       // Step 2 — Create the batch job
-      const batchRes = await fetch(`${BACKEND}/v1/batches`, {
+      const batchRes = await api(`/v1/batches`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }),
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({
+        json: {
           input_file_id: fileJson.id,
           endpoint: '/v1/chat/completions',
           completion_window: '24h',
-        }),
+        },
       });
 
       if (!batchRes.ok) {

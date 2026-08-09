@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { api, eventStream } from '../lib/api';
 
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8005';
 
 /* Terminal statuses — leaf states in backend VALID_TRANSITIONS (empty allowed list) */
 const TERMINAL_STATUSES = ['completed', 'failed'];
@@ -62,12 +62,7 @@ export default function JobsPage() {
   const fetchJobs = useCallback(async () => {
     try {
       const controller = new AbortController();
-      const token = localStorage.getItem('mk_token') || '';
-      const res = await fetch(`${BACKEND}/v1/batches`, {
-        headers: {
-          ...(process.env.NEXT_PUBLIC_NGROK_ENABLED === 'true' && { 'ngrok-skip-browser-warning': 'true' }),
-          'Authorization': `Bearer ${token}`,
-        },
+      const res = await api(`/v1/batches`, {
         signal: controller.signal,
       });
       const data = await res.json();
@@ -164,7 +159,7 @@ export default function JobsPage() {
       if (job.status !== 'validating') continue;
 
       try {
-        const es = new EventSource(`${BACKEND}/v1/batches/${job.id}/events`);
+        const es = eventStream(`/v1/batches/${job.id}/events`);
         es.addEventListener('validation_complete', () => {
           fetchJobs();
           es.close();
