@@ -2,8 +2,7 @@
 #
 # Differs from scripts/gpu-daemon.service (production):
 #   - Runs from the git working tree and daemon/.venv, not ~/.gpu-daemon
-#   - Points at the local backend on port 8005 (dev), overriding the 8000
-#     default in daemon/config.yaml via --backend-url
+#   - Explicitly pins the local backend URL to port 8005 via --backend-url
 #
 # Uses DAEMON_API_KEY from daemon/.env, or falls back to saved credentials at
 # ~/.gpu-daemon/credentials. See daemon/.env.example.
