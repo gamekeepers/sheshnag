@@ -84,7 +84,7 @@ cmd_install() {
 }
 
 cmd_uninstall() {
-  systemctl --user stop sheshnag-dev.target 2>/dev/null || true
+  systemctl --user stop "${SERVICES[@]}" sheshnag-dev.target 2>/dev/null || true
   systemctl --user disable sheshnag-dev.target 2>/dev/null || true
   local u
   for u in "${UNITS[@]}"; do rm -f "$UNIT_DIR/$u"; done
