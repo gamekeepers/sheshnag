@@ -54,7 +54,10 @@ info() { printf '\033[32m==>\033[0m %s\n' "$*"; }
 # whole-value placeholder wherever it lands in a command line.
 
 # Value for a setting that takes the line verbatim (WorkingDirectory=, …).
-sd_raw() { printf '%s' "${1//%/%%}"; }
+sd_raw() {
+  local v="${1//\\/\\\\}"
+  printf '%s' "${v//%/%%}"
+}
 
 # Value for a setting parsed as a command line (ExecStart=, Environment=):
 # escaped and wrapped in quotes, which systemd strips back off.
