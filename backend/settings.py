@@ -8,11 +8,9 @@ default meant hunting them all down. Add a variable here and read it through
 
 Two deliberate design points:
 
-1. **Values are read on access, not frozen at import.** A module-level
-   constant captures whatever the environment held when the module first
-   loaded, which makes a config fix invisible until a full restart and turns
-   any error message quoting it into a lie. It also breaks `monkeypatch.setenv`
-   in tests — `tests/test_auth_google.py` depends on the lazy read.
+1. **Values are read on access, not frozen at import.** This lets tests use
+   `monkeypatch.setenv` without re-importing modules; runtime `.env` or service
+   environment changes still require a process restart.
 
 2. **`load_dotenv()` is called here.** It used to live only at the top of
    `main.py`, so anything imported before it (or without it, like a test
