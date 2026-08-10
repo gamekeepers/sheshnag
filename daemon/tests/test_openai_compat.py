@@ -456,3 +456,353 @@ class TestOllamaExecuteWithParams:
                     mock_post.call_args[1].get("json")
         assert sent_body["tools"] == tools
         assert "tools" not in sent_body.get("options", {})
+
+
+# ════════════════════════════════════════════════════════════════
+#  Review fixes for PR #45 — regression tests
+#
+#  Each class below pins one behaviour that the original
+#  implementation got wrong and that no existing test caught.
+# ════════════════════════════════════════════════════════════════
+
+
+class TestWorkerProgressAccounting:
+    """A rejected prompt must be counted as failed exactly once.
+
+    The stream branch used to increment `failed` and then fall
+    through to the shared `else: failed += 1`, so a job reported
+    more failures than it had prompts.
+    """
+
+    @pytest.mark.asyncio
+    async def test_rejected_prompts_counted_once(self):
+        from daemon.worker import Worker
+        from daemon.config import DaemonConfig
+        from daemon.client import BackendClient
+
+        client = AsyncMock(spec=BackendClient)
+        executor = AsyncMock(spec=OllamaExecutor)
+        executor.execute.return_value = CompletionResult(
+            custom_id="req-ok",
+            response={"choices": [{"message": {"content": "hi"}}]},
+        )
+
+        worker = Worker(
+            config=DaemonConfig(worker_id="test-worker"),
+            client=client,
+            executor=executor,
+        )
+        worker._running = True
+
+        job = Job(job_id="test-job", model="m")
+        prompts = [
+            PromptRequest(custom_id="req-stream-1",
+                          body={"model": "m", "messages": [], "stream": True}),
+            PromptRequest(custom_id="req-stream-2",
+                          body={"model": "m", "messages": [], "stream": True}),
+            PromptRequest(custom_id="req-ok",
+                          body={"model": "m", "messages": []}),
+        ]
+
+        results = await worker._run_prompts(prompts, job)
+
+        assert len(results) == 3
+
+        # Final progress report fires on idx == total
+        progress = client.report_progress.await_args_list[-1].kwargs
+        assert progress["total"] == 3
+        assert progress["failed"] == 2
+        assert progress["completed"] == 1
+        # The invariant the double-increment violated
+        assert progress["completed"] + progress["failed"] == progress["total"]
+
+    @pytest.mark.asyncio
+    async def test_executor_failures_still_counted(self):
+        """The shared failure path must keep working for real
+        executor errors, not just rejections."""
+        from daemon.worker import Worker
+        from daemon.config import DaemonConfig
+        from daemon.client import BackendClient
+
+        client = AsyncMock(spec=BackendClient)
+        executor = AsyncMock(spec=OllamaExecutor)
+        executor.execute.return_value = CompletionResult(
+            custom_id="req-boom", error="OLLAMA_DOWN: connection refused",
+        )
+
+        worker = Worker(
+            config=DaemonConfig(worker_id="test-worker"),
+            client=client,
+            executor=executor,
+        )
+        worker._running = True
+
+        job = Job(job_id="test-job", model="m")
+        prompts = [
+            PromptRequest(custom_id="req-boom", body={"model": "m", "messages": []}),
+        ]
+
+        await worker._run_prompts(prompts, job)
+
+        progress = client.report_progress.await_args_list[-1].kwargs
+        assert progress == {
+            "job_id": "test-job", "completed": 0, "failed": 1, "total": 1,
+        }
+
+
+class TestStreamTruthiness:
+    """`stream` is never type-checked upstream, so non-boolean
+    truthy values must be rejected too — otherwise they reach vLLM
+    and come back as an SSE stream that `.json()` cannot parse.
+    """
+
+    @staticmethod
+    def _worker():
+        from daemon.worker import Worker
+        from daemon.config import DaemonConfig
+        from daemon.client import BackendClient
+
+        executor = AsyncMock(spec=OllamaExecutor)
+        executor.execute.return_value = CompletionResult(
+            custom_id="req", response={"choices": []},
+        )
+        worker = Worker(
+            config=DaemonConfig(worker_id="test-worker"),
+            client=AsyncMock(spec=BackendClient),
+            executor=executor,
+        )
+        worker._running = True
+        return worker, executor
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stream_value", ["true", 1, "yes"])
+    async def test_truthy_non_boolean_stream_rejected(self, stream_value):
+        worker, executor = self._worker()
+        job = Job(job_id="test-job", model="m")
+        prompts = [
+            PromptRequest(
+                custom_id="req",
+                body={"model": "m", "messages": [], "stream": stream_value},
+            ),
+        ]
+
+        results = await worker._run_prompts(prompts, job)
+
+        assert not results[0].is_success
+        assert "UNSUPPORTED_PARAMETER" in results[0].error
+        executor.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stream_value", [False, 0, ""])
+    async def test_falsy_stream_reaches_executor(self, stream_value):
+        worker, executor = self._worker()
+        job = Job(job_id="test-job", model="m")
+        prompts = [
+            PromptRequest(
+                custom_id="req",
+                body={"model": "m", "messages": [], "stream": stream_value},
+            ),
+        ]
+
+        results = await worker._run_prompts(prompts, job)
+
+        assert results[0].is_success
+        executor.execute.assert_called_once()
+
+
+class TestVLLMActuallyDropsUnsupported:
+    """Warning about a dropped parameter is not enough — it has to
+    be absent from the body that goes on the wire.
+    """
+
+    @pytest.mark.asyncio
+    async def test_top_k_absent_from_sent_body(self):
+        executor = VLLMExecutor(base_url="http://localhost:8100")
+
+        prompt = PromptRequest(
+            custom_id="req-topk",
+            body={"model": "m", "messages": [], "top_k": 50, "top_p": 0.9},
+        )
+
+        mock_response = httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "hi"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 3,
+                          "total_tokens": 8},
+            },
+            request=httpx.Request(
+                "POST", "http://localhost:8100/v1/chat/completions"),
+        )
+
+        with patch.object(httpx.AsyncClient, "request",
+                          new_callable=AsyncMock) as mock_req:
+            mock_req.return_value = mock_response
+            result = await executor.execute(prompt)
+
+        assert result.is_success
+        sent_body = mock_req.call_args.kwargs["json"]
+        assert "top_k" not in sent_body
+        # Supported params must survive the drop
+        assert sent_body["top_p"] == 0.9
+        assert sent_body["model"] == "m"
+
+    @pytest.mark.asyncio
+    async def test_supported_body_untouched(self):
+        executor = VLLMExecutor(base_url="http://localhost:8100")
+
+        body = {"model": "m", "messages": [], "temperature": 0.4}
+        prompt = PromptRequest(custom_id="req-clean", body=dict(body))
+
+        mock_response = httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "hi"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                          "total_tokens": 2},
+            },
+            request=httpx.Request(
+                "POST", "http://localhost:8100/v1/chat/completions"),
+        )
+
+        with patch.object(httpx.AsyncClient, "request",
+                          new_callable=AsyncMock) as mock_req:
+            mock_req.return_value = mock_response
+            await executor.execute(prompt)
+
+        assert mock_req.call_args.kwargs["json"] == body
+
+
+class TestOllamaStopNormalization:
+    """OpenAI permits a bare string for `stop`; Ollama's options
+    decoder only accepts an array.
+    """
+
+    def test_scalar_stop_wrapped_in_list(self):
+        executor = OllamaExecutor()
+        body = {"model": "m", "messages": [], "stop": "\n"}
+        translated = executor._translate_request(body)
+        assert translated["options"]["stop"] == ["\n"]
+
+    def test_list_stop_passed_through(self):
+        executor = OllamaExecutor()
+        body = {"model": "m", "messages": [], "stop": ["END", "STOP"]}
+        translated = executor._translate_request(body)
+        assert translated["options"]["stop"] == ["END", "STOP"]
+
+    def test_other_string_params_not_wrapped(self):
+        """Only `stop` gets the scalar-to-list treatment."""
+        executor = OllamaExecutor()
+        body = {"model": "m", "messages": [], "seed": 42, "top_p": 0.9}
+        translated = executor._translate_request(body)
+        assert translated["options"]["seed"] == 42
+        assert translated["options"]["top_p"] == 0.9
+
+    @pytest.mark.asyncio
+    async def test_scalar_stop_reaches_ollama_as_list(self):
+        executor = OllamaExecutor()
+        executor.version = "0.5.1"
+
+        prompt = PromptRequest(
+            custom_id="req-stop",
+            body={"model": "m", "messages": [], "stop": "\n"},
+        )
+
+        with patch.object(httpx.AsyncClient, "post",
+                          new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = create_mock_response(200, OLLAMA_CHAT_OK)
+            await executor.execute(prompt)
+
+        sent_body = mock_post.call_args.kwargs["json"]
+        assert sent_body["options"]["stop"] == ["\n"]
+
+
+class TestOllamaToolChoiceNone:
+    """`tool_choice: "none"` means the model may NOT call tools.
+
+    Ollama has no tool_choice, so the only way to honour that is to
+    withhold the tool list — forwarding it unrestricted lets the
+    model call tools the caller explicitly disabled.
+    """
+
+    TOOLS = [{"type": "function", "function": {"name": "get_weather"}}]
+
+    def test_tools_withheld_when_choice_is_none(self):
+        executor = OllamaExecutor()
+        body = {"model": "m", "messages": [],
+                "tools": self.TOOLS, "tool_choice": "none"}
+        translated = executor._translate_request(body)
+        assert "tools" not in translated
+
+    def test_tools_forwarded_when_choice_is_auto(self):
+        executor = OllamaExecutor()
+        body = {"model": "m", "messages": [],
+                "tools": self.TOOLS, "tool_choice": "auto"}
+        translated = executor._translate_request(body)
+        assert translated["tools"] == self.TOOLS
+
+    def test_tools_forwarded_when_choice_absent(self):
+        executor = OllamaExecutor()
+        body = {"model": "m", "messages": [], "tools": self.TOOLS}
+        translated = executor._translate_request(body)
+        assert translated["tools"] == self.TOOLS
+
+    def test_tool_choice_none_still_warns(self, caplog):
+        """Withholding the tools is a behaviour change of its own —
+        the operator must still see the warning."""
+        executor = OllamaExecutor()
+        body = {"model": "m", "messages": [],
+                "tools": self.TOOLS, "tool_choice": "none"}
+        with caplog.at_level(logging.WARNING):
+            executor._translate_request(body)
+        assert any("tool_choice" in r.message and "dropped" in r.message
+                   for r in caplog.records)
+
+
+class TestUnsupportedParameterErrorCode:
+    """Client-facing errors carry a machine-readable prefix so a
+    caller can tell a bad parameter from a dead runtime.
+    """
+
+    def test_n_rejection_message_has_prefix(self):
+        executor = OllamaExecutor()
+        body = {"model": "m", "messages": [], "n": 3}
+        with pytest.raises(ValueError, match="UNSUPPORTED_PARAMETER"):
+            executor._translate_request(body)
+
+    @pytest.mark.asyncio
+    async def test_n_rejection_result_has_prefix(self):
+        executor = OllamaExecutor()
+        executor.version = "0.5.1"
+        prompt = PromptRequest(
+            custom_id="req-n5",
+            body={"model": "m", "messages": [], "n": 5},
+        )
+        result = await executor.execute(prompt)
+        assert not result.is_success
+        assert result.error.startswith("UNSUPPORTED_PARAMETER:")
+        assert "n=5" in result.error
+
+    @pytest.mark.asyncio
+    async def test_stream_and_n_share_the_same_prefix(self):
+        """The worker-level and executor-level rejections must be
+        distinguishable from runtime failures the same way."""
+        from daemon.worker import Worker
+        from daemon.config import DaemonConfig
+        from daemon.client import BackendClient
+
+        executor = AsyncMock(spec=OllamaExecutor)
+        worker = Worker(
+            config=DaemonConfig(worker_id="test-worker"),
+            client=AsyncMock(spec=BackendClient),
+            executor=executor,
+        )
+        worker._running = True
+
+        job = Job(job_id="test-job", model="m")
+        prompts = [
+            PromptRequest(custom_id="req-stream",
+                          body={"model": "m", "messages": [], "stream": True}),
+        ]
+        results = await worker._run_prompts(prompts, job)
+        assert results[0].error.startswith("UNSUPPORTED_PARAMETER:")
