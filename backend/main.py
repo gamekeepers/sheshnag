@@ -10,12 +10,10 @@ from database import engine, Base
 from routers import files, batches, workers, auth, users, organizations, models as models_router
 from models import User, Organization, OrganizationMembership
 from auth import hash_password
-from migrations import run_startup_migrations
 from catalog_seed import seed_model_catalog
 from sweeper import run_sweeper
 
 Base.metadata.create_all(bind=engine)
-run_startup_migrations(engine)
 seed_model_catalog()
 
 # Comma-separated origins, or "*" for all. Browsers reject a wildcard origin

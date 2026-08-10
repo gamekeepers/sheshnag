@@ -80,7 +80,7 @@ Every variable the platform reads at runtime. Defaults are pulled from live code
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `SECRET_KEY` | yes (change in prod) | _(see below)_ | JWT signing key. The code ships a default for dev only; at startup a WARNING is logged if you haven't changed it. Generate one with: `openssl rand -hex 32`. |
-| `DATABASE_URL` | no | `sqlite:///./jobs.db` | SQLAlchemy connection string. Swap for PostgreSQL in production. |
+| `DATABASE_URL` | no | `postgresql://sheshnag:sheshnag@localhost:5432/sheshnag` | Postgres connection string. The default assumes a local dev database; set it explicitly everywhere else. |
 | `GOOGLE_CLIENT_ID` | if Google OAuth | _(must set)_ | Must match the client ID registered with Google, and must also be the same value as `NEXT_PUBLIC_GOOGLE_CLIENT_ID`. |
 | `FRONTEND_URL` | no | `http://localhost:3000` | Base URL used in password-reset and invite email links. |
 | `MAILGUN_API_KEY` | no | — | Mailgun API key. If unset, email sending is gracefully skipped. |
@@ -118,7 +118,7 @@ See `daemon/README.md` for full CLI flag and YAML config details.
 Before deploying to production, address each item and note whether it requires a code change or just configuration.
 
 - [ ] **`SECRET_KEY`** — set a strong random value (e.g., `openssl rand -hex 32`). At startup the app logs a WARNING if the default is still in use.
-- [ ] **Database backend** — swap `DATABASE_URL` from SQLite to PostgreSQL. Configurable via env; no code change needed.
+- [ ] **Database** — point `DATABASE_URL` at the production Postgres. The schema is created by `Base.metadata.create_all()` on first startup; there is no migration tool, so an existing database is never altered in place.
 - [ ] **CORS origins** — set `CORS_ORIGINS` to your frontend URL(s) instead of `"*"`. Also review `allow_credentials=True` — browsers reject wildcard origins with credentials enabled, so you must list concrete origins when using cookies or auth headers.
 - [ ] **HTTPS** — put a reverse proxy (Nginx, Caddy) in front of both frontend and backend. See [docs/services.md](services.md) admin appendix.
 - [ ] **Google OAuth** — register your production domain with Google Cloud Console. Set the same `GOOGLE_CLIENT_ID` in both `.env` and `backend/.env`.

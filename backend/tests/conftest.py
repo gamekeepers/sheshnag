@@ -1,13 +1,36 @@
 """Shared test fixtures for backend API tests.
 
-Uses an in-memory SQLite database with shared-cache mode so all connections
-(even across worker threads spawned by TestClient) see the same tables and data.
-Creates a fresh DB session per request (matching production get_db behaviour).
+Runs against a real Postgres database — the same engine production uses, so
+a green suite means the code works on the thing it will actually run on.
+Point `TEST_DATABASE_URL` at a throwaway database; the default matches the
+local dev container::
+
+    docker run -d --name sheshnag-pg -e POSTGRES_PASSWORD=postgres \\
+        -e POSTGRES_DB=sheshnag_test -p 5432:5432 postgres:16
+
+    python -m pytest tests/ -q
+
+The database is dropped and recreated at the start of every session, so
+tests may assume empty tables. Each request gets a fresh session, matching
+production `get_db` behaviour.
 """
+
+import os
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
+
+# Set before `database` is imported — the module reads DATABASE_URL at import
+# time. Production's engine points at the same database on purpose: that is
+# what puts main.py's create_all() and the background workers that reach for
+# SessionLocal directly (batch validation, the sweeper) under test, instead of
+# leaving them writing somewhere the assertions can't see.
+TEST_DATABASE_URL = os.getenv(
+    "TEST_DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5432/sheshnag_test",
+)
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 
 # Import models to register their tables with Base.metadata BEFORE creating the engine.
 from database import Base, get_db
@@ -24,23 +47,30 @@ from models import (
 )
 
 
-# ─── Shared in-memory engine ─────────────────────────────────
-
-import sqlite3
-
-def _shared_memory_creator():
-    """Return a connection to a shared in-memory SQLite database."""
-    return sqlite3.connect(
-        "file::memory:?cache=shared",
-        uri=True,
-        check_same_thread=False,  # TestClient runs sync endpoints in worker threads
-    )
-
+# ─── Session-wide engine ─────────────────────────────────────
 
 @pytest.fixture(scope="session")
 def _engine():
-    """Single engine for the whole test session with all tables created."""
-    eng = create_engine("sqlite://", creator=_shared_memory_creator)
+    """Single engine for the whole test session with all tables created.
+
+    A real database outlives the process, so the schema is dropped on the
+    way in as well as the way out — a run that died mid-suite must not
+    leave rows that the next one counts.
+    """
+    eng = create_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+    try:
+        with eng.connect():
+            pass
+    except Exception as exc:
+        pytest.fail(
+            f"Cannot reach the test database at {TEST_DATABASE_URL}: {exc}\n"
+            "Start one with:\n"
+            "  docker run -d --name sheshnag-pg -e POSTGRES_PASSWORD=postgres "
+            "-e POSTGRES_DB=sheshnag_test -p 5432:5432 postgres:16",
+            pytrace=False,
+        )
+
+    Base.metadata.drop_all(bind=eng)
     Base.metadata.create_all(bind=eng)
     yield eng
     Base.metadata.drop_all(bind=eng)

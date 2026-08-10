@@ -10,7 +10,7 @@ results.
 
 | Component | Path | Stack | Docs |
 |---|---|---|---|
-| Control plane (API) | [`backend/`](backend/) | FastAPI + SQLite | [backend/README.md](backend/README.md) |
+| Control plane (API) | [`backend/`](backend/) | FastAPI + Postgres | [backend/README.md](backend/README.md) |
 | Worker daemon | [`daemon/`](daemon/) | Python, Ollama/vLLM runtimes | [daemon/README.md](daemon/README.md) |
 | Dashboard (this app) | [`app/`](app/) | Next.js | below |
 | Spec & design docs | [`docs/`](docs/) | — | [docs/v1-spec.md](docs/v1-spec.md), [docs/revised_db_schema.md](docs/revised_db_schema.md) |

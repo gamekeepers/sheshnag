@@ -223,7 +223,7 @@ See `sweeper.py` for the thresholds.
 
 ## Database Schema
 
-SQLite with SQLAlchemy ORM. Tables (see `models.py`):
+Postgres with SQLAlchemy ORM. Tables (see `models.py`):
 
 | Table | Purpose / notable columns |
 |---|---|
@@ -241,10 +241,8 @@ SQLite with SQLAlchemy ORM. Tables (see `models.py`):
 | `batch_assignments` | Which worker holds which batch (FK → `workers.id`) |
 | `password_reset_tokens` | Forgot-password flow |
 
-> Inventory is fully normalized per spec §8.2–8.4. Pre-existing DBs that
-> used the old JSON columns on `workers` are backfilled automatically at
-> startup (`migrations.py`), which also drops the legacy columns and the
-> orphaned `provider_capabilities` table.
+> Inventory is fully normalized per spec §8.2–8.4 — one row per runtime,
+> model, and GPU rather than JSON blobs on `workers`.
 
 ---
 
@@ -289,12 +287,11 @@ validating → validated → in_progress → completed
 
 ## Migration
 
-`Base.metadata.create_all()` creates tables on startup, then
-`migrations.py` runs idempotent startup migrations: column guards for
-columns added after a table shipped (e.g. `batches.attempts`), the
-JSON→rows inventory backfill, legacy column drops, and removal of the
-orphaned `provider_capabilities` table. **No formal migration tool
-(Alembic) yet** — for dev, deleting `jobs.db` and restarting also works.
+`Base.metadata.create_all()` creates any missing tables on startup.
+**No formal migration tool (Alembic) yet**, and `create_all()` will not
+alter a table that already exists — a new column on an existing model
+reaches an existing database only if you add it by hand. For dev, drop
+and recreate the database and restart.
 
 ---
 
@@ -302,13 +299,12 @@ orphaned `provider_capabilities` table. **No formal migration tool
 
 ```
 backend/
-├── main.py                # App entry, CORS, column guard, sweeper + admin startup
-├── database.py            # SQLite engine + session
+├── main.py                # App entry, CORS, sweeper + admin startup
+├── database.py            # Postgres engine + session
 ├── models.py              # SQLAlchemy models
 ├── schemas.py             # Pydantic request/response models
 ├── auth.py                # JWT, hashing, key contexts (worker/personal/human)
 ├── provider_picker.py     # Job-to-worker matching (VRAM + loaded models)
-├── migrations.py          # Idempotent startup migrations (backfills, column guards)
 ├── sweeper.py             # Requeue logic + stale-worker sweeper (spec §12)
 ├── rate_limit.py          # Key-creation rate limiting
 ├── requirements.txt
