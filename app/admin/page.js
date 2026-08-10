@@ -34,6 +34,7 @@ const NAV_ITEMS = [
   { id: 'jobs',      label: 'Jobs',      icon: '📋' },
   { id: 'users',     label: 'Users',     icon: '👥' },
   { id: 'workers',   label: 'Workers',   icon: '⚡' },
+  { id: 'domains',   label: 'Domains',   icon: '🔒' },
 ];
 
 /* ── Status colours ── */
@@ -200,6 +201,10 @@ export default function AdminPage() {
   const [lastRefresh,   setLastRefresh]   = useState(null);
   const [adminUser,     setAdminUser]     = useState({ name: 'Admin', platform_role: 'superadmin' });
   const [editingUser,   setEditingUser]   = useState(null);
+  const [domains,       setDomains]       = useState([]);
+  const [domainForm,    setDomainForm]    = useState({ domain: '', include_subdomains: false, note: '' });
+  const [domainErr,     setDomainErr]     = useState('');
+  const [domainBusy,    setDomainBusy]    = useState(false);
 
   /* ── load admin profile ── */
   async function loadAdminProfile() {
@@ -251,6 +256,64 @@ export default function AdminPage() {
     } catch {}
   }, []);
 
+  /* ── load allowed signup domains ── */
+  const loadDomains = useCallback(async () => {
+    try {
+      const res = await fetch(`${BACKEND}/v1/admin/allowed-domains`, { headers: authHeaders() });
+      if (res.ok) {
+        const d = await res.json();
+        setDomains(d.data || []);
+      }
+    } catch {}
+  }, []);
+
+  async function handleAddDomain(e) {
+    e.preventDefault();
+    setDomainErr('');
+    setDomainBusy(true);
+    try {
+      const res = await fetch(`${BACKEND}/v1/admin/allowed-domains`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          domain: domainForm.domain,
+          include_subdomains: domainForm.include_subdomains,
+          note: domainForm.note || null,
+        }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.detail || `HTTP ${res.status}`);
+      }
+      setDomainForm({ domain: '', include_subdomains: false, note: '' });
+      await loadDomains();
+    } catch (err) {
+      setDomainErr(err.message);
+    } finally {
+      setDomainBusy(false);
+    }
+  }
+
+  async function handleRemoveDomain(id, domain) {
+    // Removing the last entry reopens signup to everyone — make that explicit
+    // rather than letting an admin discover it from the empty state.
+    const last = domains.length === 1;
+    const warning = last
+      ? `Remove "${domain}"?\n\nThis is the last allowed domain. Sign-ups will reopen to ANY email address.`
+      : `Remove "${domain}"?\n\nExisting accounts are unaffected — this only stops new sign-ups from that domain.`;
+    if (!window.confirm(warning)) return;
+    setDomainErr('');
+    try {
+      const res = await fetch(`${BACKEND}/v1/admin/allowed-domains/${id}`, {
+        method: 'DELETE', headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadDomains();
+    } catch (err) {
+      setDomainErr(err.message);
+    }
+  }
+
   useEffect(() => {
     const token = localStorage.getItem('mk_token');
     const user  = JSON.parse(localStorage.getItem('mk_user') || '{}');
@@ -259,7 +322,8 @@ export default function AdminPage() {
     loadJobs();
     loadUsers();
     loadWorkers();
-  }, [router, loadJobs, loadUsers, loadWorkers]);
+    loadDomains();
+  }, [router, loadJobs, loadUsers, loadWorkers, loadDomains]);
 
   function handleLogout() {
     localStorage.removeItem('mk_token');
@@ -508,6 +572,87 @@ export default function AdminPage() {
                   </span>
                 </>)}
               />
+            </>
+          )}
+
+          {/* ── DOMAINS ── */}
+          {activeNav === 'domains' && (
+            <>
+              <div style={{ marginBottom: '16px' }}>
+                <p style={{ fontSize: '11px', color: '#444', textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 8px' }}>
+                  Sign-up domains
+                </p>
+                {domains.length === 0 ? (
+                  <div style={{ padding: '12px 16px', borderRadius: '8px', backgroundColor: '#2a1e0a', border: '1px solid #4a3410', color: '#fbbf24', fontSize: '13px' }}>
+                    <strong>No restrictions — anyone with any email address can sign up.</strong>
+                    <div style={{ color: '#a98a3f', marginTop: 4, fontSize: '12px' }}>
+                      Add a domain below to restrict sign-ups to your institution.
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ padding: '12px 16px', borderRadius: '8px', backgroundColor: '#0f2a16', border: '1px solid #1d4a2a', color: '#4ade80', fontSize: '13px' }}>
+                    Sign-ups are restricted to {domains.length} approved domain{domains.length === 1 ? '' : 's'}.
+                    <div style={{ color: '#3f8a5a', marginTop: 4, fontSize: '12px' }}>
+                      Invited users and accounts created by an admin bypass this list by design.
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <form onSubmit={handleAddDomain} style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap' }}>
+                <input
+                  value={domainForm.domain}
+                  onChange={e => setDomainForm({ ...domainForm, domain: e.target.value })}
+                  placeholder="dau.ac.in"
+                  required
+                  style={{ flex: '1 1 200px', padding: '9px 12px', borderRadius: '8px', border: '1px solid #2a2a2a', background: '#0d0d0d', color: '#fff', fontSize: '13px' }}
+                />
+                <input
+                  value={domainForm.note}
+                  onChange={e => setDomainForm({ ...domainForm, note: e.target.value })}
+                  placeholder="Note (optional) — e.g. Students"
+                  style={{ flex: '1 1 200px', padding: '9px 12px', borderRadius: '8px', border: '1px solid #2a2a2a', background: '#0d0d0d', color: '#fff', fontSize: '13px' }}
+                />
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#888', fontSize: '12px', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={domainForm.include_subdomains}
+                    onChange={e => setDomainForm({ ...domainForm, include_subdomains: e.target.checked })}
+                  />
+                  Include subdomains
+                </label>
+                <button type="submit" disabled={domainBusy} style={{ padding: '9px 16px', borderRadius: '8px', border: '1px solid #2a2a2a', background: '#1a1a1a', color: '#fff', cursor: domainBusy ? 'default' : 'pointer', fontSize: '13px', opacity: domainBusy ? 0.6 : 1 }}>
+                  {domainBusy ? 'Adding…' : 'Add domain'}
+                </button>
+              </form>
+
+              {domainErr && (
+                <div style={{ padding: '10px 14px', marginBottom: '16px', borderRadius: '8px', backgroundColor: '#2a0f0f', border: '1px solid #4a1a1a', color: '#f87171', fontSize: '13px' }}>
+                  {domainErr}
+                </div>
+              )}
+
+              <AdminTable
+                headers={['Domain', 'Subdomains', 'Note', 'Actions']}
+                cols="1fr 120px 1fr 100px"
+                rows={domains}
+                emptyMsg="No domains — sign-up is open to everyone"
+                renderRow={d => (<>
+                  <span style={{ fontSize: '13px', color: '#fff' }}>{d.domain}</span>
+                  <span style={{ fontSize: '12px', color: d.include_subdomains ? '#4ade80' : '#555' }}>
+                    {d.include_subdomains ? 'Included' : 'Exact only'}
+                  </span>
+                  <span style={{ fontSize: '12px', color: '#888' }}>{d.note || '—'}</span>
+                  <button onClick={() => handleRemoveDomain(d.id, d.domain)} style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid #4a1a1a', background: 'transparent', color: '#f87171', cursor: 'pointer', fontSize: '12px' }}>
+                    Remove
+                  </button>
+                </>)}
+              />
+
+              <p style={{ fontSize: '11px', color: '#444', marginTop: '12px', lineHeight: 1.6 }}>
+                This list governs <strong>self-service sign-up only</strong>. Removing a domain does not
+                disable existing accounts, and does not affect users added by invitation.
+              </p>
             </>
           )}
 
