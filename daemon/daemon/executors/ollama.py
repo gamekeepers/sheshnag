@@ -295,7 +295,12 @@ class OllamaExecutor(BaseExecutor):
         # ── Sampling parameters → options.* ──────────────────
         for openai_key, ollama_key in self._OPTION_TRANSLATIONS.items():
             if openai_key in openai_body:
-                translated["options"][ollama_key] = openai_body[openai_key]
+                value = openai_body[openai_key]
+                # OpenAI permits a bare string for `stop`; Ollama's
+                # options decoder only accepts an array.
+                if openai_key == "stop" and isinstance(value, str):
+                    value = [value]
+                translated["options"][ollama_key] = value
 
         # ── Unsupported parameters → warn-and-drop ───────────
         for param, reason in self._UNSUPPORTED_PARAMS.items():
@@ -308,12 +313,15 @@ class OllamaExecutor(BaseExecutor):
         n_value = openai_body.get("n")
         if n_value is not None and n_value != 1:
             raise ValueError(
-                f"Parameter 'n={n_value}' is not supported by Ollama "
-                f"(exactly 1 completion per request)"
+                f"UNSUPPORTED_PARAMETER: n={n_value} is not supported by "
+                f"Ollama (exactly 1 completion per request)"
             )
 
         # ── tools → top-level (Ollama native since ~0.3) ─────
-        if "tools" in openai_body:
+        # `tool_choice: "none"` means the model may NOT call tools.
+        # Ollama has no tool_choice, so honour it by withholding the
+        # tool list rather than dropping the caller's intent.
+        if "tools" in openai_body and openai_body.get("tool_choice") != "none":
             translated["tools"] = openai_body["tools"]
 
         # ── response_format → format (existing, from #41) ────

@@ -358,7 +358,7 @@ class Worker:
             # Reject stream: true — batch execution cannot honor
             # streaming and the response shape changes completely
             # if passed through. Applies to all runtimes.
-            if prompt.body.get("stream") is True:
+            if prompt.body.get("stream"):
                 result = CompletionResult(
                     custom_id=prompt.custom_id,
                     error=(
@@ -369,11 +369,6 @@ class Worker:
                     ),
                 )
                 results.append(result)
-                failed += 1
-                logger.warning(
-                    f"[{job.job_id}] Prompt {prompt.custom_id} "
-                    f"rejected: stream=true is not supported in batch mode"
-                )
             else:
                 result = await self._executor.execute(prompt)
                 results.append(result)

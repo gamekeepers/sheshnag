@@ -94,6 +94,7 @@ class VLLMExecutor(BaseExecutor):
         # ── Warn-and-drop for unsupported top-level params ───
         for param, reason in self._UNSUPPORTED_TOP_LEVEL.items():
             if param in prompt.body:
+                prompt.body.pop(param)
                 logger.warning(
                     "Parameter '%s' in prompt %s dropped: %s",
                     param, prompt.custom_id, reason,
