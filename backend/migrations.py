@@ -16,7 +16,7 @@ import json
 import logging
 import uuid
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,17 @@ _DROPPED_RUNTIME_MODEL_COLUMNS = (
 
 
 def _columns(conn, table: str) -> list:
-    return [row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))]
+    """Column names for `table`, or [] if the table does not exist.
+
+    The empty-list-means-absent contract is what lets the callers below
+    skip tables that never shipped. Uses the dialect-neutral inspector
+    rather than PRAGMA so the module can be imported against Postgres —
+    the SQLite-only steps are gated in run_startup_migrations().
+    """
+    insp = inspect(conn)
+    if not insp.has_table(table):
+        return []
+    return [col["name"] for col in insp.get_columns(table)]
 
 
 # Indexes added after their table first shipped. ALTER TABLE ADD COLUMN
@@ -241,12 +251,27 @@ def _drop_pruned_columns(conn) -> None:
 
 
 def run_startup_migrations(engine) -> None:
-    """Run all idempotent schema/data migrations. Call after create_all."""
+    """Run all idempotent schema/data migrations. Call after create_all.
+
+    The schema-catch-up steps are SQLite-only, and deliberately so. Each
+    exists to bring a database that shipped before a column existed up to
+    the current model, and they are written in SQLite dialect throughout:
+    `INSERT OR IGNORE`, `unixepoch()`, `BOOLEAN DEFAULT 1`. A Postgres
+    database is created complete by `create_all()` and has no legacy state
+    to catch up on, so running them there would only fail.
+
+    The two data steps below the gate are portable and run everywhere —
+    they matter when an existing SQLite database is copied into Postgres.
+    Migrate the SQLite file to the current schema *before* copying it
+    across; nothing on the Postgres side will do that work.
+    """
     with engine.connect() as conn:
-        _add_missing_columns(conn)
+        if engine.dialect.name == "sqlite":
+            _add_missing_columns(conn)
+            _backfill_inventory(conn)
+            _drop_pruned_columns(conn)
+            conn.execute(text("DROP TABLE IF EXISTS provider_capabilities"))
+
         _add_missing_indexes(conn)
         _normalize_user_emails(conn)
-        _backfill_inventory(conn)
-        _drop_pruned_columns(conn)
-        conn.execute(text("DROP TABLE IF EXISTS provider_capabilities"))
         conn.commit()
