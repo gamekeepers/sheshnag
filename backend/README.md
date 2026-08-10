@@ -7,8 +7,13 @@ Setup, environment variables, and the three-terminal walkthrough live in
 version:
 
 ```bash
+# once per environment — the app creates its tables, not the database itself.
+# Needs no sudo, but does need an account allowed to create databases; see
+# docs/setup.md §0 for what to do when it isn't.
+createdb -h HOST -p PORT -U USER sheshnag
+
 cd backend
-pip install -r requirements.txt
+pip install -r requirements.txt   # set DATABASE_URL in backend/.env first
 python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 

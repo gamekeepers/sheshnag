@@ -2,17 +2,27 @@
 
 Runs against a real Postgres database — the same engine production uses, so
 a green suite means the code works on the thing it will actually run on.
-Point `TEST_DATABASE_URL` at a throwaway database; the default matches the
-local dev container::
+
+**`TEST_DATABASE_URL` must name a throwaway database.** Every table in
+Base.metadata is dropped at the start of the session and again at the end;
+pointing this at a database that holds anything you want to keep will
+destroy it. It must never be the same database as `DATABASE_URL`.
+
+The default matches a local dev container::
 
     docker run -d --name sheshnag-pg -e POSTGRES_PASSWORD=postgres \\
         -e POSTGRES_DB=sheshnag_test -p 5432:5432 postgres:16
 
     python -m pytest tests/ -q
 
-The database is dropped and recreated at the start of every session, so
-tests may assume empty tables. Each request gets a fresh session, matching
-production `get_db` behaviour.
+On a server you share with other applications, create a separate database
+(`sheshnag_test`) or at minimum a separate schema, and point
+TEST_DATABASE_URL at that::
+
+    TEST_DATABASE_URL="postgresql://user:pw@host:5433/db?options=-csearch_path%3Dsheshnag_test"
+
+Dropping and recreating at session start means tests may assume empty
+tables. Each request gets a fresh session, matching production `get_db`.
 """
 
 import os

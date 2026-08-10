@@ -7,11 +7,12 @@ Single source of truth for getting the platform running. Everything in this doc 
 | Requirement | Version | Notes |
 |---|---|---|
 | Python | 3.10+ | Backend and daemon both need it |
+| PostgreSQL | 14+ | Backend datastore — a reachable server and an account on it. You do **not** need to own or administer the server; see [Create the database](#0-create-the-database) |
 | Node.js | 20+ (LTS) | Next.js 16 runtime; engine field is `>=18.18.0` |
 | npm | 10+ | Ships with Node.js 20+ |
 | Ollama **or** vLLM | any recent | Runtime for inference; Ollama is default for the daemon |
 
-No sudo required for local development. Production and rootless service setup are covered in [docs/services.md](services.md).
+No sudo required. If you have no Postgres at all and want one locally, `docker run -d -e POSTGRES_USER=sheshnag -e POSTGRES_PASSWORD=sheshnag -e POSTGRES_DB=sheshnag -p 5432:5432 postgres:16` gives you one; pick a free host port if 5432 is taken. Production and rootless service setup are covered in [docs/services.md](services.md).
 
 ## Quick start (localhost)
 
@@ -20,6 +21,87 @@ Three terminals, three components. Copy `.env.example` first:
 ```bash
 cp .env.example .env
 cp backend/.env.example backend/.env
+```
+
+### 0. Create the database
+
+Do this once per environment, before the backend starts for the first time.
+`Base.metadata.create_all()` creates the app's **tables**, but never the
+database or the role — those must already exist or startup fails on connect.
+
+Which path you take depends on what your Postgres account is allowed to do.
+Find out first:
+
+```bash
+psql "postgresql://USER:PASSWORD@HOST:PORT/EXISTING_DB" \
+  -tAc "select rolsuper, rolcreatedb from pg_roles where rolname = current_user;"
+```
+
+Two booleans come back, superuser and createdb — e.g. `f|t`.
+
+> **Password in the URL:** URL-encode any of `@ : / ? # % &` in it —
+> `p@ss` must be written `p%40ss` or the URL parses as a different host.
+
+#### A. You can create databases (`rolcreatedb` = `t`)
+
+The normal case, and the one to prefer — the app gets a database it owns.
+
+```bash
+createdb -h HOST -p PORT -U USER sheshnag
+```
+
+```ini
+# backend/.env
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/sheshnag
+```
+
+#### B. You cannot create databases (`rolcreatedb` = `f`)
+
+Ask whoever administers the server for a database of your own — it keeps the
+app's 15 tables isolated and makes backups and restores independent:
+
+```sql
+CREATE ROLE sheshnag LOGIN PASSWORD '<strong-password>';
+CREATE DATABASE sheshnag OWNER sheshnag;
+```
+
+If that isn't available, a **dedicated schema inside a database you already
+have** works without any elevated privilege — creating a schema needs only
+`CREATE` on the database, which an ordinary application account usually has:
+
+```bash
+psql "postgresql://USER:PASSWORD@HOST:PORT/EXISTING_DB" \
+  -c "CREATE SCHEMA IF NOT EXISTS sheshnag AUTHORIZATION USER;"
+```
+
+Then point the app at that schema through the connection URL. No code or
+model changes are needed — `create_all()` follows `search_path`:
+
+```ini
+# backend/.env — note the URL-encoded '=' (%3D)
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/EXISTING_DB?options=-csearch_path%3Dsheshnag
+```
+
+Every table then lives in the `sheshnag` schema, invisible to anything using
+that database's `public` schema.
+
+#### Confirm before moving on
+
+Connection problems are the most common first-run failure, and they are much
+easier to read here than in a uvicorn traceback:
+
+```bash
+psql "$DATABASE_URL" -c '\conninfo'
+```
+
+#### Resetting
+
+There is no migration tool, so dropping and recreating is also how you pick
+up a schema change. Match it to the path you used:
+
+```bash
+dropdb -h HOST -p PORT -U USER sheshnag && createdb -h HOST -p PORT -U USER sheshnag   # path A
+psql "$DATABASE_URL" -c "DROP SCHEMA sheshnag CASCADE; CREATE SCHEMA sheshnag;"        # path B, schema
 ```
 
 ### 1. Backend (port 8000)
@@ -31,7 +113,10 @@ pip install -r requirements.txt
 python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-A default superadmin is created on startup: `admin@platform.com` / `admin`. You will be asked to change the password on first login.
+On first startup `Base.metadata.create_all()` creates every table and the
+model catalogue is seeded. A default superadmin is created too:
+`admin@platform.com` / `admin`. You will be asked to change the password on
+first login.
 
 ### 2. Frontend (port 3000)
 
@@ -118,7 +203,7 @@ See `daemon/README.md` for full CLI flag and YAML config details.
 Before deploying to production, address each item and note whether it requires a code change or just configuration.
 
 - [ ] **`SECRET_KEY`** — set a strong random value (e.g., `openssl rand -hex 32`). At startup the app logs a WARNING if the default is still in use.
-- [ ] **Database** — point `DATABASE_URL` at the production Postgres. The schema is created by `Base.metadata.create_all()` on first startup; there is no migration tool, so an existing database is never altered in place.
+- [ ] **Database** — provision the role and database as in [Create the database](#0-create-the-database), then point `DATABASE_URL` at it. The schema is created by `Base.metadata.create_all()` on first startup; there is no migration tool, so an existing database is never altered in place. Set up backups before the first real batch lands.
 - [ ] **CORS origins** — set `CORS_ORIGINS` to your frontend URL(s) instead of `"*"`. Also review `allow_credentials=True` — browsers reject wildcard origins with credentials enabled, so you must list concrete origins when using cookies or auth headers.
 - [ ] **HTTPS** — put a reverse proxy (Nginx, Caddy) in front of both frontend and backend. See [docs/services.md](services.md) admin appendix.
 - [ ] **Google OAuth** — register your production domain with Google Cloud Console. Set the same `GOOGLE_CLIENT_ID` in both `.env` and `backend/.env`.
