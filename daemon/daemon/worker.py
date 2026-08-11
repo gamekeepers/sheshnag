@@ -354,8 +354,24 @@ class Worker:
                 f"(id: {prompt.custom_id})"
             )
 
-            result = await self._executor.execute(prompt)
-            results.append(result)
+            # ── Pre-executor validation ──────────────────────
+            # Reject stream: true — batch execution cannot honor
+            # streaming and the response shape changes completely
+            # if passed through. Applies to all runtimes.
+            if prompt.body.get("stream"):
+                result = CompletionResult(
+                    custom_id=prompt.custom_id,
+                    error=(
+                        "UNSUPPORTED_PARAMETER: stream=true is not "
+                        "supported in batch mode. Batch requests are "
+                        "executed synchronously and the streaming "
+                        "response shape is incompatible."
+                    ),
+                )
+                results.append(result)
+            else:
+                result = await self._executor.execute(prompt)
+                results.append(result)
 
             if result.is_success:
                 completed += 1
