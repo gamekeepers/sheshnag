@@ -248,6 +248,9 @@ class _CrossFileContext:
     def __init__(self):
         self.seen_custom_ids = set()
         self.first_model = None
+        # Rows where body.n > 1, as (line_number, n_value) tuples.
+        # Used for runtime-gated n>1 rejection at submission time (issue #49).
+        self.n_gt1_rows: list = []
 
     def check_custom_id(self, line_number: int, custom_id) -> List[ValidationError]:
         if not isinstance(custom_id, str) or not custom_id:
@@ -392,6 +395,14 @@ def validate_batch_file(batch_id: str, filepath: str) -> bool:
                     for err in model_errors:
                         result.add_error(err)
 
+                # Collect rows with n > 1 for runtime-gated rejection (phase 4b).
+                # We track these regardless of runtime so the check in phase 4b
+                # is a simple list scan rather than a second file pass.
+                if isinstance(body, dict):
+                    n_value = body.get("n")
+                    if n_value is not None and n_value != 1:
+                        context.n_gt1_rows.append((i, n_value))
+
             # Track model from first valid line
             if result.model is None and model and isinstance(model, str):
                 result.model = model
@@ -403,15 +414,39 @@ def validate_batch_file(batch_id: str, filepath: str) -> bool:
     # 4. Model must be a selectable catalogue entry (reproducibility gate:
     #    users pick a pinned model, not a free-form id).
     if result.valid and result.model:
-        from provider_picker import is_model_supported
+        from provider_picker import get_catalog_entry
         db = SessionLocal()
         try:
-            if not is_model_supported(db, result.model):
+            entry = get_catalog_entry(db, result.model)
+            if entry is None:
                 _fail(
                     result, "unsupported_model", None, "body.model",
                     f"Model '{result.model}' is not in the platform catalogue. "
                     f"Choose one of the ids from GET /v1/models.",
                 )
+            else:
+                # 4b. Runtime-specific n>1 gate (issue #49, Ankush's decision).
+                #
+                # Ollama produces exactly 1 completion per request — n>1 in the
+                # body is a hard executor-level error. Catching it here (at
+                # submission time) gives the caller an immediate, actionable
+                # rejection instead of a per-row failure discovered hours later.
+                #
+                # vLLM supports n natively; no restriction there.
+                if entry.runtime == "ollama" and context.n_gt1_rows:
+                    row_descriptions = ", ".join(
+                        f"line {ln} (n={nv})" for ln, nv in context.n_gt1_rows
+                    )
+                    _fail(
+                        result,
+                        "unsupported_parameter",
+                        None,
+                        "body.n",
+                        f"Ollama does not support n>1 (produces exactly 1 completion "
+                        f"per request). Found n>1 in {len(context.n_gt1_rows)} row(s): "
+                        f"{row_descriptions}. Use a vLLM-runtime model to submit "
+                        f"batches with n>1, or remove the n parameter.",
+                    )
         finally:
             db.close()
 
