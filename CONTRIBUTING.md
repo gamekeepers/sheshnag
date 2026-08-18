@@ -86,7 +86,7 @@ open or how sure you are about it.
 
 | Area | Command | State |
 |---|---|---|
-| Backend | `cd backend && python -m pytest tests/ -q` | 42 tests, in-memory SQLite, no live server needed |
+| Backend | `cd backend && python -m pytest tests/ -q` | needs a **throwaway** Postgres — `TEST_DATABASE_URL`, default `postgresql://postgres:postgres@localhost:5432/sheshnag_test`. Every table is dropped at session start and end, so never point it at a database you care about, or at `DATABASE_URL` |
 | Daemon | `cd daemon && pip install -e ".[dev]" && python -m pytest tests/ -q` | mock backend + mock runtimes in `daemon/tests/` |
 | Frontend | `npm run lint` | no test framework yet |
 
