@@ -85,7 +85,7 @@ def _engine():
             pass
     except Exception as exc:
         pytest.fail(
-            f"Cannot reach the test database at {TEST_DATABASE_URL}: {exc}\n"
+            f"Cannot reach the configured test database: {exc}\n"
             "Start one with:\n"
             "  docker run -d --name sheshnag-pg -e POSTGRES_PASSWORD=postgres "
             "-e POSTGRES_DB=sheshnag_test -p 5432:5432 postgres:16",
