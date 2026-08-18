@@ -91,7 +91,7 @@ Connection problems are the most common first-run failure, and they are much
 easier to read here than in a uvicorn traceback:
 
 ```bash
-psql "$DATABASE_URL" -c '\conninfo'
+psql "postgresql://USER:PASSWORD@HOST:PORT/DATABASE" -c '\conninfo'
 ```
 
 #### Resetting
