@@ -806,3 +806,287 @@ class TestUnsupportedParameterErrorCode:
         ]
         results = await worker._run_prompts(prompts, job)
         assert results[0].error.startswith("UNSUPPORTED_PARAMETER:")
+
+
+# ════════════════════════════════════════════════════════════════
+#  Item 3 — vLLM body mutation fix (issue #49)
+#
+#  VLLMExecutor must NOT mutate prompt.body in-place when it
+#  warn-and-drops an unsupported parameter. A retry of the same
+#  PromptRequest must see the original body.
+# ════════════════════════════════════════════════════════════════
+
+
+class TestVLLMBodyMutationFix:
+
+    @pytest.mark.asyncio
+    async def test_prompt_body_unchanged_after_execute_with_unsupported_param(self):
+        """prompt.body must still contain top_k after execute() runs.
+
+        Before the fix, prompt.body.pop(param) mutated the caller's dict.
+        The fix copies the body before the warn-and-drop loop.
+        """
+        executor = VLLMExecutor(base_url="http://localhost:8100")
+
+        original_body = {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "top_k": 50,
+            "top_p": 0.9,
+        }
+        prompt = PromptRequest(custom_id="req-mutation", body=dict(original_body))
+
+        mock_response = httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "hi"}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+            },
+            request=httpx.Request("POST", "http://localhost:8100/v1/chat/completions"),
+        )
+
+        with patch.object(httpx.AsyncClient, "request", new_callable=AsyncMock) as mock_req:
+            mock_req.return_value = mock_response
+            result = await executor.execute(prompt)
+
+        assert result.is_success
+        # The original body must be intact — not mutated by execute()
+        assert "top_k" in prompt.body, (
+            "prompt.body was mutated: top_k was removed. "
+            "execute() must copy the body before warn-and-drop."
+        )
+        assert prompt.body["top_k"] == 50
+        assert prompt.body["top_p"] == 0.9
+
+    @pytest.mark.asyncio
+    async def test_prompt_body_unchanged_after_execute_clean_body(self):
+        """A body with no unsupported params must also survive unchanged."""
+        executor = VLLMExecutor(base_url="http://localhost:8100")
+
+        original_body = {"model": "m", "messages": [], "temperature": 0.7}
+        prompt = PromptRequest(custom_id="req-clean-mutation", body=dict(original_body))
+
+        mock_response = httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "hi"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+            request=httpx.Request("POST", "http://localhost:8100/v1/chat/completions"),
+        )
+
+        with patch.object(httpx.AsyncClient, "request", new_callable=AsyncMock) as mock_req:
+            mock_req.return_value = mock_response
+            await executor.execute(prompt)
+
+        assert prompt.body == original_body
+
+    @pytest.mark.asyncio
+    async def test_outbound_body_has_param_stripped(self):
+        """The wire body (what actually goes to vLLM) must NOT have top_k."""
+        executor = VLLMExecutor(base_url="http://localhost:8100")
+
+        prompt = PromptRequest(
+            custom_id="req-wire",
+            body={"model": "m", "messages": [], "top_k": 40, "temperature": 0.5},
+        )
+
+        mock_response = httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "hi"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+            request=httpx.Request("POST", "http://localhost:8100/v1/chat/completions"),
+        )
+
+        with patch.object(httpx.AsyncClient, "request", new_callable=AsyncMock) as mock_req:
+            mock_req.return_value = mock_response
+            await executor.execute(prompt)
+
+        sent_body = mock_req.call_args.kwargs["json"]
+        # Wire must not have top_k
+        assert "top_k" not in sent_body
+        # But prompt.body still does (mutation fix)
+        assert "top_k" in prompt.body
+        # Supported params must survive
+        assert sent_body["temperature"] == 0.5
+
+
+# ════════════════════════════════════════════════════════════════
+#  Item 4 — vLLM embeddings requests skip the warn-and-drop loop
+#  (issue #49)
+#
+#  /v1/embeddings requests must not trigger the chat-completion
+#  warn-and-drop. top_k in an embeddings body is meaningless there
+#  and should neither be logged nor stripped.
+# ════════════════════════════════════════════════════════════════
+
+
+class TestVLLMEmbeddingsSkip:
+
+    @pytest.mark.asyncio
+    async def test_embeddings_skips_warn_drop_loop(self, caplog):
+        """top_k in an embeddings prompt body must NOT produce a warning
+        and must NOT be stripped from the wire body.
+        """
+        executor = VLLMExecutor(base_url="http://localhost:8100")
+
+        prompt = PromptRequest(
+            custom_id="req-emb",
+            method="POST",
+            url="/v1/embeddings",
+            body={"model": "m", "input": "hello", "top_k": 50},
+        )
+
+        mock_response = httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": [{"object": "embedding", "embedding": [0.1, 0.2], "index": 0}],
+                "model": "m",
+                "usage": {"prompt_tokens": 2, "total_tokens": 2},
+            },
+            request=httpx.Request("POST", "http://localhost:8100/v1/embeddings"),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            with patch.object(httpx.AsyncClient, "request", new_callable=AsyncMock) as mock_req:
+                mock_req.return_value = mock_response
+                result = await executor.execute(prompt)
+
+        assert result.is_success, f"Expected success, got error: {result.error}"
+
+        # No warning about top_k should appear for embeddings
+        top_k_warnings = [
+            r for r in caplog.records
+            if "top_k" in r.message and "dropped" in r.message
+        ]
+        assert len(top_k_warnings) == 0, (
+            f"Expected no top_k warning for embeddings, got: {top_k_warnings}"
+        )
+
+        # top_k must reach the wire body unchanged
+        sent_body = mock_req.call_args.kwargs["json"]
+        assert "top_k" in sent_body, (
+            "top_k was stripped from embeddings body — embeddings must skip warn-and-drop"
+        )
+        assert sent_body["top_k"] == 50
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_still_drops_top_k(self, caplog):
+        """Sanity: chat completion must still warn-and-drop top_k.
+        Ensures the embeddings skip does not accidentally suppress the
+        chat-completion warning too.
+        """
+        executor = VLLMExecutor(base_url="http://localhost:8100")
+
+        prompt = PromptRequest(
+            custom_id="req-chat-topk",
+            method="POST",
+            url="/v1/chat/completions",
+            body={"model": "m", "messages": [], "top_k": 50},
+        )
+
+        mock_response = httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "hi"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+            request=httpx.Request("POST", "http://localhost:8100/v1/chat/completions"),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            with patch.object(httpx.AsyncClient, "request", new_callable=AsyncMock) as mock_req:
+                mock_req.return_value = mock_response
+                await executor.execute(prompt)
+
+        top_k_warnings = [
+            r for r in caplog.records
+            if "top_k" in r.message and "dropped" in r.message
+        ]
+        assert len(top_k_warnings) == 1, (
+            f"Expected 1 top_k warning for chat completion, got {len(top_k_warnings)}"
+        )
+
+
+# ════════════════════════════════════════════════════════════════
+#  Item 8 — stream rejection is in Worker, NOT in VLLMExecutor
+#
+#  The existing TestStreamRejection covers this with OllamaExecutor
+#  as the mock spec. This class adds an explicit test using
+#  VLLMExecutor as the spec — so a future refactor that moves stream
+#  handling into VLLMExecutor is caught by a failing assertion here.
+# ════════════════════════════════════════════════════════════════
+
+
+class TestStreamRejectionVLLMSpec:
+    """Verify stream=true is caught at the Worker level when using
+    a VLLMExecutor \u2014 not inside VLLMExecutor itself."""
+
+    @pytest.mark.asyncio
+    async def test_stream_true_rejected_before_vllm_executor(self):
+        """stream=true must be rejected by Worker._run_prompts before
+        VLLMExecutor.execute is called. The executor is spec'd as
+        VLLMExecutor so a future executor-level stream handler breaks here."""
+        from daemon.worker import Worker
+        from daemon.config import DaemonConfig
+        from daemon.client import BackendClient
+
+        config = DaemonConfig(worker_id="test-worker")
+        client = AsyncMock(spec=BackendClient)
+        executor = AsyncMock(spec=VLLMExecutor)   # <-- vLLM spec, not Ollama
+
+        worker = Worker(config=config, client=client, executor=executor)
+        worker._running = True
+
+        job = Job(job_id="test-job", model="m")
+        prompts = [
+            PromptRequest(
+                custom_id="req-stream-vllm",
+                body={"model": "m", "messages": [], "stream": True},
+            ),
+        ]
+
+        results = await worker._run_prompts(prompts, job)
+
+        assert len(results) == 1
+        result = results[0]
+        assert not result.is_success, "stream=true should have been rejected"
+        assert "UNSUPPORTED_PARAMETER" in result.error
+        assert "stream=true" in result.error
+        # The executor must NOT have been called — rejection is at Worker level
+        executor.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stream_false_reaches_vllm_executor(self):
+        """stream=false with VLLMExecutor spec must reach the executor."""
+        from daemon.worker import Worker
+        from daemon.config import DaemonConfig
+        from daemon.client import BackendClient
+
+        config = DaemonConfig(worker_id="test-worker")
+        client = AsyncMock(spec=BackendClient)
+        executor = AsyncMock(spec=VLLMExecutor)
+        executor.execute.return_value = CompletionResult(
+            custom_id="req-vllm-ok",
+            response={"choices": [{"message": {"content": "hi"}}]},
+        )
+
+        worker = Worker(config=config, client=client, executor=executor)
+        worker._running = True
+
+        job = Job(job_id="test-job", model="m")
+        prompts = [
+            PromptRequest(
+                custom_id="req-vllm-ok",
+                body={"model": "m", "messages": [], "stream": False},
+            ),
+        ]
+
+        results = await worker._run_prompts(prompts, job)
+
+        assert len(results) == 1
+        assert results[0].is_success
+        executor.execute.assert_called_once()

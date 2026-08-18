@@ -13,7 +13,7 @@ Architecture note:
 
 from __future__ import annotations
 
-from typing import Optional, Set
+from typing import Optional, Set, Union
 
 import httpx
 
@@ -48,6 +48,7 @@ class VLLMExecutor(BaseExecutor):
         self._timeout = timeout
         self._supported_models: Set[str] = set(supported_models) if supported_models else set()
         self._client: httpx.AsyncClient | None = None
+        self.version: Optional[str] = None   # populated by health_check()
 
     def _get_client(self) -> httpx.AsyncClient:
         """
@@ -67,12 +68,21 @@ class VLLMExecutor(BaseExecutor):
             )
         return self._client
 
-    # Parameters that vLLM does NOT accept as top-level keys in
-    # the OpenAI-compatible endpoint. Each is logged, never dropped
-    # silently (issue #39). See docs/openai_compatibility.md.
+    # Parameters that vLLM does NOT accept as top-level keys in the
+    # OpenAI-compatible endpoint. Each is logged, never dropped silently
+    # (issue #39). See docs/openai_compatibility.md.
+    #
+    # top_k: vLLM's ChatCompletionRequest schema does not include top_k as a
+    # standard top-level field. To use top_k with vLLM you must nest it under
+    # an "extra_body" key in the raw JSON request body (this applies to the
+    # wire protocol, not just the Python client's extra_body= kwarg).
+    # UNVERIFIED — needs live vLLM server to confirm exact behaviour.
     _UNSUPPORTED_TOP_LEVEL = {
-        "top_k": ("vLLM requires top_k via extra_body, not as a "
-                  "top-level parameter — doc-derived, needs live testing"),
+        "top_k": (
+            "vLLM does not accept top_k as a top-level JSON field; "
+            "use extra_body: {\"top_k\": ...} in the request body instead. "
+            "[UNVERIFIED — no live vLLM server available for confirmation]"
+        ),
     }
 
     async def execute(self, prompt: PromptRequest) -> CompletionResult:
@@ -91,20 +101,28 @@ class VLLMExecutor(BaseExecutor):
         """
         client = self._get_client()
 
+        # Build a shallow copy so we never mutate the caller's PromptRequest.
+        # prompt.body values are all JSON-safe scalars or already-parsed types
+        # so a shallow copy is sufficient (issue #49 item 3).
+        outbound_body = dict(prompt.body)
+
         # ── Warn-and-drop for unsupported top-level params ───
-        for param, reason in self._UNSUPPORTED_TOP_LEVEL.items():
-            if param in prompt.body:
-                prompt.body.pop(param)
-                logger.warning(
-                    "Parameter '%s' in prompt %s dropped: %s",
-                    param, prompt.custom_id, reason,
-                )
+        # Skip for embeddings — chat-completion-specific params like top_k are
+        # meaningless there and would produce a confusing warning (item 4).
+        if prompt.url != "/v1/embeddings":
+            for param, reason in self._UNSUPPORTED_TOP_LEVEL.items():
+                if param in outbound_body:
+                    outbound_body.pop(param)
+                    logger.warning(
+                        "Parameter '%s' in prompt %s dropped: %s",
+                        param, prompt.custom_id, reason,
+                    )
 
         try:
             response = await client.request(
                 method=prompt.method,
                 url=prompt.url,
-                json=prompt.body,
+                json=outbound_body,
             )
             response.raise_for_status()
 
@@ -149,15 +167,35 @@ class VLLMExecutor(BaseExecutor):
         """
         Check if vLLM is reachable and expected models are loaded.
 
-        Two-phase check:
-            1. Hit /health (or /v1/models as fallback) for liveness.
-            2. If supported_models is configured, verify those models
+        Three-phase check:
+            1. Attempt GET /version to record the server version.
+               Mirrors OllamaExecutor.health_check() — allows future
+               version-gated feature checks (item 6 of issue #49).
+               UNVERIFIED: exact /version response shape not live-tested.
+            2. Hit /health (or /v1/models as fallback) for liveness.
+            3. If supported_models is configured, verify those models
                appear in /v1/models response body — not just that the
                endpoint returns 200.
         """
         client = self._get_client()
 
-        # Phase 1: Basic liveness check
+        # Phase 1: Capture server version (best-effort, never fails health)
+        # vLLM exposes GET /version → {"version": "0.x.y"}
+        # UNVERIFIED — endpoint confirmed in vLLM docs but not live-tested.
+        try:
+            ver_resp = await client.get("/version", timeout=5.0)
+            if ver_resp.status_code == 200:
+                self.version = ver_resp.json().get("version")
+                logger.info("vLLM version detected: %s", self.version)
+            else:
+                logger.warning(
+                    "GET /version returned %s — version unavailable",
+                    ver_resp.status_code,
+                )
+        except Exception as exc:
+            logger.warning("Could not retrieve vLLM version: %s", exc)
+
+        # Phase 2: Basic liveness check
         is_alive = False
         for endpoint in ("/health", "/v1/models"):
             try:
@@ -173,7 +211,7 @@ class VLLMExecutor(BaseExecutor):
             logger.warning(f"vLLM health check failed at {self._base_url}")
             return False
 
-        # Phase 2: Verify expected models are loaded (if configured)
+        # Phase 3: Verify expected models are loaded (if configured)
         if self._supported_models:
             try:
                 resp = await client.get("/v1/models", timeout=10.0)
