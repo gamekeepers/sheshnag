@@ -6,14 +6,14 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from database import engine, Base
+from database import get_engine, Base
 from routers import files, batches, workers, auth, users, organizations, models as models_router
 from models import User, Organization, OrganizationMembership
 from auth import hash_password
 from catalog_seed import seed_model_catalog
 from sweeper import run_sweeper
 
-Base.metadata.create_all(bind=engine)
+Base.metadata.create_all(bind=get_engine())
 seed_model_catalog()
 
 # Comma-separated origins, or "*" for all. Browsers reject a wildcard origin

@@ -36,7 +36,13 @@ def _seed(engine, user_id, role="owner", worker_status="online", with_batch=True
             )
             db.add(batch)
             db.flush()
-            db.add(BatchAssignment(batch_id=batch.id, worker_id=worker.id, assigned_at=unix_now()))
+            db.add(BatchAssignment(
+                batch_id=batch.id,
+                worker_id=worker.id,
+                org_id=org.id,
+                worker_hostname=worker.hostname,
+                assigned_at=unix_now(),
+            ))
 
         db.commit()
         return org, worker, batch
@@ -124,3 +130,30 @@ def test_rename_org(auth_client, _engine, _test_user):
     assert res.status_code == 200
     assert res.json()["name"] == "Renamed Lab"
     assert auth_client.put(f"/v1/orgs/{org.id}", json={"name": "  "}).status_code == 400
+
+
+def test_history_survives_worker_removal(auth_client, _engine, _test_user):
+    """Removing a worker must not erase the jobs it served.
+
+    The provider views used to inner-join `workers` through the assignment,
+    so deleting a worker silently emptied an org's contribution history —
+    the one thing those views exist to show. Assignments now carry their own
+    org and hostname snapshot and no FK into `workers`.
+    """
+    org, worker, batch = _seed(_engine, _test_user.id, worker_status="offline")
+
+    res = auth_client.delete(f"/v1/orgs/{org.id}/workers/{worker.id}")
+    assert res.status_code == 200, res.text
+
+    data = auth_client.get(f"/v1/orgs/{org.id}/batches").json()["data"]
+    entry = next((e for e in data if e["id"] == batch.id), None)
+    assert entry is not None, "served batch vanished when its worker was removed"
+    assert entry["worker_id"] == worker.id
+    assert entry["worker_hostname"] == "prov-worker-1"   # from the snapshot
+    assert entry["worker_removed"] is True
+
+    stats = auth_client.get(f"/v1/orgs/{org.id}/stats").json()
+    assert stats["totals"]["jobs"] == 1
+    by_worker = {w["worker_id"]: w for w in stats["by_worker"]}
+    assert by_worker[worker.id]["hostname"] == "prov-worker-1"
+    assert by_worker[worker.id]["removed"] is True

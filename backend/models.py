@@ -425,14 +425,13 @@ class BatchAssignment(Base):
     __tablename__ = "batch_assignments"
 
     batch_id    = Column(String, primary_key=True)
-    # Nullable + ON DELETE SET NULL: removing a worker must not be blocked by
-    # the assignment history it leaves behind (Postgres enforces this FK; the
-    # old SQLite engine did not). A NULL worker_id means "served by a worker
-    # that has since been removed".
-    worker_id   = Column(
-        String, ForeignKey("workers.id", ondelete="SET NULL"), nullable=True,
-    )
-    assigned_at = Column(Integer, default=unix_now)
+    worker_id       = Column(String, nullable=False)
+    # Snapshotted at assignment time so those views still resolve once the
+    # worker is gone. The live Worker row, when it still exists, remains the
+    # source of truth for the current hostname.
+    org_id          = Column(String, nullable=False)
+    worker_hostname = Column(String, nullable=True)
+    assigned_at     = Column(Integer, default=unix_now)
 
 
 # ─── Password Reset ────────────────────────────────────────

@@ -342,8 +342,8 @@ def list_org_served_batches(
     rows = (
         db.query(Batch, BatchAssignment, Worker)
         .join(BatchAssignment, BatchAssignment.batch_id == Batch.id)
-        .join(Worker, Worker.id == BatchAssignment.worker_id)
-        .filter(Worker.org_id == org_id)
+        .outerjoin(Worker, Worker.id == BatchAssignment.worker_id)
+        .filter(BatchAssignment.org_id == org_id)
         .order_by(BatchAssignment.assigned_at.desc())
         .limit(max(1, min(limit, 500)))
         .all()
@@ -364,8 +364,11 @@ def list_org_served_batches(
                     "completed": b.request_counts_completed or 0,
                     "failed": b.request_counts_failed or 0,
                 },
-                "worker_id": w.id,
-                "worker_hostname": w.hostname,
+                "worker_id": a.worker_id,
+                # Live hostname when the worker still exists, else the name it
+                # had when it served the batch.
+                "worker_hostname": w.hostname if w else a.worker_hostname,
+                "worker_removed": w is None,
                 "assigned_at": a.assigned_at,
             }
             for b, a, w in rows
@@ -391,8 +394,8 @@ def org_served_stats(
     rows = (
         db.query(Batch, BatchAssignment, Worker)
         .join(BatchAssignment, BatchAssignment.batch_id == Batch.id)
-        .join(Worker, Worker.id == BatchAssignment.worker_id)
-        .filter(Worker.org_id == org_id, BatchAssignment.assigned_at >= since)
+        .outerjoin(Worker, Worker.id == BatchAssignment.worker_id)
+        .filter(BatchAssignment.org_id == org_id, BatchAssignment.assigned_at >= since)
         .all()
     )
 
@@ -409,7 +412,15 @@ def org_served_stats(
         m["jobs"] += 1
         m["requests_completed"] += reqs
 
-        wk = by_worker.setdefault(w.id, {"hostname": w.hostname, "jobs": 0, "requests_completed": 0})
+        wk = by_worker.setdefault(
+            _a.worker_id,
+            {
+                "hostname": w.hostname if w else _a.worker_hostname,
+                "removed": w is None,
+                "jobs": 0,
+                "requests_completed": 0,
+            },
+        )
         wk["jobs"] += 1
         wk["requests_completed"] += reqs
 
@@ -476,8 +487,10 @@ def remove_worker(
 ):
     """Remove an offline worker and its inventory. Owner/admin only.
 
-    Batch assignment history is kept (the batches themselves are the
-    record); the served-jobs join simply stops resolving the hostname.
+    Batch assignment history is kept and stays attributed: `batch_assignments`
+    holds its own org and hostname snapshot and no foreign key into `workers`,
+    so the provider views keep showing this worker's jobs, flagged as served by
+    a removed worker.
     """
     _require_membership(db, user, org_id, roles=["owner", "admin"])
 
@@ -495,13 +508,8 @@ def remove_worker(
         db.query(RuntimeModel).filter(RuntimeModel.runtime_id.in_(runtime_ids)).delete(synchronize_session=False)
         db.query(WorkerRuntime).filter(WorkerRuntime.id.in_(runtime_ids)).delete(synchronize_session=False)
     db.query(WorkerGpu).filter(WorkerGpu.worker_id == worker.id).delete(synchronize_session=False)
-    # Assignment history outlives the worker, but Postgres enforces the FK, so
-    # the reference has to go before the row does. Done explicitly rather than
-    # relying on ON DELETE SET NULL so it also holds on a database whose
-    # batch_assignments table predates that clause.
-    db.query(BatchAssignment).filter(
-        BatchAssignment.worker_id == worker.id
-    ).update({BatchAssignment.worker_id: None}, synchronize_session=False)
+    # Assignment rows are left exactly as they are: they carry no foreign key
+    # into workers, so nothing blocks the delete and nothing is erased by it.
     db.delete(worker)
     db.commit()
     return {"id": worker_id, "deleted": True}

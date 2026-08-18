@@ -29,6 +29,7 @@ import os
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker, Session
 
 # Set before `database` is imported — the module reads DATABASE_URL at import
@@ -41,15 +42,35 @@ TEST_DATABASE_URL = os.getenv(
     "postgresql://postgres:postgres@localhost:5432/sheshnag_test",
 )
 
+def _target_identity(url: str):
+    """What `drop_all` would actually destroy: (host, port, database, schema).
+
+    Compared structurally rather than as strings, because two URLs naming the
+    same database routinely differ in spelling — `postgresql://` vs
+    `postgresql+psycopg2://`, a different user, a trailing parameter — and a
+    raw `!=` waves those through to `drop_all`. The schema is part of the
+    identity so that the separate-schema setup this module documents keeps
+    working: same database, different `search_path`, different target.
+    """
+    u = make_url(url)
+    return (
+        (u.host or "").lower(),
+        u.port or 5432,
+        (u.database or "").lower(),
+        str(u.query.get("options", "")),
+    )
+
+
 # Enforced, not just documented: the fixture below drops every table, and the
 # next line makes the real DATABASE_URL unreadable, so the comparison has to
 # happen here or not at all.
 _REAL_DATABASE_URL = os.getenv("DATABASE_URL")
-if _REAL_DATABASE_URL and _REAL_DATABASE_URL == TEST_DATABASE_URL:
+if _REAL_DATABASE_URL and _target_identity(_REAL_DATABASE_URL) == _target_identity(TEST_DATABASE_URL):
     raise RuntimeError(
-        "TEST_DATABASE_URL is the same database as DATABASE_URL. The test "
-        "session drops every table in it — point TEST_DATABASE_URL at a "
-        "throwaway database instead."
+        "TEST_DATABASE_URL points at the same database as DATABASE_URL "
+        f"({_target_identity(TEST_DATABASE_URL)}). The test session drops "
+        "every table in it — point TEST_DATABASE_URL at a throwaway database, "
+        "or at a separate schema via ?options=-csearch_path%3D<schema>."
     )
 
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
