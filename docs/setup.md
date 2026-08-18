@@ -165,7 +165,7 @@ Every variable the platform reads at runtime. Defaults are pulled from live code
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `SECRET_KEY` | yes (change in prod) | _(see below)_ | JWT signing key. The code ships a default for dev only; at startup a WARNING is logged if you haven't changed it. Generate one with: `openssl rand -hex 32`. |
-| `DATABASE_URL` | no | `postgresql://sheshnag:sheshnag@localhost:5432/sheshnag` | Postgres connection string. The default assumes a local dev database; set it explicitly everywhere else. |
+| `DATABASE_URL` | yes | _(must set)_ | Postgres connection string. For local development, copy the example value from `backend/.env.example`; set it explicitly in every environment. |
 | `GOOGLE_CLIENT_ID` | if Google OAuth | _(must set)_ | Must match the client ID registered with Google, and must also be the same value as `NEXT_PUBLIC_GOOGLE_CLIENT_ID`. |
 | `FRONTEND_URL` | no | `http://localhost:3000` | Base URL used in password-reset and invite email links. |
 | `MAILGUN_API_KEY` | no | — | Mailgun API key. If unset, email sending is gracefully skipped. |
