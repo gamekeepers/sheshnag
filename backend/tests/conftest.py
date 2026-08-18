@@ -40,6 +40,18 @@ TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",
     "postgresql://postgres:postgres@localhost:5432/sheshnag_test",
 )
+
+# Enforced, not just documented: the fixture below drops every table, and the
+# next line makes the real DATABASE_URL unreadable, so the comparison has to
+# happen here or not at all.
+_REAL_DATABASE_URL = os.getenv("DATABASE_URL")
+if _REAL_DATABASE_URL and _REAL_DATABASE_URL == TEST_DATABASE_URL:
+    raise RuntimeError(
+        "TEST_DATABASE_URL is the same database as DATABASE_URL. The test "
+        "session drops every table in it — point TEST_DATABASE_URL at a "
+        "throwaway database instead."
+    )
+
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 
 # Import models to register their tables with Base.metadata BEFORE creating the engine.

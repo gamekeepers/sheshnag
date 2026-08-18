@@ -243,7 +243,7 @@ Postgres with SQLAlchemy ORM. Tables (see `models.py`):
 | `model_catalog` | Curated, pinned models users select for a batch (identity). See [Model catalogue](#model-catalogue--v1models). |
 | `files` | Uploaded inputs and generated outputs |
 | `batches` | Lifecycle status, request counts, `attempts` (requeue counter) |
-| `batch_assignments` | Which worker holds which batch (FK → `workers.id`) |
+| `batch_assignments` | Which worker holds which batch (FK → `workers.id`, `ON DELETE SET NULL` — history survives worker removal) |
 | `password_reset_tokens` | Forgot-password flow |
 
 > Inventory is fully normalized per spec §8.2–8.4 — one row per runtime,

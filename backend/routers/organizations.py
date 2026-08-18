@@ -495,6 +495,13 @@ def remove_worker(
         db.query(RuntimeModel).filter(RuntimeModel.runtime_id.in_(runtime_ids)).delete(synchronize_session=False)
         db.query(WorkerRuntime).filter(WorkerRuntime.id.in_(runtime_ids)).delete(synchronize_session=False)
     db.query(WorkerGpu).filter(WorkerGpu.worker_id == worker.id).delete(synchronize_session=False)
+    # Assignment history outlives the worker, but Postgres enforces the FK, so
+    # the reference has to go before the row does. Done explicitly rather than
+    # relying on ON DELETE SET NULL so it also holds on a database whose
+    # batch_assignments table predates that clause.
+    db.query(BatchAssignment).filter(
+        BatchAssignment.worker_id == worker.id
+    ).update({BatchAssignment.worker_id: None}, synchronize_session=False)
     db.delete(worker)
     db.commit()
     return {"id": worker_id, "deleted": True}

@@ -1,6 +1,7 @@
 from database import Base
 from sqlalchemy import (
-    Column, String, Integer, Boolean, Float, Text, ForeignKey, UniqueConstraint,
+    BigInteger, Column, String, Integer, Boolean, Float, Text, ForeignKey,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
@@ -388,7 +389,10 @@ class File(Base):
     user_id    = Column(String, nullable=True)
     filename   = Column(String, nullable=False)
     purpose    = Column(String, default="batch")
-    bytes      = Column(Integer, default=0)
+    # BigInteger, not Integer: Postgres INTEGER caps at 2^31-1, and a batch
+    # input/output JSONL above 2 GiB would abort the upload with
+    # "integer out of range" after the bytes had already hit disk.
+    bytes      = Column(BigInteger, default=0)
     filepath   = Column(String, nullable=False, default="")
     created_at = Column(Integer, default=unix_now)
 
@@ -421,7 +425,13 @@ class BatchAssignment(Base):
     __tablename__ = "batch_assignments"
 
     batch_id    = Column(String, primary_key=True)
-    worker_id   = Column(String, ForeignKey("workers.id"), nullable=False)
+    # Nullable + ON DELETE SET NULL: removing a worker must not be blocked by
+    # the assignment history it leaves behind (Postgres enforces this FK; the
+    # old SQLite engine did not). A NULL worker_id means "served by a worker
+    # that has since been removed".
+    worker_id   = Column(
+        String, ForeignKey("workers.id", ondelete="SET NULL"), nullable=True,
+    )
     assigned_at = Column(Integer, default=unix_now)
 
 
