@@ -49,9 +49,10 @@ class OllamaExecutor(BaseExecutor):
         GET  /api/version  - get version info
     """
     
-    def __init__(self, base_url: str = "http://localhost:11434", timeout: float = 300.0):
+    def __init__(self, base_url: str = "http://localhost:11434", timeout: float = 300.0, max_concurrent: int = 8):
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._max_concurrent = max_concurrent
         self._client: Optional[httpx.AsyncClient] = None
         self.version: Optional[str] = None
         
@@ -60,6 +61,10 @@ class OllamaExecutor(BaseExecutor):
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=httpx.Timeout(self._timeout),
+                limits=httpx.Limits(
+                    max_connections=max(self._max_concurrent, 10),
+                    max_keepalive_connections=max(self._max_concurrent, 5),
+                ),
             )
         return self._client
     
@@ -166,6 +171,72 @@ class OllamaExecutor(BaseExecutor):
                 custom_id=prompt.custom_id,
                 error=str(e)
             )
+
+    async def batch_execute(self, prompts: List[PromptRequest]) -> List[CompletionResult]:
+        """
+        Execute a batch of prompts.
+        Overrides base to natively coalesce embeddings into single /api/embed calls.
+        """
+        embedding_prompts = [p for p in prompts if p.url == "/v1/embeddings"]
+        chat_prompts = [p for p in prompts if p.url != "/v1/embeddings"]
+        
+        results_by_id = {}
+        
+        # Chat prompts run sequentially via base execute (worker pool handles concurrency)
+        for p in chat_prompts:
+            results_by_id[p.custom_id] = await self.execute(p)
+            
+        # Embedding prompts: chunk into groups of 64
+        CHUNK_SIZE = 64
+        client = self._get_client()
+        for i in range(0, len(embedding_prompts), CHUNK_SIZE):
+            chunk = embedding_prompts[i:i + CHUNK_SIZE]
+            inputs = [p.body.get("input", "") for p in chunk]
+            model = chunk[0].body.get("model", "")
+            
+            # Combine multiple inputs (if list of lists or single strings, we flatten or just pass as is)
+            coalesced_body = {"model": model, "input": inputs}
+            if "truncate" in chunk[0].body:
+                coalesced_body["truncate"] = chunk[0].body["truncate"]
+                
+            try:
+                response = await client.post("/api/embed", json=coalesced_body)
+                response.raise_for_status()
+                
+                ollama_data = response.json()
+                openai_response = self._translate_embeddings_response(ollama_data)
+                
+                # Fan out the single response to multiple CompletionResults
+                for j, p in enumerate(chunk):
+                    if "data" in openai_response and j < len(openai_response["data"]):
+                        data_item = openai_response["data"][j]
+                        # Fix up the index to be 0 for the single result
+                        data_item["index"] = 0
+                        per_row_response = {
+                            "object": "list",
+                            "data": [data_item],
+                            "model": openai_response.get("model", model),
+                            "usage": {
+                                "prompt_tokens": openai_response.get("usage", {}).get("prompt_tokens", 0) // len(chunk),
+                                "total_tokens": openai_response.get("usage", {}).get("total_tokens", 0) // len(chunk)
+                            }
+                        }
+                        results_by_id[p.custom_id] = CompletionResult(
+                            custom_id=p.custom_id, response=per_row_response
+                        )
+                    else:
+                        results_by_id[p.custom_id] = CompletionResult(
+                            custom_id=p.custom_id, error="EMBEDDING_FAILED: Missing vector in response"
+                        )
+                        
+            except Exception as e:
+                logger.error(f"Ollama batched embedding execution failed: {e}")
+                for p in chunk:
+                    results_by_id[p.custom_id] = CompletionResult(
+                        custom_id=p.custom_id, error=f"EMBEDDING_FAILED: {e}"
+                    )
+                    
+        return [results_by_id[p.custom_id] for p in prompts]
     
     async def health_check(self) -> bool:
         """Check Ollama is running via GET /api/version and GET /api/tags."""

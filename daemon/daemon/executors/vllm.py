@@ -43,9 +43,11 @@ class VLLMExecutor(BaseExecutor):
         base_url: str,
         timeout: float = 300.0,
         supported_models: Optional[list[str]] = None,
+        max_concurrent: int = 8,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._max_concurrent = max_concurrent
         self._supported_models: Set[str] = set(supported_models) if supported_models else set()
         self._client: httpx.AsyncClient | None = None
 
@@ -61,8 +63,8 @@ class VLLMExecutor(BaseExecutor):
                 base_url=self._base_url,
                 timeout=httpx.Timeout(self._timeout),
                 limits=httpx.Limits(
-                    max_connections=10,
-                    max_keepalive_connections=5,
+                    max_connections=max(self._max_concurrent, 10),
+                    max_keepalive_connections=max(self._max_concurrent, 5),
                 ),
             )
         return self._client

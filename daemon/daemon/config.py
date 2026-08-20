@@ -57,10 +57,11 @@ _ENV_MAP: Dict[str, str] = {
     "runtime": "DAEMON_RUNTIME",
     "inference_timeout": "DAEMON_INFERENCE_TIMEOUT",
     "heartbeat_interval": "DAEMON_HEARTBEAT_INTERVAL",
+    "max_concurrent_prompts": "DAEMON_MAX_CONCURRENT_PROMPTS",
 }
 
 # Fields that need type coercion from string env vars
-_INT_FIELDS = frozenset({"poll_interval", "heartbeat_interval"})
+_INT_FIELDS = frozenset({"poll_interval", "heartbeat_interval", "max_concurrent_prompts"})
 _FLOAT_FIELDS = frozenset({"vram_gb", "inference_timeout"})
 
 
@@ -119,6 +120,7 @@ class DaemonConfig(BaseModel):
         models:         List of model names available on this worker (spec §8).
         runtime:        Inference runtime type — "ollama" (default) or "vllm" .
         inference_timeout: Per-prompt inference timeout in seconds (any runtime).
+        max_concurrent_prompts: Max prompts in flight concurrently.
     """
 
     worker_id: str = Field(default_factory=_generate_worker_id)
@@ -141,6 +143,7 @@ class DaemonConfig(BaseModel):
 
     # ── Executor tuning ──────────────────────────────────────────
     inference_timeout: float = Field(default=300.0, gt=0, description="Per-prompt timeout in seconds, must be > 0")
+    max_concurrent_prompts: int = Field(default=8, gt=0, description="Max prompts in flight concurrently")
 
     # ── Heartbeats & Progress ────────────────────────────────────
     heartbeat_interval: int = Field(default=30, gt=0)

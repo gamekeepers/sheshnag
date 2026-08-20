@@ -331,75 +331,172 @@ class Worker:
         self, prompts: List[PromptRequest], job: Job
     ) -> List[CompletionResult]:
         """
-        Execute all prompts sequentially through the executor.
-
-        Week 1: simple sequential execution.
-        Week 2+: this is where batching / checkpointing would plug in.
+        Execute all prompts concurrently using a bounded task pool.
         """
-        results: List[CompletionResult] = []
+        # 1. Duplicate custom_id detection (pre-flight)
+        seen_ids = set()
+        for p in prompts:
+            if p.custom_id in seen_ids:
+                logger.error(f"[{job.job_id}] Duplicate custom_id '{p.custom_id}' in input")
+                raise ValueError(f"Duplicate custom_id '{p.custom_id}' in input")
+            seen_ids.add(p.custom_id)
+
+        # 2. Set up shared state
         total = len(prompts)
+        queue = asyncio.Queue()
+        results_by_id: dict[str, CompletionResult] = {}
+        lock = asyncio.Lock()
         completed = 0
         failed = 0
 
-        for idx, prompt in enumerate(prompts, start=1):
-            if not self._running:
-                logger.warning(
-                    f"[{job.job_id}] Shutdown requested — "
-                    f"stopping at prompt {idx}/{total}"
-                )
-                break
-
-            logger.info(
-                f"[{job.job_id}] Executing prompt {idx}/{total} "
-                f"(id: {prompt.custom_id})"
-            )
-
-            # ── Pre-executor validation ──────────────────────
-            # Reject stream: true — batch execution cannot honor
-            # streaming and the response shape changes completely
-            # if passed through. Applies to all runtimes.
-            if prompt.body.get("stream"):
-                result = CompletionResult(
-                    custom_id=prompt.custom_id,
-                    error=(
-                        "UNSUPPORTED_PARAMETER: stream=true is not "
-                        "supported in batch mode. Batch requests are "
-                        "executed synchronously and the streaming "
-                        "response shape is incompatible."
-                    ),
-                )
-                results.append(result)
+        chat_prompts = []
+        embedding_prompts = []
+        for p in prompts:
+            if p.url == "/v1/embeddings":
+                embedding_prompts.append(p)
             else:
-                result = await self._executor.execute(prompt)
-                results.append(result)
+                chat_prompts.append(p)
+                queue.put_nowait(p)
 
-            if result.is_success:
-                completed += 1
-                tokens = result.usage.get("total_tokens", "?")
-                logger.debug(
-                    f"[{job.job_id}] Prompt {prompt.custom_id} "
-                    f"completed ({tokens} tokens)"
+        # 3. Worker coroutine
+        async def pool_worker():
+            nonlocal completed, failed
+            while True:
+                if not self._running:
+                    return
+                try:
+                    prompt = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+
+                logger.info(
+                    f"[{job.job_id}] Executing prompt "
+                    f"(id: {prompt.custom_id})"
                 )
-            else:
-                failed += 1
-                logger.warning(
-                    f"[{job.job_id}] Prompt {prompt.custom_id} "
-                    f"failed: {result.error}"
-                )
+
+                # Pre-executor validation
+                if prompt.body.get("stream"):
+                    result = CompletionResult(
+                        custom_id=prompt.custom_id,
+                        error=(
+                            "UNSUPPORTED_PARAMETER: stream=true is not "
+                            "supported in batch mode. Batch requests are "
+                            "executed synchronously and the streaming "
+                            "response shape is incompatible."
+                        ),
+                    )
+                else:
+                    result = await self._executor.execute(prompt)
+
+                should_report = False
+                report_completed = 0
+                report_failed = 0
+
+                async with lock:
+                    results_by_id[prompt.custom_id] = result
+                    if result.is_success:
+                        completed += 1
+                        tokens = result.usage.get("total_tokens", "?")
+                        logger.debug(
+                            f"[{job.job_id}] Prompt {prompt.custom_id} "
+                            f"completed ({tokens} tokens)"
+                        )
+                    else:
+                        failed += 1
+                        logger.warning(
+                            f"[{job.job_id}] Prompt {prompt.custom_id} "
+                            f"failed: {result.error}"
+                        )
+
+                    done = completed + failed
+                    if done % 10 == 0 or done == total:
+                        should_report = True
+                        report_completed = completed
+                        report_failed = failed
+
+                    # Update heartbeat
+                    self._heartbeat.update_status(
+                        status="busy",
+                        job_id=job.job_id,
+                        progress={
+                            "total_prompts": total,
+                            "completed_prompts": completed,
+                            "failed_prompts": failed,
+                        }
+                    )
+
+                if should_report:
+                    await self._client.report_progress(
+                        job_id=job.job_id,
+                        completed=report_completed,
+                        failed=report_failed,
+                        total=total,
+                    )
+
+        # 4. Launch pool of workers
+        concurrency = min(self._config.max_concurrent_prompts, max(1, len(chat_prompts)))
+        workers = [asyncio.create_task(pool_worker()) for _ in range(concurrency)]
+        if workers:
+            await asyncio.gather(*workers)
+
+        # 5. Handle embeddings
+        if embedding_prompts and self._running:
+            logger.info(f"[{job.job_id}] Executing {len(embedding_prompts)} embeddings via batch_execute")
+            try:
+                emb_results = await self._executor.batch_execute(embedding_prompts)
                 
-            # Update heartbeat with current progress
-            self._heartbeat.update_status(
-                status="busy",
-                job_id=job.job_id,
-                progress={
-                    "total_prompts": total,
-                    "completed_prompts": completed,
-                    "failed_prompts": failed,
-                }
-            )
-            
-            # Report progress to platform every 10 prompts or on completion
-            if idx % 10 == 0 or idx == total:
+                should_report = False
+                report_completed = 0
+                report_failed = 0
+
+                async with lock:
+                    for r in emb_results:
+                        results_by_id[r.custom_id] = r
+                        if r.is_success:
+                            completed += 1
+                        else:
+                            failed += 1
+
+                    should_report = True
+                    report_completed = completed
+                    report_failed = failed
+
+                    self._heartbeat.update_status(
+                        status="busy",
+                        job_id=job.job_id,
+                        progress={
+                            "total_prompts": total,
+                            "completed_prompts": completed,
+                            "failed_prompts": failed,
+                        }
+                    )
+
+                if should_report:
+                    await self._client.report_progress(
+                        job_id=job.job_id,
+                        completed=report_completed,
+                        failed=report_failed,
+                        total=total,
+                    )
+            except Exception as exc:
+                logger.error(f"[{job.job_id}] Batch embedding execution failed: {exc}")
+                async with lock:
+                    for p in embedding_prompts:
+                        results_by_id[p.custom_id] = CompletionResult(
+                            custom_id=p.custom_id, error=str(exc)
+                        )
+                        failed += 1
+                        
+                    self._heartbeat.update_status(
+                        status="busy",
+                        job_id=job.job_id,
+                        progress={
+                            "total_prompts": total,
+                            "completed_prompts": completed,
+                            "failed_prompts": failed,
+                        }
+                    )
+                
                 await self._client.report_progress(
                     job_id=job.job_id,
                     completed=completed,
@@ -407,7 +504,19 @@ class Worker:
                     total=total,
                 )
 
-        return results
+        if not self._running:
+            logger.warning(
+                f"[{job.job_id}] Shutdown requested — "
+                f"stopping early"
+            )
+
+        # 6. Return results in input order (only what completed)
+        final_results = []
+        for p in prompts:
+            if p.custom_id in results_by_id:
+                final_results.append(results_by_id[p.custom_id])
+                
+        return final_results
 
     # ── Output Writing ───────────────────────────────────────────
 
@@ -460,7 +569,13 @@ class Worker:
         loop = asyncio.get_running_loop()
 
         for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, self._handle_shutdown_signal, sig)
+            try:
+                loop.add_signal_handler(sig, self._handle_shutdown_signal, sig)
+            except NotImplementedError:
+                # add_signal_handler is not supported on Windows event loops.
+                # Graceful shutdown via signals will not work, but KeyboardInterrupt
+                # will still be raised on Ctrl+C.
+                pass
 
     def _handle_shutdown_signal(self, sig: signal.Signals) -> None:
         """Handle SIGTERM/SIGINT by requesting graceful shutdown."""
