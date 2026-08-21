@@ -6,8 +6,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import Batch, File as FileModel
-from schemas import BatchCreate, BatchOut, BatchSummary
+from models import Batch, File as FileModel, UsageRecord
+from schemas import BatchCreate, BatchOut, BatchSummary, UsageRecordOut
 from auth import get_human_context
 from services.batch_validator import validate_batch_file
 from services.sse_manager import sse_manager
@@ -118,6 +118,35 @@ def get_batch(
         raise HTTPException(status_code=403, detail="Access denied")
 
     return BatchOut.from_batch(batch)
+
+
+@router.get("/batches/{batch_id}/usage")
+def get_batch_usage(
+    batch_id: str,
+    ctx=Depends(get_human_context),
+    db: Session = Depends(get_db),
+):
+    """Retrieve per-prompt token usage records for a batch (spec §16)."""
+    user, _api_key = ctx
+
+    batch = db.query(Batch).filter(Batch.id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    if user.platform_role == "user" and batch.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    records = (
+        db.query(UsageRecord)
+        .filter(UsageRecord.batch_id == batch_id)
+        .order_by(UsageRecord.created_at.asc(), UsageRecord.custom_id.asc())
+        .all()
+    )
+
+    return {
+        "object": "list",
+        "data": [UsageRecordOut.model_validate(r) for r in records],
+    }
 
 
 @router.get("/batches")

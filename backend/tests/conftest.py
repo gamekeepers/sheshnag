@@ -86,6 +86,7 @@ from models import (
     File,
     Batch,
     BatchAssignment,
+    UsageRecord,
     PasswordResetToken,
 )
 

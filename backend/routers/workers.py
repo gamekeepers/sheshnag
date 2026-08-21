@@ -14,7 +14,8 @@ from typing import Optional
 from auth import get_worker_context
 from provider_picker import picker, get_catalog_entry
 from sweeper import MAX_BATCH_ATTEMPTS, requeue_or_fail_batch
-import shutil, os, logging
+from services.usage_ingest import ingest_usage_records
+import asyncio, shutil, os, logging
 
 logger = logging.getLogger(__name__)
 
@@ -305,6 +306,15 @@ def report_progress(
 
     batch.request_counts_completed = req.completed
     batch.request_counts_failed = req.failed
+
+    # Live provisional token counts (estimated running sum; overwritten by authoritative recompute at upload)
+    if req.prompt_tokens is not None:
+        batch.prompt_tokens = req.prompt_tokens
+    if req.completion_tokens is not None:
+        batch.completion_tokens = req.completion_tokens
+    if req.total_tokens is not None:
+        batch.total_tokens = req.total_tokens
+
     db.commit()
 
     return {"status": "ok", "batch_id": batch.id}
@@ -379,6 +389,9 @@ def upload_results(
 
     db.commit()
     db.refresh(batch)
+
+    # Fire-and-forget: parse per-prompt usage from output JSONL and recompute authoritative rollups
+    asyncio.create_task(asyncio.to_thread(ingest_usage_records, batch.id, filepath))
 
     return {
         "status":         "completed",
