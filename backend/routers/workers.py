@@ -264,6 +264,10 @@ def poll_job(
     assignment = BatchAssignment(
         batch_id=batch.id,
         worker_id=req.worker_id,
+        # Snapshot org and hostname now — the assignment is the provider's
+        # record of the work and must survive the worker being removed.
+        org_id=org.id,
+        worker_hostname=worker.hostname,
         assigned_at=unix_now(),
     )
     db.add(assignment)

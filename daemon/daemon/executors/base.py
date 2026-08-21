@@ -65,6 +65,13 @@ class BaseExecutor(ABC):
         """
         ...
 
+    async def query_concurrency_limit(self) -> Optional[int]:
+        """
+        Query the runtime for its max parallel request capacity.
+        Returns None if unsupported or query fails.
+        """
+        return None
+
     async def batch_execute(
         self, prompts: List[PromptRequest]
     ) -> List[CompletionResult]:

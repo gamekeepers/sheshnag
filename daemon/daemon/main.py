@@ -169,6 +169,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Per-prompt inference timeout in seconds (default: 300.0)",
     )
 
+    parser.add_argument(
+        "--max-concurrent-prompts",
+        type=int,
+        default=None,
+        help="Max prompts in flight concurrently (default: 8)",
+    )
+
     return parser
 
 
@@ -195,6 +202,7 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
         "models": args.models,
         "runtime": args.runtime,
         "inference_timeout": args.inference_timeout,
+        "max_concurrent_prompts": args.max_concurrent_prompts,
     }
 
     # Filter out None values — DaemonConfig.load() also does this,
@@ -320,6 +328,7 @@ def main() -> None:
     logger.info(f"  Auth:          {auth_status}")
     logger.info(f"  Models:        {models_str}")
     logger.info(f"  Runtime:       {config.runtime}")
+    logger.info(f"  Concurrency:   {config.max_concurrent_prompts}")
     logger.info(f"{'='*60}")
 
     # Run the async event loop

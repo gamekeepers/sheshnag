@@ -73,6 +73,8 @@ async def batch_events(
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found")
 
+    db.close()
+
     queue = sse_manager.subscribe(batch_id)
 
     async def event_generator():

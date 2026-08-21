@@ -8,6 +8,7 @@ python-dotenv                # import: from dotenv import load_dotenv
 requests                     # for Mailgun email service
 pyyaml>=6.0                  # model catalogue manifest (catalog/models.yaml)
 google-auth>=2.0             # Google OAuth ID token verification
+psycopg2-binary              # PostgreSQL driver (DATABASE_URL)
 
 # Dev / test dependencies
 pytest>=7.0

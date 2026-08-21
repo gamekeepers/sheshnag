@@ -41,7 +41,7 @@ signal the task needs a human, not a signal to find a way around the rule.
 | Directory | Service | Stack |
 |---|---|---|
 | Root (`app/`, `package.json`) | Next.js frontend | JS (no TS), React 19, Tailwind v4 |
-| `backend/` | FastAPI REST API + SQLite | Python, no Alembic |
+| `backend/` | FastAPI REST API + Postgres | Python, no Alembic |
 | `daemon/` | GPU worker daemon | Python 3.12+, polls backend for jobs, runs Ollama (default) or vLLM |
 
 Frontend reads `NEXT_PUBLIC_BACKEND_URL` (default `http://localhost:8000`).
@@ -82,7 +82,7 @@ in a separate terminal first.
 
 | Area | Command |
 |---|---|
-| Backend | `cd backend && python -m pytest tests/ -q` — 42 tests, in-memory SQLite |
+| Backend | `cd backend && python -m pytest tests/ -q` — needs a Postgres at `TEST_DATABASE_URL` (see `tests/conftest.py`) |
 | Daemon | `cd daemon && python -m pytest tests/ -q` — needs `pip install -e ".[dev]"` |
 | Frontend | `npm run lint` — no test framework yet |
 
@@ -103,12 +103,12 @@ Two traps:
 
 ## Backend quirks
 
-- **SQLite at `backend/jobs.db`**, auto-created via
-  `Base.metadata.create_all()`. No Alembic. To reset, delete `jobs.db` and
-  restart.
-- **`create_all()` never adds columns to an existing table.** New columns on an
-  existing model must also go in `_NEW_COLUMNS` in `backend/migrations.py`, or
-  they silently won't exist on anyone's current DB.
+- **Postgres via `DATABASE_URL`**, schema auto-created via
+  `Base.metadata.create_all()`. No Alembic. To reset, drop and recreate the
+  database and restart.
+- **`create_all()` never adds columns to an existing table.** A new column on
+  an existing model appears on fresh databases only — everyone else needs to
+  recreate theirs, or add the column by hand.
 - **Do work at call time, not import time.** pytest imports every module during
   collection, so a module-scope `raise` or config read takes out the whole
   suite rather than one test. This has happened.
