@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 from typing import Optional, List, Callable, Awaitable
 
 import httpx
@@ -7,6 +8,7 @@ import jsonschema
 
 from daemon.executors.base import BaseExecutor
 from daemon.models import CompletionResult, PromptRequest
+from daemon.hardware import get_gpu_utilization
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +64,8 @@ class OllamaExecutor(BaseExecutor):
                 base_url=self._base_url,
                 timeout=httpx.Timeout(self._timeout),
                 limits=httpx.Limits(
-                    max_connections=max(self._max_concurrent, 10),
-                    max_keepalive_connections=max(self._max_concurrent, 5),
+                    max_connections=128,
+                    max_keepalive_connections=128,
                 ),
             )
         return self._client
@@ -256,6 +258,53 @@ class OllamaExecutor(BaseExecutor):
         except Exception as e:
             logger.warning(f"Ollama health check or version retrieval failed: {e}")
             return False
+
+    async def query_concurrency_limit(self) -> Optional[int]:
+        """Query Ollama for max parallel requests by estimating VRAM usage."""
+        client = self._get_client()
+        try:
+            resp = await client.get("/api/ps", timeout=5.0)
+            resp.raise_for_status()
+            data = resp.json()
+            models = data.get("models", [])
+            if not models:
+                return None
+            
+            # Use the first loaded model for estimation
+            model_info = models[0]
+            size_vram = model_info.get("size_vram", 0)
+            details = model_info.get("details", {})
+            param_size = details.get("parameter_size", "8B")
+            
+            # Extract number of billions (e.g. "8B" -> 8, "70B" -> 70, "1.5B" -> 1.5)
+            param_billions = 8.0
+            if isinstance(param_size, str) and param_size.upper().endswith("B"):
+                try:
+                    param_billions = float(param_size[:-1])
+                except ValueError:
+                    pass
+
+            gpu_stats = get_gpu_utilization()
+            total_vram_gb = gpu_stats.get("memory_total_gb", 0.0)
+            if total_vram_gb <= 0:
+                return None
+
+            model_vram_gb = size_vram / (1024**3)
+            free_vram_gb = total_vram_gb - model_vram_gb
+            
+            if free_vram_gb <= 0:
+                return 1
+                
+            # Heuristic: KV cache size scales with model depth/size. 
+            # We estimate ~0.125 GB per billion parameters per sequence.
+            kv_per_slot_gb = param_billions * 0.125
+            max_slots = math.floor(free_vram_gb / kv_per_slot_gb)
+            
+            return max(1, min(64, max_slots))
+            
+        except Exception as e:
+            logger.warning(f"Failed to query Ollama concurrency limit: {e}")
+            return None
             
     async def pull_model(self, model_name: str, progress_callback: Optional[Callable[[dict], Awaitable[None]]] = None) -> bool:
         """

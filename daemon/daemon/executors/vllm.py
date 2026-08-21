@@ -13,6 +13,8 @@ Architecture note:
 
 from __future__ import annotations
 
+import re
+import math
 from typing import Optional, Set
 
 import httpx
@@ -63,8 +65,8 @@ class VLLMExecutor(BaseExecutor):
                 base_url=self._base_url,
                 timeout=httpx.Timeout(self._timeout),
                 limits=httpx.Limits(
-                    max_connections=max(self._max_concurrent, 10),
-                    max_keepalive_connections=max(self._max_concurrent, 5),
+                    max_connections=128,
+                    max_keepalive_connections=128,
                 ),
             )
         return self._client
@@ -196,6 +198,40 @@ class VLLMExecutor(BaseExecutor):
                 # but the server is alive — it might just be loading
 
         return True
+
+    async def query_concurrency_limit(self) -> Optional[int]:
+        """Query vLLM for max parallel requests via /metrics."""
+        client = self._get_client()
+        try:
+            resp = await client.get("/metrics", timeout=5.0)
+            if resp.status_code != 200:
+                return None
+            
+            text = resp.text
+            
+            # vLLM metrics format example: vllm:max_num_seqs{...} 256.0
+            match = re.search(r'vllm:max_num_seqs(?:{[^}]*})?\s+([0-9.]+)', text)
+            if match:
+                return int(float(match.group(1)))
+            
+            # Fallback: estimate from cache usage if max_num_seqs not found
+            # (less reliable but gives a bound)
+            running_match = re.search(r'vllm:num_requests_running(?:{[^}]*})?\s+([0-9.]+)', text)
+            cache_match = re.search(r'vllm:gpu_cache_usage_perc(?:{[^}]*})?\s+([0-9.]+)', text)
+            
+            if running_match and cache_match:
+                running = float(running_match.group(1))
+                cache_perc = float(cache_match.group(1))
+                
+                if cache_perc > 0 and running > 0:
+                    # Very rough estimate: if 10 requests use 20% cache, max is 50
+                    est_max = math.floor(running / cache_perc)
+                    return max(1, min(128, est_max))
+                    
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to query vLLM concurrency limit: {e}")
+            return None
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

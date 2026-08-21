@@ -227,3 +227,75 @@ async def test_batched_embeddings(mock_job):
     assert len(results) == 64
     assert executor.batch_calls == 1
     assert results[0].response == {"emb": True}
+
+class MockCapacityExecutor(BaseExecutor):
+    def __init__(self, limit: int | None = None):
+        self.limit = limit
+        self.query_called = False
+
+    async def execute(self, prompt: PromptRequest) -> CompletionResult:
+        return CompletionResult(custom_id=prompt.custom_id, response={"ok": True})
+        
+    async def health_check(self) -> bool:
+        return True
+        
+    async def query_concurrency_limit(self) -> int | None:
+        self.query_called = True
+        return self.limit
+
+@pytest.mark.asyncio
+async def test_worker_auto_detects_capacity(mock_job):
+    config = DaemonConfig(max_concurrent_prompts=8, concurrency_explicit=False)
+    executor = MockCapacityExecutor(limit=16)
+    client = MockClient()
+    worker = Worker(config, client, executor)
+    
+    # We just want to test start() up to the pool_and_execute loop
+    worker._poll_and_execute = lambda: asyncio.sleep(0.1)
+    
+    task = asyncio.create_task(worker.start())
+    await asyncio.sleep(0.05)
+    worker._running = False
+    await task
+    
+    assert executor.query_called
+    # 75% of 16 = 12
+    assert worker._concurrency_controller.current_concurrency == 12
+    assert worker._concurrency_controller.max_concurrency == 16
+
+@pytest.mark.asyncio
+async def test_worker_fallback_on_query_failure(mock_job):
+    config = DaemonConfig(max_concurrent_prompts=8, concurrency_explicit=False)
+    executor = MockCapacityExecutor(limit=None)
+    client = MockClient()
+    worker = Worker(config, client, executor)
+    
+    worker._poll_and_execute = lambda: asyncio.sleep(0.1)
+    
+    task = asyncio.create_task(worker.start())
+    await asyncio.sleep(0.05)
+    worker._running = False
+    await task
+    
+    assert executor.query_called
+    # Default is 8, max is 128
+    assert worker._concurrency_controller.current_concurrency == 8
+    assert worker._concurrency_controller.max_concurrency == 128
+
+@pytest.mark.asyncio
+async def test_worker_respects_explicit_override(mock_job):
+    config = DaemonConfig(max_concurrent_prompts=4, concurrency_explicit=True)
+    executor = MockCapacityExecutor(limit=32)
+    client = MockClient()
+    worker = Worker(config, client, executor)
+    
+    worker._poll_and_execute = lambda: asyncio.sleep(0.1)
+    
+    task = asyncio.create_task(worker.start())
+    await asyncio.sleep(0.05)
+    worker._running = False
+    await task
+    
+    # It shouldn't even query if it's explicitly set
+    assert not executor.query_called
+    assert worker._concurrency_controller.current_concurrency == 4

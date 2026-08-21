@@ -144,6 +144,7 @@ class DaemonConfig(BaseModel):
     # ── Executor tuning ──────────────────────────────────────────
     inference_timeout: float = Field(default=300.0, gt=0, description="Per-prompt timeout in seconds, must be > 0")
     max_concurrent_prompts: int = Field(default=8, gt=0, description="Max prompts in flight concurrently")
+    concurrency_explicit: bool = Field(default=False, description="True if max_concurrent_prompts was explicitly set by user")
 
     # ── Heartbeats & Progress ────────────────────────────────────
     heartbeat_interval: int = Field(default=30, gt=0)
@@ -212,5 +213,8 @@ class DaemonConfig(BaseModel):
             for key, value in cli_overrides.items():
                 if value is not None:
                     base[key] = value
+
+        if "max_concurrent_prompts" in base:
+            base["concurrency_explicit"] = True
 
         return cls(**base)
