@@ -194,9 +194,38 @@ Configured via a three-layer system: CLI > env (`DAEMON_*` prefix) > YAML file >
 | `DAEMON_WORK_DIR` | `~/.gpu-daemon/jobs` | Job artifacts directory |
 | `DAEMON_MODELS` | _(empty)_ | Comma-separated list of model names |
 | `DAEMON_GPU_NAME` | `unknown` | GPU model name for registration |
-| `DAEMON_VRAM_GB` | 0.0 | GPU VRAM in GB for registration |
+| `DAEMON_VRAM_GB` | 0.0 | Advertised GPU memory in GB. Overrides detection — see below |
 
 See `daemon/README.md` for full CLI flag and YAML config details.
+
+#### How a worker's VRAM is determined
+
+The scheduler filters a worker out of any batch whose model needs more VRAM
+than the worker reports, so this number decides what the worker is offered.
+It is resolved in this order, first match wins:
+
+1. **`DAEMON_VRAM_GB`**, when set above 0. An explicit declaration always
+   wins, so a provider can lend less than the hardware holds.
+2. **NVIDIA** — `nvidia-smi`, summed across GPUs.
+3. **Apple Silicon** — Metal's `recommendedMaxWorkingSetSize`, the cap macOS
+   places on how much unified memory the GPU may wire. Requires
+   `pyobjc-framework-Metal` (installed automatically on macOS). Without it,
+   `iogpu.wired_limit_mb` is used when explicitly set, otherwise a
+   deliberately conservative fraction of `hw.memsize`.
+4. **Otherwise 0.0**, and the worker is offered nothing.
+
+That last case is the one to watch: a host with neither `nvidia-smi` nor
+Metal — AMD/ROCm, Intel, CPU-only — registers cleanly, heartbeats cleanly,
+and shows **online** in the dashboard while never being handed a single
+batch. Set `DAEMON_VRAM_GB` on those hosts.
+
+> **Apple Silicon note.** There is no dedicated VRAM; CPU and GPU share one
+> memory pool. The reported figure is macOS's *permission ceiling* (about
+> 17.8 GB on a 24 GB machine), not free memory — the two differ whenever
+> anything else on the machine is using RAM. `vram_available_gb` is
+> therefore reported equal to the total on macOS: unified memory exposes no
+> machine-wide "GPU memory in use" counter. The scheduler reads only the
+> total today.
 
 ## Production checklist
 

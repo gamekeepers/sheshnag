@@ -76,6 +76,7 @@ class Worker:
             interval=config.heartbeat_interval,
             get_loaded_models=self._get_loaded_models,
             get_loaded_model_digests=self._get_loaded_model_digests,
+            declared_vram_gb=config.vram_gb,
         )
 
         self._model_manager = None

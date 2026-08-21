@@ -24,12 +24,14 @@ class HeartbeatManager:
         interval: int = 30,
         get_loaded_models: Optional[Callable[[], Awaitable[List[str]]]] = None,
         get_loaded_model_digests: Optional[Callable[[], Awaitable[Dict]]] = None,
+        declared_vram_gb: float = 0.0,
     ):
         self._client = client
         self._worker_id = worker_id
         self._interval = interval
         self._get_loaded_models = get_loaded_models
         self._get_loaded_model_digests = get_loaded_model_digests
+        self._declared_vram_gb = declared_vram_gb
         self._running = False
         self._task: Optional[asyncio.Task] = None
 
@@ -100,6 +102,14 @@ class HeartbeatManager:
         gpu_stats = await asyncio.to_thread(get_gpu_utilization)
         memory_total = gpu_stats.get("memory_total_gb", 0.0)
         memory_used = gpu_stats.get("memory_used_gb", 0.0)
+
+        # An operator-declared capacity (DAEMON_VRAM_GB) overrides probing, so
+        # a provider can lend less than the card holds. It is also the only
+        # way a host we cannot probe reports anything but 0 — and 0 makes the
+        # scheduler's VRAM guard reject this worker for every batch, silently
+        # and permanently (provider_picker.find_best_batch).
+        if self._declared_vram_gb:
+            memory_total = self._declared_vram_gb
         return {
             "worker_id": self._worker_id,
             # Activity (idle | busy | downloading_model) — distinct from the

@@ -143,6 +143,13 @@ log_level: "INFO"
 | `--log-level` | `DAEMON_LOG_LEVEL` | DEBUG / INFO / WARNING / ERROR |
 | `--work-dir` | `DAEMON_WORK_DIR` | Job artifacts directory |
 
+**GPU memory detection.** `--vram-gb` is not merely registration metadata: it
+overrides hardware probing in every heartbeat, and it is what the scheduler
+filters on. Detection covers NVIDIA (`nvidia-smi`) and Apple Silicon (Metal);
+on any other host — AMD/ROCm, Intel, CPU-only — the worker reports 0 GB and is
+silently never assigned a batch unless you set it. Full precedence rules in
+[docs/setup.md](../docs/setup.md#how-a-workers-vram-is-determined).
+
 ## Project Structure
 
 ```
