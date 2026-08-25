@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import confetti from 'canvas-confetti';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { CopyableCode, TeachingEmptyState, TeachingStep } from '../components/Teaching';
+import { groupValidationErrors, preflightJsonl } from '../lib/validationHelp';
 import PortalSwitch from '../components/PortalSwitch';
 import './dashboard.css';
 
@@ -56,6 +57,7 @@ export default function DashboardPage() {
   const [isNewBatchModalOpen, setIsNewBatchModalOpen] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
   const [uploadFile, setUploadFile] = useState(null);
+  const [preflight, setPreflight] = useState(null);
 
   // Batch Form State
   const [batchFileId, setBatchFileId] = useState('');
@@ -475,9 +477,21 @@ export default function DashboardPage() {
   };
 
   // File drag & drop handlers
-  const handleFileChange = (e) => {
-    if (e.target.files && e.target.files[0]) {
-      setUploadFile(e.target.files[0]);
+  const handleFileChange = async (e) => {
+    if (!e.target.files || !e.target.files[0]) return;
+    const file = e.target.files[0];
+    setUploadFile(file);
+
+    // check line shape here, while the file is still local. The server
+    // accepts a malformed batch and fails it asynchronously a minute later,
+    // so anything catchable in the browser should never cost that round trip.
+    setPreflight(null);
+    try {
+      const SLICE = 256 * 1024;
+      const text = await file.slice(0, SLICE).text();
+      setPreflight(preflightJsonl(text, { truncated: file.size > SLICE }));
+    } catch {
+      setPreflight(null);  // unreadable file — let the server have the last word
     }
   };
 
@@ -535,6 +549,7 @@ export default function DashboardPage() {
         loadFiles();
 
         setUploadFile(null);
+        setPreflight(null);
         confetti({ particleCount: 30, spread: 40 });
         
         // Autopopulate in Batch Modal input
@@ -1328,6 +1343,41 @@ export default function DashboardPage() {
               {!uploadFile && <div className="dz-sub">ACCEPTS .JSONL — UP TO 500MB</div>}
             </div>
 
+            {/* A3 — result of the local shape check, shown before Upload is pressed. */}
+            {uploadFile && preflight && (
+              <div
+                className="teach"
+                style={{
+                  borderColor: preflight.problems.length ? 'rgba(248,81,73,0.35)' : 'rgba(74,222,128,0.3)',
+                  background: preflight.problems.length ? 'rgba(248,81,73,0.06)' : 'rgba(74,222,128,0.05)',
+                }}
+              >
+                <div className="teach-title" style={{ color: preflight.problems.length ? '#F85149' : 'var(--online)' }}>
+                  {preflight.problems.length
+                    ? `${preflight.problems.length} problem${preflight.problems.length === 1 ? '' : 's'} in the first ${preflight.checked} line${preflight.checked === 1 ? '' : 's'}`
+                    : `First ${preflight.checked} line${preflight.checked === 1 ? '' : 's'} look right`}
+                </div>
+
+                {groupValidationErrors(preflight.problems).map(g => (
+                  <div key={g.code} style={{ marginTop: '0.5rem' }}>
+                    <div className="mono" style={{ fontSize: '0.72rem', color: '#F85149', fontWeight: 600 }}>
+                      {g.code}{g.field && <> · {g.field}</>}
+                      {' · '}{g.count} line{g.count === 1 ? '' : 's'}
+                      {g.lines.length > 0 && <> (first: {g.lines.join(', ')})</>}
+                    </div>
+                    {g.fix && <div className="teach-body" style={{ margin: '0.15rem 0 0' }}>{g.fix}</div>}
+                  </div>
+                ))}
+
+                <p className="teach-body" style={{ margin: '0.6rem 0 0' }}>
+                  {preflight.models.length === 1 && <>Model in this file: <span className="mono">{preflight.models[0]}</span>. </>}
+                  {preflight.truncated
+                    ? 'Only the start of the file was checked, and catalogue membership is checked server-side — this is a head start, not a guarantee.'
+                    : 'Catalogue membership is still checked server-side after upload.'}
+                </p>
+              </div>
+            )}
+
             {/* A2 — say what belongs in the file before it is uploaded, not after
                 the backend rejects it. Sits outside .dropzone: that element opens
                 the file picker on click, which would swallow the copy button. */}
@@ -1487,32 +1537,55 @@ export default function DashboardPage() {
                       <span>{batch.failed} failed</span>
                     </div>
                     {batch.status === 'failed' && batch.error_details && (() => {
-                      let msgs = [];
+                      /* the validator sends a code and a field per error and
+                         persists both; this used to render the message alone, so
+                         the reader learned what broke but never what to do. */
+                      let groups = [];
                       let total = 0;
+                      let fallback = null;
                       try {
                         const parsed = JSON.parse(batch.error_details);
                         if (Array.isArray(parsed?.data)) {
-                          msgs = parsed.data.map(e => (e.line ? `line ${e.line}: ` : '') + e.message);
-                          total = parsed.total_errors || msgs.length;
+                          groups = groupValidationErrors(parsed.data);
+                          total = parsed.total_errors || parsed.data.length;
                         } else if (parsed?.error) {
-                          msgs = [parsed.error];
+                          fallback = parsed.error;
                           total = 1;
                         }
                       } catch {
-                        msgs = [batch.error_details];
+                        fallback = batch.error_details;
                         total = 1;
                       }
                       return (
-                        <div style={{ marginTop: '0.8rem', padding: '0.6rem 0.8rem', borderRadius: '8px', background: 'rgba(248,81,73,0.08)', border: '1px solid rgba(248,81,73,0.3)' }}>
-                          <div style={{ color: '#F85149', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.3rem' }}>
+                        <div style={{ marginTop: '0.8rem', padding: '0.7rem 0.85rem', borderRadius: '8px', background: 'rgba(248,81,73,0.08)', border: '1px solid rgba(248,81,73,0.3)' }}>
+                          <div style={{ color: '#F85149', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.45rem' }}>
                             Validation failed — {total} error{total === 1 ? '' : 's'}
+                            {groups.length > 1 && <> across {groups.length} problems</>}
                           </div>
-                          {msgs.slice(0, 3).map((m, i) => (
-                            <div key={i} className="mono" style={{ color: '#F85149', fontSize: '0.72rem', opacity: 0.9, overflowWrap: 'anywhere' }}>{m}</div>
-                          ))}
-                          {total > 3 && (
-                            <div style={{ color: '#F85149', fontSize: '0.72rem', opacity: 0.7, marginTop: '0.2rem' }}>…and {total - 3} more</div>
+
+                          {fallback && (
+                            <div className="mono" style={{ color: '#F85149', fontSize: '0.72rem', opacity: 0.9, overflowWrap: 'anywhere' }}>{fallback}</div>
                           )}
+
+                          {groups.map(g => (
+                            <div key={g.code} style={{ marginBottom: '0.55rem' }}>
+                              <div className="mono" style={{ color: '#F85149', fontSize: '0.72rem', fontWeight: 600 }}>
+                                {g.code}
+                                {g.field && <> · {g.field}</>}
+                                {' · '}
+                                {g.count} line{g.count === 1 ? '' : 's'}
+                                {g.lines.length > 0 && <> (first: {g.lines.join(', ')})</>}
+                              </div>
+                              <div className="mono" style={{ color: '#F85149', fontSize: '0.72rem', opacity: 0.85, overflowWrap: 'anywhere' }}>
+                                {g.sample}
+                              </div>
+                              {g.fix && (
+                                <div style={{ color: 'var(--dim)', fontSize: '0.72rem', marginTop: '0.2rem', lineHeight: 1.5 }}>
+                                  {g.fix}
+                                </div>
+                              )}
+                            </div>
+                          ))}
                         </div>
                       );
                     })()}
