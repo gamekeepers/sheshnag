@@ -7,23 +7,10 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'rec
 import { CopyableCode, TeachingEmptyState, TeachingStep } from '../components/Teaching';
 import { groupValidationErrors, preflightJsonl } from '../lib/validationHelp';
 import PortalSwitch from '../components/PortalSwitch';
+import SheshnagLogo from '../components/SheshnagLogo';
 import './dashboard.css';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
-
-function SheshnagLogo({ size = 22 }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
-        <path d="M22.5 6.5C11.5 5.5 9.5 13 15.5 15.6C21.5 18.2 23 25.5 11 26.5" stroke="#fff" strokeWidth="3.2" strokeLinecap="round"/>
-        <circle cx="23" cy="6.7" r="2.2" fill="#fff"/>
-      </svg>
-      <span style={{ color: '#fff', fontSize: size * 0.63, fontWeight: 700, letterSpacing: '0.12em', fontFamily: 'IBM Plex Mono, monospace' }}>
-        SHESHNAG
-      </span>
-    </div>
-  );
-}
 
 export default function DashboardPage() {
   const router = useRouter();

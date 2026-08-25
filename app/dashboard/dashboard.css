@@ -76,6 +76,18 @@ html, body {
   font-weight: 600;
 }
 
+/* Which portal you are standing in. Provider and admin both label themselves;
+   the user dashboard is the default and does not. */
+.sidebar-eyebrow {
+  padding: 0 0.6rem;
+  margin-bottom: 0.75rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dimmer);
+}
+
 .org-switcher {
   position: relative;
   margin-bottom: 1.6rem;
@@ -384,6 +396,26 @@ h1.page-title {
   margin-bottom: 1.5rem;
 }
 
+/* Callout panels. The state a panel is reporting is carried by a class rather
+   than an inline border tint, so the three states read the same everywhere and
+   the alpha values live next to the tokens they are derived from. */
+.panel.ok {
+  border-color: rgba(74, 222, 128, 0.3);
+}
+.panel.warn {
+  border-color: rgba(251, 191, 36, 0.35);
+}
+.panel.alert {
+  border-color: rgba(248, 113, 113, 0.35);
+  color: var(--danger);
+}
+.panel.ok strong {
+  color: var(--online);
+}
+.panel.warn strong {
+  color: var(--busy);
+}
+
 .grid-3 {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -395,8 +427,20 @@ h1.page-title {
   grid-template-columns: repeat(2, 1fr);
   gap: 1rem;
 }
+/* Admin's overview counts four things (total / active / completed / failed). */
+.grid-4 {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+@media (max-width: 1100px) {
+  .grid-4 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
 @media (max-width: 900px) {
-  .grid-3, .grid-2 {
+  .grid-3, .grid-2, .grid-4 {
     grid-template-columns: 1fr;
   }
 }
@@ -531,6 +575,37 @@ td.mono {
 .badge.failed {
   color: var(--danger);
   border-color: rgba(248, 113, 113, 0.3);
+}
+
+/* The rest of the batch lifecycle. Admin lists every status the backend can
+   emit, not just the four the user dashboard happens to show, and used to
+   carry its own hardcoded palette for them. Same four colour roles, reused. */
+.badge.running,
+.badge.finalizing {
+  color: var(--accent);
+  border-color: rgba(201, 196, 255, 0.3);
+}
+.badge.queued,
+.badge.cancelling {
+  color: var(--busy);
+  border-color: rgba(251, 191, 36, 0.3);
+}
+.badge.expired {
+  color: var(--danger);
+  border-color: rgba(248, 113, 113, 0.3);
+}
+.badge.cancelled {
+  color: var(--dim);
+}
+
+/* Platform role, shown against a user row. */
+.badge.superadmin {
+  color: var(--accent);
+  border-color: rgba(201, 196, 255, 0.3);
+}
+.badge.user {
+  color: var(--online);
+  border-color: rgba(74, 222, 128, 0.3);
 }
 
 @keyframes pulse {
@@ -742,6 +817,36 @@ td.mono {
 .field input:focus, .field select:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* A row of fields that submits together, rather than a stacked modal form. */
+.form-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.form-row .field {
+  flex: 1 1 200px;
+  margin-bottom: 0;
+}
+.form-row .check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding-bottom: 0.65rem;
+  color: var(--dim);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+/* A row of mutually exclusive filters, each a .btn, the active one .primary. */
+.filter-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.2rem;
+  flex-wrap: wrap;
+  text-transform: capitalize;
 }
 
 /* Base treatment for selects outside a .field wrapper, so every dropdown in
