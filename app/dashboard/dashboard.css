@@ -15,6 +15,8 @@ html, body {
 :root {
   --bg: #06060A;
   --bg-panel: rgba(255, 255, 255, 0.045);
+  /* Opaque fallback for OS-drawn <option> popups (see select option rule). */
+  --option-bg: #14141A;
   --bg-panel-hover: rgba(255, 255, 255, 0.07);
   --border: rgba(255, 255, 255, 0.09);
   --border-soft: rgba(255, 255, 255, 0.05);
@@ -41,6 +43,10 @@ html, body {
   overflow: hidden;
   background: var(--bg);
   color: var(--fg);
+  /* Tell the browser this subtree is dark so the parts it draws itself —
+     <option> popups, their scrollbars, spinners — are painted dark too.
+     Scoped here rather than :root because the auth pages are light. */
+  color-scheme: dark;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background:
     radial-gradient(circle at 15% 0%, rgba(120, 110, 255, 0.07), transparent 40%),
@@ -181,6 +187,34 @@ html, body {
   width: 18px;
   text-align: center;
   opacity: 0.9;
+}
+
+/* Portal switch — the one control that spans both portals. Lives in the
+   sidebar footer of each, deliberately not styled as a .nav-item: moving
+   between portals is a change of context, not a change of tab. */
+.portal-switch {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  color: var(--dim);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.82rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.portal-switch:hover {
+  background: var(--bg-panel);
+  border-color: var(--border);
+  color: var(--fg);
+}
+.portal-switch-arrow {
+  margin-left: auto;
+  opacity: 0.55;
 }
 
 .profile-card {
@@ -708,6 +742,33 @@ td.mono {
 .field input:focus, .field select:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* Base treatment for selects outside a .field wrapper, so every dropdown in
+   the product reads the same rather than falling back to the browser's
+   light-theme widget. .field select is more specific and still wins. */
+select {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  color: var(--fg);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+/* The popup is drawn by the OS, which will not carry a translucent
+   background into it — it falls back to white while still inheriting our
+   light `color`, leaving options invisible until highlighted. color-scheme
+   on .app-layout handles this in current browsers; paint an opaque colour
+   as well for those that ignore it. */
+select option {
+  background-color: var(--option-bg);
+  color: var(--fg);
 }
 
 .modal-overlay {

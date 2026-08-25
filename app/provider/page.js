@@ -1,8 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import PortalSwitch from '../components/PortalSwitch';
 import '../dashboard/dashboard.css';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
@@ -460,10 +460,8 @@ export default function ProviderPage() {
           </div>
         </nav>
 
-        <div style={{ marginTop: 'auto', padding: '1rem' }}>
-          <Link href="/dashboard" style={{ display: 'block', fontSize: 13, color: 'rgba(255,255,255,0.5)', textDecoration: 'none', marginBottom: 10 }}>
-            ← User portal
-          </Link>
+        <div className="sidebar-bottom">
+          <PortalSwitch to="user" />
           <button className="btn" style={{ width: '100%' }} onClick={handleSignOut}>Sign out</button>
         </div>
       </aside>

@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import confetti from 'canvas-confetti';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import PortalSwitch from '../components/PortalSwitch';
 import './dashboard.css';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
@@ -850,13 +850,10 @@ export default function DashboardPage() {
           <div className={`nav-item ${activeTab === 'files' ? 'active' : ''}`} onClick={() => setActiveTab('files')}>
             <span className="ic">📁</span> Files
           </div>
-
-          <div className="nav-item" onClick={() => router.push('/provider')} title="Manage your organization's workers">
-            <span className="ic">🖥️</span> Provider portal →
-          </div>
         </nav>
 
         <div className="sidebar-bottom">
+          <PortalSwitch to="provider" />
           <div className="profile-dropdown-wrap" style={{ position: 'relative' }}>
             <button
               className="profile-icon-btn"
