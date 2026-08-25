@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import confetti from 'canvas-confetti';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { CopyableCode, TeachingEmptyState, TeachingStep } from '../components/Teaching';
+import { groupValidationErrors, preflightJsonl } from '../lib/validationHelp';
 import PortalSwitch from '../components/PortalSwitch';
 import './dashboard.css';
 
@@ -55,6 +57,7 @@ export default function DashboardPage() {
   const [isNewBatchModalOpen, setIsNewBatchModalOpen] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
   const [uploadFile, setUploadFile] = useState(null);
+  const [preflight, setPreflight] = useState(null);
 
   // Batch Form State
   const [batchFileId, setBatchFileId] = useState('');
@@ -62,6 +65,7 @@ export default function DashboardPage() {
   const [submitStatus, setSubmitStatus] = useState('');
   const [availableModels, setAvailableModels] = useState([]);
   const [modelCatalog, setModelCatalog] = useState([]);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [copiedModelId, setCopiedModelId] = useState(null);
 
   // Settings Forms
@@ -288,6 +292,11 @@ export default function DashboardPage() {
       }
     } catch (e) {
       console.error('Failed to fetch models:', e);
+    } finally {
+      // The teaching samples name a live catalogue id. Until this resolves the
+      // catalogue is empty for a reason we cannot yet distinguish from "this
+      // deployment publishes no models", and the two want different copy.
+      setModelsLoaded(true);
     }
   }, [getHeaders]);
 
@@ -304,10 +313,12 @@ export default function DashboardPage() {
     } else if (activeTab === 'batches') {
       loadBatches();
       loadFiles();
+      loadModels();  // the first-batch sample names a live catalogue id
     } else if (activeTab === 'models') {
       loadModels();
     } else if (activeTab === 'files') {
       loadFiles();
+      loadModels();  // the dropzone sample line names a live catalogue id
     } else if (activeTab === 'settings') {
       // loadMembers();  // org settings parked — relocating to the provider portal
     }
@@ -472,9 +483,21 @@ export default function DashboardPage() {
   };
 
   // File drag & drop handlers
-  const handleFileChange = (e) => {
-    if (e.target.files && e.target.files[0]) {
-      setUploadFile(e.target.files[0]);
+  const handleFileChange = async (e) => {
+    if (!e.target.files || !e.target.files[0]) return;
+    const file = e.target.files[0];
+    setUploadFile(file);
+
+    // check line shape here, while the file is still local. The server
+    // accepts a malformed batch and fails it asynchronously a minute later,
+    // so anything catchable in the browser should never cost that round trip.
+    setPreflight(null);
+    try {
+      const SLICE = 256 * 1024;
+      const text = await file.slice(0, SLICE).text();
+      setPreflight(preflightJsonl(text, { truncated: file.size > SLICE }));
+    } catch {
+      setPreflight(null);  // unreadable file — let the server have the last word
     }
   };
 
@@ -532,6 +555,7 @@ export default function DashboardPage() {
         loadFiles();
 
         setUploadFile(null);
+        setPreflight(null);
         confetti({ particleCount: 30, spread: 40 });
         
         // Autopopulate in Batch Modal input
@@ -764,6 +788,75 @@ export default function DashboardPage() {
     }
     setCopiedModelId(id);
     setTimeout(() => setCopiedModelId(current => (current === id ? null : current)), 1500);
+  };
+
+  // ── First-batch teaching ───────────────────────────────────────────────
+  // Four facts a new user can get nowhere else in the product: input is OpenAI
+  // batch JSONL; every line needs custom_id/method/url/body; files upload first
+  // and a batch references the returned file_id; validation is asynchronous.
+  // The model id comes from the live catalogue rather than a constant, so the
+  // sample never names a model this deployment cannot serve.
+
+  const sampleModelId = modelCatalog[0]?.id || null;
+
+  const buildSampleJsonl = (modelId) => [
+    'Summarise the causes of the 1973 oil crisis in two sentences.',
+    'List three risks of over-fitting on a small dataset.',
+    'Explain gradient clipping to a first-year student.',
+  ].map((prompt, i) => JSON.stringify({
+    custom_id: `request-${i + 1}`,
+    method: 'POST',
+    url: '/v1/chat/completions',
+    body: { model: modelId || 'MODEL_ID', messages: [{ role: 'user', content: prompt }] },
+  })).join('\n');
+
+  const sampleJsonl = buildSampleJsonl(sampleModelId);
+
+  const buildSubmitSnippet = (modelId) => (
+    `from openai import OpenAI\n` +
+    `client = OpenAI(api_key="$SHESHNAG_API_KEY", base_url="${BACKEND}/v1")\n` +
+    `\n` +
+    `# 1. the file is uploaded first and gets an id\n` +
+    `f = client.files.create(file=open("batch.jsonl", "rb"), purpose="batch")\n` +
+    `\n` +
+    `# 2. the batch references that id — it never carries the bytes\n` +
+    `batch = client.batches.create(\n` +
+    `    input_file_id=f.id,\n` +
+    `    endpoint="/v1/chat/completions",\n` +
+    `    completion_window="24h",\n` +
+    `)\n` +
+    `print(batch.id, batch.status)  # queued now, validated a moment later\n` +
+    (modelId ? '' : `\n# every body.model must be an id from the Models tab\n`)
+  );
+
+  // A8 — the plaintext key exists in the browser exactly once, at reveal. That
+  // is the only moment a snippet can carry it ready-to-run, so both of these
+  // inline the real key rather than a placeholder. models.list() is the first
+  // call worth making: it proves the key works and shows the ids that are
+  // legal in body.model.
+
+  const buildKeyPython = (key) => (
+    `from openai import OpenAI\n` +
+    `client = OpenAI(api_key="${key}", base_url="${BACKEND}/v1")\n` +
+    `\n` +
+    `print([m.id for m in client.models.list()])\n`
+  );
+
+  const buildKeyCurl = (key) => (
+    `curl ${BACKEND}/v1/models \\\n` +
+    `  -H "Authorization: Bearer ${key}"\n`
+  );
+
+  const handleDownloadSample = () => {
+    const blob = new Blob([`${buildSampleJsonl(sampleModelId)}\n`], { type: 'application/jsonl' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'sample_batch.jsonl';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   };
 
   const getPageTitle = () => {
@@ -1025,8 +1118,14 @@ export default function DashboardPage() {
                       </tr>
                     ))}
                     {batches.length === 0 && (
+                      /* A9 — "no data" is a dead end; name the next move instead. */
                       <tr>
-                        <td colSpan={4} className="empty-hint">No batches submitted yet.</td>
+                        <td colSpan={4} className="empty-hint">
+                          Nothing here until a batch runs. The chart above stays flat until then —{' '}
+                          <button className="teach-link" onClick={() => setActiveTab('batches')}>
+                            submit your first batch
+                          </button>.
+                        </td>
                       </tr>
                     )}
                   </tbody>
@@ -1040,30 +1139,46 @@ export default function DashboardPage() {
             <h1 className="page-title">Usage Details</h1>
             <p className="page-sub">Daily breakdown of request usage across all batches.</p>
 
-            <div className="panel" style={{ padding: '0.5rem' }}>
-              <div className="table-container">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>Total Requests</th>
-                      <th>Successful</th>
-                      <th>Failed</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {chartData.slice().reverse().map((day, idx) => (
-                      <tr key={idx}>
-                        <td className="mono">{day.displayDate}</td>
-                        <td>{day.requests.toLocaleString()}</td>
-                        <td style={{ color: '#00D287' }}>{day.successful.toLocaleString()}</td>
-                        <td style={{ color: '#F85149' }}>{day.failed.toLocaleString()}</td>
+            {/* A9 — chartData always spans 14 days, so with no batches this table
+                renders fourteen rows of zeroes. That reads as "the platform is
+                broken" rather than "you haven't started". Say which it is. */}
+            {batches.length === 0 ? (
+              <TeachingEmptyState title="No usage yet">
+                <p className="teach-body" style={{ marginTop: '0.9rem', marginBottom: 0 }}>
+                  This table counts requests across your batches, one row per day for the last
+                  fourteen. Every row would read zero right now — usage appears here once a batch
+                  has run, so start by{' '}
+                  <button className="teach-link" onClick={() => setActiveTab('batches')}>
+                    submitting your first batch
+                  </button>.
+                </p>
+              </TeachingEmptyState>
+            ) : (
+              <div className="panel" style={{ padding: '0.5rem' }}>
+                <div className="table-container">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Total Requests</th>
+                        <th>Successful</th>
+                        <th>Failed</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {chartData.slice().reverse().map((day, idx) => (
+                        <tr key={idx}>
+                          <td className="mono">{day.displayDate}</td>
+                          <td>{day.requests.toLocaleString()}</td>
+                          <td style={{ color: '#00D287' }}>{day.successful.toLocaleString()}</td>
+                          <td style={{ color: '#F85149' }}>{day.failed.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           {/* ============ API KEYS PAGE ============ */}
@@ -1234,6 +1349,70 @@ export default function DashboardPage() {
               {!uploadFile && <div className="dz-sub">ACCEPTS .JSONL — UP TO 500MB</div>}
             </div>
 
+            {/* A3 — result of the local shape check, shown before Upload is pressed. */}
+            {uploadFile && preflight && (
+              <div
+                className="teach"
+                style={{
+                  borderColor: preflight.problems.length ? 'rgba(248,81,73,0.35)' : 'rgba(74,222,128,0.3)',
+                  background: preflight.problems.length ? 'rgba(248,81,73,0.06)' : 'rgba(74,222,128,0.05)',
+                }}
+              >
+                <div className="teach-title" style={{ color: preflight.problems.length ? '#F85149' : 'var(--online)' }}>
+                  {preflight.problems.length
+                    ? `${preflight.problems.length} problem${preflight.problems.length === 1 ? '' : 's'} in the first ${preflight.checked} line${preflight.checked === 1 ? '' : 's'}`
+                    : `First ${preflight.checked} line${preflight.checked === 1 ? '' : 's'} look right`}
+                </div>
+
+                {groupValidationErrors(preflight.problems).map(g => (
+                  <div key={g.key} style={{ marginTop: '0.5rem' }}>
+                    <div className="mono" style={{ fontSize: '0.72rem', color: '#F85149', fontWeight: 600 }}>
+                      {g.code}{g.field && <> · {g.field}</>}
+                      {' · '}{g.count} line{g.count === 1 ? '' : 's'}
+                      {g.lines.length > 0 && <> (first: {g.lines.join(', ')})</>}
+                    </div>
+                    {g.fix && <div className="teach-body" style={{ margin: '0.15rem 0 0' }}>{g.fix}</div>}
+                  </div>
+                ))}
+
+                <p className="teach-body" style={{ margin: '0.6rem 0 0' }}>
+                  {preflight.models.length === 1 && <>Model in this file: <span className="mono">{preflight.models[0]}</span>. </>}
+                  {preflight.truncated
+                    ? 'Only the start of the file was checked, and catalogue membership is checked server-side — this is a head start, not a guarantee.'
+                    : 'Catalogue membership is still checked server-side after upload.'}
+                </p>
+              </div>
+            )}
+
+            {/* A2 — say what belongs in the file before it is uploaded, not after
+                the backend rejects it. Sits outside .dropzone: that element opens
+                the file picker on click, which would swallow the copy button. */}
+            <div className="teach">
+              <div className="teach-title">What goes in the file</div>
+              <p className="teach-body">
+                One JSON object per line — the OpenAI batch format. Every line needs
+                <span className="mono"> custom_id</span>,<span className="mono"> method</span>,
+                <span className="mono"> url</span> and<span className="mono"> body</span>.
+              </p>
+              <CopyableCode
+                code={sampleJsonl}
+                display={sampleJsonl.split('\n')[0]}
+                copyLabel={modelsLoaded ? 'Copy 3-line sample' : 'Loading catalogue…'}
+                disabled={!modelsLoaded}
+              />
+              <p className="teach-body" style={{ marginTop: '0.7rem' }}>
+                Every line must use the same <span className="mono">body.model</span>, and it must be an
+                id from the{' '}
+                <button className="teach-link" onClick={() => setActiveTab('models')}>Models tab</button>
+                {!modelsLoaded
+                  ? <> — reading this deployment&apos;s catalogue to name a real one.</>
+                  : sampleModelId
+                    ? <> — this deployment currently serves <span className="mono">{sampleModelId}</span>.</>
+                    : <> — no models are published yet, so the sample above says <span className="mono">MODEL_ID</span>.</>}
+                {' '}A file that mixes models fails validation.
+              </p>
+            </div>
+
             <div className="section-title">Uploaded Files</div>
             <div className="panel" style={{ padding: '0.5rem' }}>
               <div className="table-container">
@@ -1367,31 +1546,67 @@ export default function DashboardPage() {
                       <span>{batch.failed} failed</span>
                     </div>
                     {batch.status === 'failed' && batch.error_details && (() => {
-                      let msgs = [];
+                      /* the validator sends a code and a field per error and
+                         persists both; this used to render the message alone, so
+                         the reader learned what broke but never what to do. */
+                      let groups = [];
                       let total = 0;
+                      let shown = 0;
+                      let fallback = null;
                       try {
                         const parsed = JSON.parse(batch.error_details);
                         if (Array.isArray(parsed?.data)) {
-                          msgs = parsed.data.map(e => (e.line ? `line ${e.line}: ` : '') + e.message);
-                          total = parsed.total_errors || msgs.length;
+                          groups = groupValidationErrors(parsed.data);
+                          shown = parsed.data.length;
+                          total = parsed.total_errors || parsed.data.length;
                         } else if (parsed?.error) {
-                          msgs = [parsed.error];
+                          fallback = parsed.error;
                           total = 1;
                         }
                       } catch {
-                        msgs = [batch.error_details];
+                        fallback = batch.error_details;
                         total = 1;
                       }
                       return (
-                        <div style={{ marginTop: '0.8rem', padding: '0.6rem 0.8rem', borderRadius: '8px', background: 'rgba(248,81,73,0.08)', border: '1px solid rgba(248,81,73,0.3)' }}>
-                          <div style={{ color: '#F85149', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.3rem' }}>
+                        <div style={{ marginTop: '0.8rem', padding: '0.7rem 0.85rem', borderRadius: '8px', background: 'rgba(248,81,73,0.08)', border: '1px solid rgba(248,81,73,0.3)' }}>
+                          <div style={{ color: '#F85149', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.45rem' }}>
                             Validation failed — {total} error{total === 1 ? '' : 's'}
+                            {groups.length > 1 && <> across {groups.length} problems</>}
                           </div>
-                          {msgs.slice(0, 3).map((m, i) => (
-                            <div key={i} className="mono" style={{ color: '#F85149', fontSize: '0.72rem', opacity: 0.9, overflowWrap: 'anywhere' }}>{m}</div>
+
+                          {fallback && (
+                            <div className="mono" style={{ color: '#F85149', fontSize: '0.72rem', opacity: 0.9, overflowWrap: 'anywhere' }}>{fallback}</div>
+                          )}
+
+                          {groups.map(g => (
+                            <div key={g.key} style={{ marginBottom: '0.55rem' }}>
+                              <div className="mono" style={{ color: '#F85149', fontSize: '0.72rem', fontWeight: 600 }}>
+                                {g.code}
+                                {g.field && <> · {g.field}</>}
+                                {' · '}
+                                {g.count} line{g.count === 1 ? '' : 's'}
+                                {g.lines.length > 0 && <> (first: {g.lines.join(', ')})</>}
+                              </div>
+                              <div className="mono" style={{ color: '#F85149', fontSize: '0.72rem', opacity: 0.85, overflowWrap: 'anywhere' }}>
+                                {g.sample}
+                              </div>
+                              {g.fix && (
+                                <div style={{ color: 'var(--dim)', fontSize: '0.72rem', marginTop: '0.2rem', lineHeight: 1.5 }}>
+                                  {g.fix}
+                                </div>
+                              )}
+                            </div>
                           ))}
-                          {total > 3 && (
-                            <div style={{ color: '#F85149', fontSize: '0.72rem', opacity: 0.7, marginTop: '0.2rem' }}>…and {total - 3} more</div>
+
+                          {/* The validator stores at most MAX_STORED_ERRORS but
+                              reports the true total, so on a badly broken file
+                              the header outruns the rows beneath it. Say so,
+                              rather than leaving the reader to check the sum. */}
+                          {shown > 0 && total > shown && (
+                            <div style={{ color: 'var(--dim)', fontSize: '0.72rem', lineHeight: 1.5 }}>
+                              Listing the first {shown} of {total} errors — the rest were not recorded.
+                              Fix these and re-upload to see whether any remain.
+                            </div>
                           )}
                         </div>
                       );
@@ -1412,9 +1627,48 @@ export default function DashboardPage() {
                 );
               })}
               {batches.length === 0 && (
-                <div className="panel" style={{ gridColumn: 'span 2', textAlign: 'center', color: 'var(--dim)', padding: '3rem' }}>
-                  No batch jobs submitted. Click "New Batch" to queue a job.
-                </div>
+                /* A1 — the empty state is the only place a first-time user is
+                   guaranteed to look, so it carries the whole path to a result. */
+                <TeachingEmptyState title="Submit your first batch" style={{ gridColumn: 'span 2' }}>
+                  <TeachingStep n={1}>
+                    Build a <span className="mono">.jsonl</span> file — one request per line.
+                    <CopyableCode
+                      code={sampleJsonl}
+                      style={{ marginTop: '0.5rem' }}
+                      copyLabel={modelsLoaded ? 'Copy' : 'Loading catalogue…'}
+                      disabled={!modelsLoaded}
+                      actions={
+                        <button
+                          className="btn"
+                          disabled={!modelsLoaded}
+                          style={{
+                            padding: '2px 10px',
+                            fontSize: '0.72rem',
+                            opacity: modelsLoaded ? undefined : 0.45,
+                            cursor: modelsLoaded ? undefined : 'not-allowed',
+                          }}
+                          onClick={handleDownloadSample}
+                        >
+                          Download sample
+                        </button>
+                      }
+                    />
+                  </TeachingStep>
+
+                  <TeachingStep n={2}>
+                    Upload it on the{' '}
+                    <button className="teach-link" onClick={() => setActiveTab('files')}>Files tab</button>, or from
+                    code. The file is stored first and handed back an id; the batch references that
+                    id rather than carrying the bytes.
+                    <CopyableCode code={buildSubmitSnippet(sampleModelId)} style={{ marginTop: '0.5rem' }} />
+                  </TeachingStep>
+
+                  <TeachingStep n={3}>
+                    Or click <strong>New Batch</strong> above and pick the uploaded file.
+                    Either way the job is <em>accepted first and validated after</em> — a malformed
+                    file is taken, then fails a moment later, and the reason appears on its card here.
+                  </TeachingStep>
+                </TeachingEmptyState>
               )}
             </div>
           </div>
@@ -1569,7 +1823,7 @@ export default function DashboardPage() {
       {/* ================= MODALS ================= */}
       {isCreateKeyModalOpen && (
         <div className="modal-overlay open">
-          <div className="modal">
+          <div className={`modal ${revealedKey ? 'modal-wide' : ''}`}>
             <h3>Create personal API key</h3>
             <p className="modal-sub">Give it a name so you can recognize it later.</p>
             <div className="field">
@@ -1594,6 +1848,28 @@ export default function DashboardPage() {
               <div id="keyRevealBox" style={{ marginTop: '1.2rem' }}>
                 <div className="key-reveal">{revealedKey}</div>
                 <div className="key-warning">This is shown once. Copy it now — you won't be able to see it again.</div>
+
+                {/* A8 — a key with nothing to do next teaches nothing. These two
+                    are runnable as-is, and list the ids body.model will accept. */}
+                <div className="teach" style={{ marginBottom: 0 }}>
+                  <CopyableCode
+                    code={buildKeyPython(revealedKey)}
+                    label="Use it"
+                    copyLabel="Copy Python"
+                  />
+                  <CopyableCode
+                    code={buildKeyCurl(revealedKey)}
+                    label="Or from a shell"
+                    copyLabel="Copy curl"
+                    style={{ marginTop: '0.9rem' }}
+                  />
+
+                  <p className="teach-body" style={{ marginTop: '0.9rem', marginBottom: 0 }}>
+                    Both carry the key inline so they run as-is. Anywhere but local testing, keep it
+                    out of source — <span className="mono">export SHESHNAG_API_KEY=…</span> and read it
+                    from the environment instead.
+                  </p>
+                </div>
               </div>
             )}
           </div>
