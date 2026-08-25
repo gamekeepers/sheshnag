@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import confetti from 'canvas-confetti';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { CopyableCode, TeachingEmptyState, TeachingStep } from '../components/Teaching';
 import PortalSwitch from '../components/PortalSwitch';
 import './dashboard.css';
 
@@ -63,7 +64,6 @@ export default function DashboardPage() {
   const [availableModels, setAvailableModels] = useState([]);
   const [modelCatalog, setModelCatalog] = useState([]);
   const [copiedModelId, setCopiedModelId] = useState(null);
-  const [copiedSnippet, setCopiedSnippet] = useState(null);
 
   // Settings Forms
   const [settingsOrgName, setSettingsOrgName] = useState('');
@@ -789,6 +789,8 @@ export default function DashboardPage() {
     body: { model: modelId || 'MODEL_ID', messages: [{ role: 'user', content: prompt }] },
   })).join('\n');
 
+  const sampleJsonl = buildSampleJsonl(sampleModelId);
+
   const buildSubmitSnippet = (modelId) => (
     `from openai import OpenAI\n` +
     `client = OpenAI(api_key="$SHESHNAG_API_KEY", base_url="${BACKEND}/v1")\n` +
@@ -805,22 +807,6 @@ export default function DashboardPage() {
     `print(batch.id, batch.status)  # queued now, validated a moment later\n` +
     (modelId ? '' : `\n# every body.model must be an id from the Models tab\n`)
   );
-
-  const handleCopySnippet = async (text, key) => {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      // Clipboard API unavailable (http origin) — same fallback as model ids
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      ta.remove();
-    }
-    setCopiedSnippet(key);
-    setTimeout(() => setCopiedSnippet(current => (current === key ? null : current)), 1500);
-  };
 
   // A8 — the plaintext key exists in the browser exactly once, at reveal. That
   // is the only moment a snippet can carry it ready-to-run, so both of these
@@ -1111,8 +1097,14 @@ export default function DashboardPage() {
                       </tr>
                     ))}
                     {batches.length === 0 && (
+                      /* A9 — "no data" is a dead end; name the next move instead. */
                       <tr>
-                        <td colSpan={4} className="empty-hint">No batches submitted yet.</td>
+                        <td colSpan={4} className="empty-hint">
+                          Nothing here until a batch runs. The chart above stays flat until then —{' '}
+                          <button className="teach-link" onClick={() => setActiveTab('batches')}>
+                            submit your first batch
+                          </button>.
+                        </td>
                       </tr>
                     )}
                   </tbody>
@@ -1126,30 +1118,46 @@ export default function DashboardPage() {
             <h1 className="page-title">Usage Details</h1>
             <p className="page-sub">Daily breakdown of request usage across all batches.</p>
 
-            <div className="panel" style={{ padding: '0.5rem' }}>
-              <div className="table-container">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>Total Requests</th>
-                      <th>Successful</th>
-                      <th>Failed</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {chartData.slice().reverse().map((day, idx) => (
-                      <tr key={idx}>
-                        <td className="mono">{day.displayDate}</td>
-                        <td>{day.requests.toLocaleString()}</td>
-                        <td style={{ color: '#00D287' }}>{day.successful.toLocaleString()}</td>
-                        <td style={{ color: '#F85149' }}>{day.failed.toLocaleString()}</td>
+            {/* A9 — chartData always spans 14 days, so with no batches this table
+                renders fourteen rows of zeroes. That reads as "the platform is
+                broken" rather than "you haven't started". Say which it is. */}
+            {batches.length === 0 ? (
+              <TeachingEmptyState title="No usage yet">
+                <p className="teach-body" style={{ marginTop: '0.9rem', marginBottom: 0 }}>
+                  This table counts requests across your batches, one row per day for the last
+                  fourteen. Every row would read zero right now — usage appears here once a batch
+                  has run, so start by{' '}
+                  <button className="teach-link" onClick={() => setActiveTab('batches')}>
+                    submitting your first batch
+                  </button>.
+                </p>
+              </TeachingEmptyState>
+            ) : (
+              <div className="panel" style={{ padding: '0.5rem' }}>
+                <div className="table-container">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Total Requests</th>
+                        <th>Successful</th>
+                        <th>Failed</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {chartData.slice().reverse().map((day, idx) => (
+                        <tr key={idx}>
+                          <td className="mono">{day.displayDate}</td>
+                          <td>{day.requests.toLocaleString()}</td>
+                          <td style={{ color: '#00D287' }}>{day.successful.toLocaleString()}</td>
+                          <td style={{ color: '#F85149' }}>{day.failed.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           {/* ============ API KEYS PAGE ============ */}
@@ -1324,23 +1332,18 @@ export default function DashboardPage() {
                 the backend rejects it. Sits outside .dropzone: that element opens
                 the file picker on click, which would swallow the copy button. */}
             <div className="teach">
-              <div className="teach-head">
-                <span className="teach-title">What goes in the file</span>
-                <button
-                  className="btn"
-                  style={{ padding: '2px 10px', fontSize: '0.72rem', color: copiedSnippet === 'dz' ? '#00D287' : undefined }}
-                  onClick={() => handleCopySnippet(buildSampleJsonl(sampleModelId), 'dz')}
-                >
-                  {copiedSnippet === 'dz' ? 'Copied ✓' : 'Copy 3-line sample'}
-                </button>
-              </div>
+              <div className="teach-title">What goes in the file</div>
               <p className="teach-body">
                 One JSON object per line — the OpenAI batch format. Every line needs
                 <span className="mono"> custom_id</span>,<span className="mono"> method</span>,
                 <span className="mono"> url</span> and<span className="mono"> body</span>.
               </p>
-              <pre className="teach-code">{buildSampleJsonl(sampleModelId).split('\n')[0]}</pre>
-              <p className="teach-body">
+              <CopyableCode
+                code={sampleJsonl}
+                display={sampleJsonl.split('\n')[0]}
+                copyLabel="Copy 3-line sample"
+              />
+              <p className="teach-body" style={{ marginTop: '0.7rem' }}>
                 Every line must use the same <span className="mono">body.model</span>, and it must be an
                 id from the{' '}
                 <button className="teach-link" onClick={() => setActiveTab('models')}>Models tab</button>
@@ -1531,58 +1534,38 @@ export default function DashboardPage() {
               {batches.length === 0 && (
                 /* A1 — the empty state is the only place a first-time user is
                    guaranteed to look, so it carries the whole path to a result. */
-                <div className="panel teach-empty" style={{ gridColumn: 'span 2' }}>
-                  <div className="teach-title" style={{ fontSize: '1rem' }}>Submit your first batch</div>
-
-                  <div className="teach-step">
-                    <span className="teach-step-n">1</span>
-                    <div>
-                      <div className="teach-body">
-                        Build a <span className="mono">.jsonl</span> file — one request per line.
-                      </div>
-                      <pre className="teach-code">{buildSampleJsonl(sampleModelId)}</pre>
-                      <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.6rem' }}>
+                <TeachingEmptyState title="Submit your first batch" style={{ gridColumn: 'span 2' }}>
+                  <TeachingStep n={1}>
+                    Build a <span className="mono">.jsonl</span> file — one request per line.
+                    <CopyableCode
+                      code={sampleJsonl}
+                      style={{ marginTop: '0.5rem' }}
+                      actions={
                         <button
                           className="btn"
-                          style={{ padding: '3px 10px', fontSize: '0.74rem', color: copiedSnippet === 'jsonl' ? '#00D287' : undefined }}
-                          onClick={() => handleCopySnippet(buildSampleJsonl(sampleModelId), 'jsonl')}
+                          style={{ padding: '2px 10px', fontSize: '0.72rem' }}
+                          onClick={handleDownloadSample}
                         >
-                          {copiedSnippet === 'jsonl' ? 'Copied ✓' : 'Copy'}
-                        </button>
-                        <button className="btn" style={{ padding: '3px 10px', fontSize: '0.74rem' }} onClick={handleDownloadSample}>
                           Download sample
                         </button>
-                      </div>
-                    </div>
-                  </div>
+                      }
+                    />
+                  </TeachingStep>
 
-                  <div className="teach-step">
-                    <span className="teach-step-n">2</span>
-                    <div className="teach-body">
-                      Upload it on the{' '}
-                      <button className="teach-link" onClick={() => setActiveTab('files')}>Files tab</button>, or from
-                      code. The file is stored first and handed back an id; the batch references that
-                      id rather than carrying the bytes.
-                      <pre className="teach-code">{buildSubmitSnippet(sampleModelId)}</pre>
-                      <button
-                        className="btn"
-                        style={{ padding: '3px 10px', fontSize: '0.74rem', marginTop: '0.6rem', color: copiedSnippet === 'py' ? '#00D287' : undefined }}
-                        onClick={() => handleCopySnippet(buildSubmitSnippet(sampleModelId), 'py')}
-                      >
-                        {copiedSnippet === 'py' ? 'Copied ✓' : 'Copy'}
-                      </button>
-                    </div>
-                  </div>
+                  <TeachingStep n={2}>
+                    Upload it on the{' '}
+                    <button className="teach-link" onClick={() => setActiveTab('files')}>Files tab</button>, or from
+                    code. The file is stored first and handed back an id; the batch references that
+                    id rather than carrying the bytes.
+                    <CopyableCode code={buildSubmitSnippet(sampleModelId)} style={{ marginTop: '0.5rem' }} />
+                  </TeachingStep>
 
-                  <div className="teach-step">
-                    <span className="teach-step-n">3</span>
-                    <div className="teach-body">
-                      Or click <strong>New Batch</strong> above and pick the uploaded file.
-                      Either way the job is <em>accepted first and validated after</em> — a malformed
-                      file is taken, then fails a moment later, and the reason appears on its card here.
-                    </div>
-                  </div>
-                </div>
+                  <TeachingStep n={3}>
+                    Or click <strong>New Batch</strong> above and pick the uploaded file.
+                    Either way the job is <em>accepted first and validated after</em> — a malformed
+                    file is taken, then fails a moment later, and the reason appears on its card here.
+                  </TeachingStep>
+                </TeachingEmptyState>
               )}
             </div>
           </div>
@@ -1766,29 +1749,17 @@ export default function DashboardPage() {
                 {/* A8 — a key with nothing to do next teaches nothing. These two
                     are runnable as-is, and list the ids body.model will accept. */}
                 <div className="teach" style={{ marginBottom: 0 }}>
-                  <div className="teach-head">
-                    <span className="teach-title">Use it</span>
-                    <button
-                      className="btn"
-                      style={{ padding: '2px 10px', fontSize: '0.72rem', color: copiedSnippet === 'key-py' ? '#00D287' : undefined }}
-                      onClick={() => handleCopySnippet(buildKeyPython(revealedKey), 'key-py')}
-                    >
-                      {copiedSnippet === 'key-py' ? 'Copied ✓' : 'Copy Python'}
-                    </button>
-                  </div>
-                  <pre className="teach-code">{buildKeyPython(revealedKey)}</pre>
-
-                  <div className="teach-head" style={{ marginTop: '0.9rem' }}>
-                    <span className="teach-body" style={{ margin: 0 }}>Or from a shell:</span>
-                    <button
-                      className="btn"
-                      style={{ padding: '2px 10px', fontSize: '0.72rem', color: copiedSnippet === 'key-curl' ? '#00D287' : undefined }}
-                      onClick={() => handleCopySnippet(buildKeyCurl(revealedKey), 'key-curl')}
-                    >
-                      {copiedSnippet === 'key-curl' ? 'Copied ✓' : 'Copy curl'}
-                    </button>
-                  </div>
-                  <pre className="teach-code">{buildKeyCurl(revealedKey)}</pre>
+                  <CopyableCode
+                    code={buildKeyPython(revealedKey)}
+                    label="Use it"
+                    copyLabel="Copy Python"
+                  />
+                  <CopyableCode
+                    code={buildKeyCurl(revealedKey)}
+                    label="Or from a shell"
+                    copyLabel="Copy curl"
+                    style={{ marginTop: '0.9rem' }}
+                  />
 
                   <p className="teach-body" style={{ marginTop: '0.9rem', marginBottom: 0 }}>
                     Both carry the key inline so they run as-is. Anywhere but local testing, keep it
