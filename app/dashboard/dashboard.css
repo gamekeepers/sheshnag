@@ -792,7 +792,14 @@ select option {
   padding: 1.8rem;
   width: 420px;
   max-width: 92vw;
+  /* Modals grow when they carry a snippet (the key reveal does) — cap them
+     against the viewport so the actions stay reachable on a short screen. */
+  max-height: 86vh;
+  overflow-y: auto;
   box-shadow: 0 30px 60px rgba(0, 0, 0, 0.55);
+}
+.modal.modal-wide {
+  width: 560px;
 }
 .modal h3 {
   margin: 0 0 0.4rem 0;

@@ -822,6 +822,24 @@ export default function DashboardPage() {
     setTimeout(() => setCopiedSnippet(current => (current === key ? null : current)), 1500);
   };
 
+  // A8 — the plaintext key exists in the browser exactly once, at reveal. That
+  // is the only moment a snippet can carry it ready-to-run, so both of these
+  // inline the real key rather than a placeholder. models.list() is the first
+  // call worth making: it proves the key works and shows the ids that are
+  // legal in body.model.
+
+  const buildKeyPython = (key) => (
+    `from openai import OpenAI\n` +
+    `client = OpenAI(api_key="${key}", base_url="${BACKEND}/v1")\n` +
+    `\n` +
+    `print([m.id for m in client.models.list()])\n`
+  );
+
+  const buildKeyCurl = (key) => (
+    `curl ${BACKEND}/v1/models \\\n` +
+    `  -H "Authorization: Bearer ${key}"\n`
+  );
+
   const handleDownloadSample = () => {
     const blob = new Blob([`${buildSampleJsonl(sampleModelId)}\n`], { type: 'application/jsonl' });
     const url = URL.createObjectURL(blob);
@@ -1719,7 +1737,7 @@ export default function DashboardPage() {
       {/* ================= MODALS ================= */}
       {isCreateKeyModalOpen && (
         <div className="modal-overlay open">
-          <div className="modal">
+          <div className={`modal ${revealedKey ? 'modal-wide' : ''}`}>
             <h3>Create personal API key</h3>
             <p className="modal-sub">Give it a name so you can recognize it later.</p>
             <div className="field">
@@ -1744,6 +1762,40 @@ export default function DashboardPage() {
               <div id="keyRevealBox" style={{ marginTop: '1.2rem' }}>
                 <div className="key-reveal">{revealedKey}</div>
                 <div className="key-warning">This is shown once. Copy it now — you won't be able to see it again.</div>
+
+                {/* A8 — a key with nothing to do next teaches nothing. These two
+                    are runnable as-is, and list the ids body.model will accept. */}
+                <div className="teach" style={{ marginBottom: 0 }}>
+                  <div className="teach-head">
+                    <span className="teach-title">Use it</span>
+                    <button
+                      className="btn"
+                      style={{ padding: '2px 10px', fontSize: '0.72rem', color: copiedSnippet === 'key-py' ? '#00D287' : undefined }}
+                      onClick={() => handleCopySnippet(buildKeyPython(revealedKey), 'key-py')}
+                    >
+                      {copiedSnippet === 'key-py' ? 'Copied ✓' : 'Copy Python'}
+                    </button>
+                  </div>
+                  <pre className="teach-code">{buildKeyPython(revealedKey)}</pre>
+
+                  <div className="teach-head" style={{ marginTop: '0.9rem' }}>
+                    <span className="teach-body" style={{ margin: 0 }}>Or from a shell:</span>
+                    <button
+                      className="btn"
+                      style={{ padding: '2px 10px', fontSize: '0.72rem', color: copiedSnippet === 'key-curl' ? '#00D287' : undefined }}
+                      onClick={() => handleCopySnippet(buildKeyCurl(revealedKey), 'key-curl')}
+                    >
+                      {copiedSnippet === 'key-curl' ? 'Copied ✓' : 'Copy curl'}
+                    </button>
+                  </div>
+                  <pre className="teach-code">{buildKeyCurl(revealedKey)}</pre>
+
+                  <p className="teach-body" style={{ marginTop: '0.9rem', marginBottom: 0 }}>
+                    Both carry the key inline so they run as-is. Anywhere but local testing, keep it
+                    out of source — <span className="mono">export SHESHNAG_API_KEY=…</span> and read it
+                    from the environment instead.
+                  </p>
+                </div>
               </div>
             )}
           </div>
