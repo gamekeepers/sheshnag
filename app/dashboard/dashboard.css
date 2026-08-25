@@ -15,6 +15,8 @@ html, body {
 :root {
   --bg: #06060A;
   --bg-panel: rgba(255, 255, 255, 0.045);
+  /* Opaque fallback for OS-drawn <option> popups (see select option rule). */
+  --option-bg: #14141A;
   --bg-panel-hover: rgba(255, 255, 255, 0.07);
   --border: rgba(255, 255, 255, 0.09);
   --border-soft: rgba(255, 255, 255, 0.05);
@@ -765,7 +767,7 @@ select:focus {
    on .app-layout handles this in current browsers; paint an opaque colour
    as well for those that ignore it. */
 select option {
-  background-color: #14141A;
+  background-color: var(--option-bg);
   color: var(--fg);
 }
 

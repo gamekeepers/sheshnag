@@ -25,7 +25,7 @@ export default function PortalSwitch({ to }) {
           : 'Back to batches, files and API keys'
       }
     >
-      <span className="portal-switch-label">
+      <span>
         {isProvider ? 'Provider portal' : 'User portal'}
       </span>
       <span className="portal-switch-arrow" aria-hidden="true">
