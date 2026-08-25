@@ -65,6 +65,7 @@ export default function DashboardPage() {
   const [submitStatus, setSubmitStatus] = useState('');
   const [availableModels, setAvailableModels] = useState([]);
   const [modelCatalog, setModelCatalog] = useState([]);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [copiedModelId, setCopiedModelId] = useState(null);
 
   // Settings Forms
@@ -291,6 +292,11 @@ export default function DashboardPage() {
       }
     } catch (e) {
       console.error('Failed to fetch models:', e);
+    } finally {
+      // The teaching samples name a live catalogue id. Until this resolves the
+      // catalogue is empty for a reason we cannot yet distinguish from "this
+      // deployment publishes no models", and the two want different copy.
+      setModelsLoaded(true);
     }
   }, [getHeaders]);
 
@@ -1359,7 +1365,7 @@ export default function DashboardPage() {
                 </div>
 
                 {groupValidationErrors(preflight.problems).map(g => (
-                  <div key={g.code} style={{ marginTop: '0.5rem' }}>
+                  <div key={g.key} style={{ marginTop: '0.5rem' }}>
                     <div className="mono" style={{ fontSize: '0.72rem', color: '#F85149', fontWeight: 600 }}>
                       {g.code}{g.field && <> · {g.field}</>}
                       {' · '}{g.count} line{g.count === 1 ? '' : 's'}
@@ -1391,15 +1397,18 @@ export default function DashboardPage() {
               <CopyableCode
                 code={sampleJsonl}
                 display={sampleJsonl.split('\n')[0]}
-                copyLabel="Copy 3-line sample"
+                copyLabel={modelsLoaded ? 'Copy 3-line sample' : 'Loading catalogue…'}
+                disabled={!modelsLoaded}
               />
               <p className="teach-body" style={{ marginTop: '0.7rem' }}>
                 Every line must use the same <span className="mono">body.model</span>, and it must be an
                 id from the{' '}
                 <button className="teach-link" onClick={() => setActiveTab('models')}>Models tab</button>
-                {sampleModelId
-                  ? <> — this deployment currently serves <span className="mono">{sampleModelId}</span>.</>
-                  : <> — no models are published yet, so the sample above says <span className="mono">MODEL_ID</span>.</>}
+                {!modelsLoaded
+                  ? <> — reading this deployment&apos;s catalogue to name a real one.</>
+                  : sampleModelId
+                    ? <> — this deployment currently serves <span className="mono">{sampleModelId}</span>.</>
+                    : <> — no models are published yet, so the sample above says <span className="mono">MODEL_ID</span>.</>}
                 {' '}A file that mixes models fails validation.
               </p>
             </div>
@@ -1542,11 +1551,13 @@ export default function DashboardPage() {
                          the reader learned what broke but never what to do. */
                       let groups = [];
                       let total = 0;
+                      let shown = 0;
                       let fallback = null;
                       try {
                         const parsed = JSON.parse(batch.error_details);
                         if (Array.isArray(parsed?.data)) {
                           groups = groupValidationErrors(parsed.data);
+                          shown = parsed.data.length;
                           total = parsed.total_errors || parsed.data.length;
                         } else if (parsed?.error) {
                           fallback = parsed.error;
@@ -1568,7 +1579,7 @@ export default function DashboardPage() {
                           )}
 
                           {groups.map(g => (
-                            <div key={g.code} style={{ marginBottom: '0.55rem' }}>
+                            <div key={g.key} style={{ marginBottom: '0.55rem' }}>
                               <div className="mono" style={{ color: '#F85149', fontSize: '0.72rem', fontWeight: 600 }}>
                                 {g.code}
                                 {g.field && <> · {g.field}</>}
@@ -1586,6 +1597,17 @@ export default function DashboardPage() {
                               )}
                             </div>
                           ))}
+
+                          {/* The validator stores at most MAX_STORED_ERRORS but
+                              reports the true total, so on a badly broken file
+                              the header outruns the rows beneath it. Say so,
+                              rather than leaving the reader to check the sum. */}
+                          {shown > 0 && total > shown && (
+                            <div style={{ color: 'var(--dim)', fontSize: '0.72rem', lineHeight: 1.5 }}>
+                              Listing the first {shown} of {total} errors — the rest were not recorded.
+                              Fix these and re-upload to see whether any remain.
+                            </div>
+                          )}
                         </div>
                       );
                     })()}
@@ -1613,10 +1635,18 @@ export default function DashboardPage() {
                     <CopyableCode
                       code={sampleJsonl}
                       style={{ marginTop: '0.5rem' }}
+                      copyLabel={modelsLoaded ? 'Copy' : 'Loading catalogue…'}
+                      disabled={!modelsLoaded}
                       actions={
                         <button
                           className="btn"
-                          style={{ padding: '2px 10px', fontSize: '0.72rem' }}
+                          disabled={!modelsLoaded}
+                          style={{
+                            padding: '2px 10px',
+                            fontSize: '0.72rem',
+                            opacity: modelsLoaded ? undefined : 0.45,
+                            cursor: modelsLoaded ? undefined : 'not-allowed',
+                          }}
                           onClick={handleDownloadSample}
                         >
                           Download sample

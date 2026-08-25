@@ -28,30 +28,48 @@ export const VALIDATION_FIXES = {
     'One model per file. Either split the mixed lines into separate files, or set every body.model to the same catalogue id.',
 };
 
+/** `body.messages[3].role` → `body.messages[].role` */
+const ARRAY_INDEX = /\[\d+\]/g;
+
 /**
- * Collapse a flat error list into one entry per `code`.
+ * Collapse a flat error list into one entry per distinct problem.
  *
  * A malformed file usually breaks the same way on every line, so a flat list
  * shows the same sentence hundreds of times and truncates before reaching the
  * one error that differs. Grouping surfaces each distinct problem once.
  *
+ * Grouped on `code` **and** `field`, not code alone. One code spans many
+ * fields — `missing_field` is emitted for custom_id, method, url, body,
+ * body.model and body.messages[i].role — so keying on the code would render a
+ * single row carrying the first error's field and every other error's count.
+ * A file missing `url` on line 1 and `body` on line 2 would read
+ * `missing_field · url · 2 lines`; the reader fixes `url` twice, resubmits and
+ * fails again, which is the round trip this screen exists to remove.
+ *
+ * Array indices are normalised for the key only, so one omission repeated
+ * across messages[0..n] stays a single group instead of fragmenting per index.
+ * The displayed `field` and `sample` stay concrete, and both come from the same
+ * first error, so the two never contradict each other.
+ *
  * Returns entries sorted most-frequent first:
- *   { code, count, lines, sample, field, fix }
+ *   { key, code, count, lines, sample, field, fix }
  */
 export function groupValidationErrors(errors) {
-  const byCode = new Map();
+  const groups = new Map();
 
   for (const e of errors) {
     const code = e.code || 'error';
-    if (!byCode.has(code)) {
-      byCode.set(code, { code, count: 0, lines: [], sample: e.message, field: e.field || null });
+    const field = e.field || null;
+    const key = `${code}:${(field || '').replace(ARRAY_INDEX, '[]')}`;
+    if (!groups.has(key)) {
+      groups.set(key, { key, code, count: 0, lines: [], sample: e.message, field });
     }
-    const g = byCode.get(code);
+    const g = groups.get(key);
     g.count += 1;
     if (g.lines.length < 3 && typeof e.line === 'number') g.lines.push(e.line);
   }
 
-  return [...byCode.values()]
+  return [...groups.values()]
     .sort((a, b) => b.count - a.count)
     .map(g => ({ ...g, fix: VALIDATION_FIXES[g.code] || null }));
 }

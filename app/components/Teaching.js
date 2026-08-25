@@ -32,11 +32,16 @@ async function copyText(text) {
  * `display` exists because the dropzone shows one line of a three-line sample
  * but copies all of it — what you read and what you get are allowed to differ,
  * so long as the copy is the complete, runnable thing.
+ *
+ * `disabled` covers the window where it is not yet the runnable thing — a
+ * sample still waiting on the live model catalogue names a placeholder model.
+ * Withhold the copy rather than hand over a snippet that fails on first run.
  */
-export function CopyableCode({ code, display, label, copyLabel = 'Copy', actions = null, style }) {
+export function CopyableCode({ code, display, label, copyLabel = 'Copy', disabled = false, actions = null, style }) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
+    if (disabled) return;
     await copyText(code);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
@@ -50,7 +55,14 @@ export function CopyableCode({ code, display, label, copyLabel = 'Copy', actions
           {actions}
           <button
             className="btn"
-            style={{ padding: '2px 10px', fontSize: '0.72rem', color: copied ? '#00D287' : undefined }}
+            disabled={disabled}
+            style={{
+              padding: '2px 10px',
+              fontSize: '0.72rem',
+              color: copied ? '#00D287' : undefined,
+              opacity: disabled ? 0.45 : undefined,
+              cursor: disabled ? 'not-allowed' : undefined,
+            }}
             onClick={handleCopy}
           >
             {copied ? 'Copied ✓' : copyLabel}
