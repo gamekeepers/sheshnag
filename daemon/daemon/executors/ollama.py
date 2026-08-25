@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 from typing import Optional, List, Callable, Awaitable
 
 import httpx
@@ -7,6 +8,7 @@ import jsonschema
 
 from daemon.executors.base import BaseExecutor
 from daemon.models import CompletionResult, PromptRequest
+from daemon.hardware import get_gpu_utilization
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +51,10 @@ class OllamaExecutor(BaseExecutor):
         GET  /api/version  - get version info
     """
     
-    def __init__(self, base_url: str = "http://localhost:11434", timeout: float = 300.0):
+    def __init__(self, base_url: str = "http://localhost:11434", timeout: float = 300.0, max_concurrent: int = 8):
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._max_concurrent = max_concurrent
         self._client: Optional[httpx.AsyncClient] = None
         self.version: Optional[str] = None
         
@@ -60,6 +63,10 @@ class OllamaExecutor(BaseExecutor):
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=httpx.Timeout(self._timeout),
+                limits=httpx.Limits(
+                    max_connections=128,
+                    max_keepalive_connections=128,
+                ),
             )
         return self._client
     
@@ -166,6 +173,72 @@ class OllamaExecutor(BaseExecutor):
                 custom_id=prompt.custom_id,
                 error=str(e)
             )
+
+    async def batch_execute(self, prompts: List[PromptRequest]) -> List[CompletionResult]:
+        """
+        Execute a batch of prompts.
+        Overrides base to natively coalesce embeddings into single /api/embed calls.
+        """
+        embedding_prompts = [p for p in prompts if p.url == "/v1/embeddings"]
+        chat_prompts = [p for p in prompts if p.url != "/v1/embeddings"]
+        
+        results_by_id = {}
+        
+        # Chat prompts run sequentially via base execute (worker pool handles concurrency)
+        for p in chat_prompts:
+            results_by_id[p.custom_id] = await self.execute(p)
+            
+        # Embedding prompts: chunk into groups of 64
+        CHUNK_SIZE = 64
+        client = self._get_client()
+        for i in range(0, len(embedding_prompts), CHUNK_SIZE):
+            chunk = embedding_prompts[i:i + CHUNK_SIZE]
+            inputs = [p.body.get("input", "") for p in chunk]
+            model = chunk[0].body.get("model", "")
+            
+            # Combine multiple inputs (if list of lists or single strings, we flatten or just pass as is)
+            coalesced_body = {"model": model, "input": inputs}
+            if "truncate" in chunk[0].body:
+                coalesced_body["truncate"] = chunk[0].body["truncate"]
+                
+            try:
+                response = await client.post("/api/embed", json=coalesced_body)
+                response.raise_for_status()
+                
+                ollama_data = response.json()
+                openai_response = self._translate_embeddings_response(ollama_data)
+                
+                # Fan out the single response to multiple CompletionResults
+                for j, p in enumerate(chunk):
+                    if "data" in openai_response and j < len(openai_response["data"]):
+                        data_item = openai_response["data"][j]
+                        # Fix up the index to be 0 for the single result
+                        data_item["index"] = 0
+                        per_row_response = {
+                            "object": "list",
+                            "data": [data_item],
+                            "model": openai_response.get("model", model),
+                            "usage": {
+                                "prompt_tokens": openai_response.get("usage", {}).get("prompt_tokens", 0) // len(chunk),
+                                "total_tokens": openai_response.get("usage", {}).get("total_tokens", 0) // len(chunk)
+                            }
+                        }
+                        results_by_id[p.custom_id] = CompletionResult(
+                            custom_id=p.custom_id, response=per_row_response
+                        )
+                    else:
+                        results_by_id[p.custom_id] = CompletionResult(
+                            custom_id=p.custom_id, error="EMBEDDING_FAILED: Missing vector in response"
+                        )
+                        
+            except Exception as e:
+                logger.error(f"Ollama batched embedding execution failed: {e}")
+                for p in chunk:
+                    results_by_id[p.custom_id] = CompletionResult(
+                        custom_id=p.custom_id, error=f"EMBEDDING_FAILED: {e}"
+                    )
+                    
+        return [results_by_id[p.custom_id] for p in prompts]
     
     async def health_check(self) -> bool:
         """Check Ollama is running via GET /api/version and GET /api/tags."""
@@ -185,6 +258,53 @@ class OllamaExecutor(BaseExecutor):
         except Exception as e:
             logger.warning(f"Ollama health check or version retrieval failed: {e}")
             return False
+
+    async def query_concurrency_limit(self) -> Optional[int]:
+        """Query Ollama for max parallel requests by estimating VRAM usage."""
+        client = self._get_client()
+        try:
+            resp = await client.get("/api/ps", timeout=5.0)
+            resp.raise_for_status()
+            data = resp.json()
+            models = data.get("models", [])
+            if not models:
+                return None
+            
+            # Use the first loaded model for estimation
+            model_info = models[0]
+            size_vram = model_info.get("size_vram", 0)
+            details = model_info.get("details", {})
+            param_size = details.get("parameter_size", "8B")
+            
+            # Extract number of billions (e.g. "8B" -> 8, "70B" -> 70, "1.5B" -> 1.5)
+            param_billions = 8.0
+            if isinstance(param_size, str) and param_size.upper().endswith("B"):
+                try:
+                    param_billions = float(param_size[:-1])
+                except ValueError:
+                    pass
+
+            gpu_stats = get_gpu_utilization()
+            total_vram_gb = gpu_stats.get("memory_total_gb", 0.0)
+            if total_vram_gb <= 0:
+                return None
+
+            model_vram_gb = size_vram / (1024**3)
+            free_vram_gb = total_vram_gb - model_vram_gb
+            
+            if free_vram_gb <= 0:
+                return 1
+                
+            # Heuristic: KV cache size scales with model depth/size. 
+            # We estimate ~0.125 GB per billion parameters per sequence.
+            kv_per_slot_gb = param_billions * 0.125
+            max_slots = math.floor(free_vram_gb / kv_per_slot_gb)
+            
+            return max(1, min(64, max_slots))
+            
+        except Exception as e:
+            logger.warning(f"Failed to query Ollama concurrency limit: {e}")
+            return None
             
     async def pull_model(self, model_name: str, progress_callback: Optional[Callable[[dict], Awaitable[None]]] = None) -> bool:
         """

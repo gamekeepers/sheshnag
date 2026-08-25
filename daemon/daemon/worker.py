@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import random
 import signal
+import time
 from pathlib import Path
 from typing import List
 
@@ -40,6 +42,7 @@ from daemon.log import get_logger
 from daemon.models import CompletionResult, Job, PromptRequest
 from daemon.heartbeat import HeartbeatManager
 from daemon.model_manager import ModelManager
+from daemon.concurrency import AIMDConcurrencyController
 
 logger = get_logger(__name__)
 
@@ -69,6 +72,10 @@ class Worker:
         self._executor = executor
         self._running = False
         self._current_job_id: str | None = None
+        self._concurrency_controller = AIMDConcurrencyController(
+            initial_concurrency=config.max_concurrent_prompts,
+            max_concurrency=128
+        )
 
         self._heartbeat = HeartbeatManager(
             client=client,
@@ -138,6 +145,22 @@ class Worker:
 
         # Pre-flight: check vLLM health
         await self._wait_for_executor()
+
+        # Query runtime for concurrency limit
+        if not self._config.concurrency_explicit:
+            detected_limit = await self._executor.query_concurrency_limit()
+            if detected_limit is not None:
+                initial = max(1, math.floor(detected_limit * 0.75))
+                maximum = max(initial, detected_limit)
+                self._concurrency_controller.reset(initial, maximum)
+                logger.info(
+                    f"Runtime capacity detected: {detected_limit}, "
+                    f"AIMD starting at {initial} (max {maximum})"
+                )
+            else:
+                logger.info("Could not detect runtime capacity, using default concurrency")
+        else:
+            logger.info(f"Using explicitly configured concurrency: {self._config.max_concurrent_prompts}")
 
         while self._running:
             try:
@@ -331,75 +354,229 @@ class Worker:
         self, prompts: List[PromptRequest], job: Job
     ) -> List[CompletionResult]:
         """
-        Execute all prompts sequentially through the executor.
-
-        Week 1: simple sequential execution.
-        Week 2+: this is where batching / checkpointing would plug in.
+        Execute all prompts concurrently using a bounded task pool.
         """
-        results: List[CompletionResult] = []
+        # 1. Duplicate custom_id detection (pre-flight)
+        seen_ids = set()
+        for p in prompts:
+            if p.custom_id in seen_ids:
+                logger.error(f"[{job.job_id}] Duplicate custom_id '{p.custom_id}' in input")
+                raise ValueError(f"Duplicate custom_id '{p.custom_id}' in input")
+            seen_ids.add(p.custom_id)
+
+        # 2. Set up shared state
         total = len(prompts)
+        queue = asyncio.Queue()
+        results_by_id: dict[str, CompletionResult] = {}
+        lock = asyncio.Lock()
         completed = 0
         failed = 0
 
-        for idx, prompt in enumerate(prompts, start=1):
-            if not self._running:
-                logger.warning(
-                    f"[{job.job_id}] Shutdown requested — "
-                    f"stopping at prompt {idx}/{total}"
-                )
-                break
-
-            logger.info(
-                f"[{job.job_id}] Executing prompt {idx}/{total} "
-                f"(id: {prompt.custom_id})"
-            )
-
-            # ── Pre-executor validation ──────────────────────
-            # Reject stream: true — batch execution cannot honor
-            # streaming and the response shape changes completely
-            # if passed through. Applies to all runtimes.
-            if prompt.body.get("stream"):
-                result = CompletionResult(
-                    custom_id=prompt.custom_id,
-                    error=(
-                        "UNSUPPORTED_PARAMETER: stream=true is not "
-                        "supported in batch mode. Batch requests are "
-                        "executed synchronously and the streaming "
-                        "response shape is incompatible."
-                    ),
-                )
-                results.append(result)
+        chat_prompts = []
+        embedding_prompts = []
+        for p in prompts:
+            if p.url == "/v1/embeddings":
+                embedding_prompts.append(p)
             else:
-                result = await self._executor.execute(prompt)
-                results.append(result)
+                chat_prompts.append(p)
+                queue.put_nowait(p)
 
-            if result.is_success:
-                completed += 1
-                tokens = result.usage.get("total_tokens", "?")
-                logger.debug(
-                    f"[{job.job_id}] Prompt {prompt.custom_id} "
-                    f"completed ({tokens} tokens)"
-                )
-            else:
-                failed += 1
-                logger.warning(
-                    f"[{job.job_id}] Prompt {prompt.custom_id} "
-                    f"failed: {result.error}"
-                )
-                
-            # Update heartbeat with current progress
-            self._heartbeat.update_status(
-                status="busy",
-                job_id=job.job_id,
-                progress={
-                    "total_prompts": total,
-                    "completed_prompts": completed,
-                    "failed_prompts": failed,
-                }
-            )
+        # 3. Worker coroutine
+        # This function processes items from the queue until it's empty or shutdown is requested.
+        # It's spawned dynamically by the pool_manager below.
+        active_workers = set()
+
+        async def pool_worker(task_ref=None):
+            if task_ref is None:
+                task_ref = asyncio.current_task()
             
-            # Report progress to platform every 10 prompts or on completion
-            if idx % 10 == 0 or idx == total:
+            try:
+                nonlocal completed, failed
+                while True:
+                    # Graceful shutdown check between each prompt execution
+                    if not self._running:
+                        return
+                    
+                    # AIMD Scaling down logic:
+                    # If the controller detected network strain (e.g. 429 Too Many Requests)
+                    # and decreased current_concurrency, excess workers will exit here naturally
+                    # before picking up the next prompt from the queue.
+                    if len(active_workers) > self._concurrency_controller.current_concurrency:
+                        return
+                        
+                    try:
+                        # Non-blocking get. The manager ensures queue has items when workers are spawned.
+                        prompt = queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        return
+
+                    logger.info(
+                        f"[{job.job_id}] Executing prompt "
+                        f"(id: {prompt.custom_id})"
+                    )
+
+                    # Pre-executor validation
+                    if prompt.body.get("stream"):
+                        result = CompletionResult(
+                            custom_id=prompt.custom_id,
+                            error=(
+                                "UNSUPPORTED_PARAMETER: stream=true is not "
+                                "supported in batch mode. Batch requests are "
+                                "executed synchronously and the streaming "
+                                "response shape is incompatible."
+                            ),
+                        )
+                    else:
+                        start_time = time.monotonic()
+                        result = await self._executor.execute(prompt)
+                        latency = time.monotonic() - start_time
+                        
+                        if result.is_success:
+                            self._concurrency_controller.on_success(latency)
+                        else:
+                            self._concurrency_controller.on_failure(result.error)
+
+                    should_report = False
+                    report_completed = 0
+                    report_failed = 0
+
+                    # Thread-safe (async-safe) state updates since multiple workers run concurrently.
+                    async with lock:
+                        results_by_id[prompt.custom_id] = result
+                        if result.is_success:
+                            completed += 1
+                            tokens = result.usage.get("total_tokens", "?")
+                            logger.debug(
+                                f"[{job.job_id}] Prompt {prompt.custom_id} "
+                                f"completed ({tokens} tokens)"
+                            )
+                        else:
+                            failed += 1
+                            logger.warning(
+                                f"[{job.job_id}] Prompt {prompt.custom_id} "
+                                f"failed: {result.error}"
+                            )
+    
+                        done = completed + failed
+                        # Report to the backend periodically (every 10 prompts or at the end)
+                        if done % 10 == 0 or done == total:
+                            should_report = True
+                            report_completed = completed
+                            report_failed = failed
+    
+                        # Update heartbeat
+                        self._heartbeat.update_status(
+                            status="busy",
+                            job_id=job.job_id,
+                            progress={
+                                "total_prompts": total,
+                                "completed_prompts": completed,
+                                "failed_prompts": failed,
+                            }
+                        )
+    
+                    if should_report:
+                        await self._client.report_progress(
+                            job_id=job.job_id,
+                            completed=report_completed,
+                            failed=report_failed,
+                            total=total,
+                        )
+            finally:
+                active_workers.discard(task_ref)
+
+        # 4. Launch dynamic pool manager and wait
+        # The pool_manager constantly polls the AIMD concurrency limit and spawns new tasks
+        # to fill available capacity if the queue still has pending prompts.
+        async def pool_manager():
+            while self._running and not queue.empty():
+                target = self._concurrency_controller.current_concurrency
+                
+                # We update active_workers synchronously immediately after spawning
+                # to prevent the manager from spinning in an infinite loop while waiting 
+                # for the spawned coroutine to actually execute its first line.
+                while len(active_workers) < target and not queue.empty():
+                    task = asyncio.create_task(pool_worker())
+                    active_workers.add(task)
+                    
+                # Poll interval. Short enough to scale up fast, long enough to save CPU.
+                await asyncio.sleep(0.5)
+                
+        manager_task = asyncio.create_task(pool_manager())
+        
+        # Wait until the job queue is fully depleted by the active workers
+        # Checking self._running breaks the wait immediately during graceful shutdowns.
+        while self._running and not queue.empty():
+            await asyncio.sleep(0.5)
+            
+        # Ensure the manager loop exits cleanly and await all currently executing workers
+        # so we don't accidentally orphan running HTTP tasks.
+        manager_task.cancel()
+        if active_workers:
+            res_list = await asyncio.gather(*active_workers, return_exceptions=True)
+            for res in res_list:
+                if isinstance(res, Exception):
+                    logger.error(f"Worker crashed with exception: {res}")
+                    raise res
+
+        # 5. Handle embeddings
+        if embedding_prompts and self._running:
+            logger.info(f"[{job.job_id}] Executing {len(embedding_prompts)} embeddings via batch_execute")
+            try:
+                emb_results = await self._executor.batch_execute(embedding_prompts)
+                
+                should_report = False
+                report_completed = 0
+                report_failed = 0
+
+                async with lock:
+                    for r in emb_results:
+                        results_by_id[r.custom_id] = r
+                        if r.is_success:
+                            completed += 1
+                        else:
+                            failed += 1
+
+                    should_report = True
+                    report_completed = completed
+                    report_failed = failed
+
+                    self._heartbeat.update_status(
+                        status="busy",
+                        job_id=job.job_id,
+                        progress={
+                            "total_prompts": total,
+                            "completed_prompts": completed,
+                            "failed_prompts": failed,
+                        }
+                    )
+
+                if should_report:
+                    await self._client.report_progress(
+                        job_id=job.job_id,
+                        completed=report_completed,
+                        failed=report_failed,
+                        total=total,
+                    )
+            except Exception as exc:
+                logger.error(f"[{job.job_id}] Batch embedding execution failed: {exc}")
+                async with lock:
+                    for p in embedding_prompts:
+                        results_by_id[p.custom_id] = CompletionResult(
+                            custom_id=p.custom_id, error=str(exc)
+                        )
+                        failed += 1
+                        
+                    self._heartbeat.update_status(
+                        status="busy",
+                        job_id=job.job_id,
+                        progress={
+                            "total_prompts": total,
+                            "completed_prompts": completed,
+                            "failed_prompts": failed,
+                        }
+                    )
+                
                 await self._client.report_progress(
                     job_id=job.job_id,
                     completed=completed,
@@ -407,7 +584,19 @@ class Worker:
                     total=total,
                 )
 
-        return results
+        if not self._running:
+            logger.warning(
+                f"[{job.job_id}] Shutdown requested — "
+                f"stopping early"
+            )
+
+        # 6. Return results in input order (only what completed)
+        final_results = []
+        for p in prompts:
+            if p.custom_id in results_by_id:
+                final_results.append(results_by_id[p.custom_id])
+                
+        return final_results
 
     # ── Output Writing ───────────────────────────────────────────
 
@@ -460,7 +649,13 @@ class Worker:
         loop = asyncio.get_running_loop()
 
         for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, self._handle_shutdown_signal, sig)
+            try:
+                loop.add_signal_handler(sig, self._handle_shutdown_signal, sig)
+            except NotImplementedError:
+                # add_signal_handler is not supported on Windows event loops.
+                # Graceful shutdown via signals will not work, but KeyboardInterrupt
+                # will still be raised on Ctrl+C.
+                pass
 
     def _handle_shutdown_signal(self, sig: signal.Signals) -> None:
         """Handle SIGTERM/SIGINT by requesting graceful shutdown."""

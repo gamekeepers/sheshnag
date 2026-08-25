@@ -62,3 +62,20 @@ log_level: "INFO"
 
 # Inference timeout per prompt, any runtime (seconds)
 # inference_timeout: 300.0
+
+# Max prompts in flight concurrently
+# max_concurrent_prompts: 8
+
+# ─────────────────────────────────────────────────────────────
+# Ollama Server Tuning (set as ENV VARS on the Ollama host)
+# ─────────────────────────────────────────────────────────────
+# These are NOT daemon config — they must be set on the machine
+# running the Ollama server (or in its systemd unit / Docker env).
+#
+# OLLAMA_NUM_PARALLEL=8        # Slots per model — enables batched decode
+# OLLAMA_KEEP_ALIVE=-1         # Never evict loaded models (infinite)
+# OLLAMA_FLASH_ATTENTION=1     # Shrink KV cache footprint
+# OLLAMA_KV_CACHE_TYPE=q8_0    # Further KV cache compression
+#
+# Ensure max_concurrent_prompts << OLLAMA_MAX_QUEUE (default 512)
+# to avoid 503 overload errors.
