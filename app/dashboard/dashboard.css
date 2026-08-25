@@ -833,3 +833,85 @@ select option {
   text-align: center;
   padding: 1.2rem 0;
 }
+
+/* ===================== TEACHING BLOCKS ===================== */
+/* Explanation shown at the moment it is needed — see the in-product education
+   surfaces note, journey 2.1. Deliberately quieter than a .panel: this is
+   guidance sitting next to the control, not a section of its own. */
+.teach {
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
+  margin: 1rem 0 1.5rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+.teach-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+.teach-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--fg);
+}
+.teach-body {
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--dim);
+  margin: 0 0 0.5rem 0;
+}
+.teach-code {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  color: var(--fg);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 0.7rem 0.8rem;
+  margin: 0.5rem 0 0 0;
+  overflow-x: auto;
+  white-space: pre;
+}
+/* Reads as a link, but stays a button so it cannot be middle-clicked into a
+   dead route — these switch tabs in place rather than navigating. */
+.teach-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.teach-link:hover {
+  color: var(--fg);
+}
+
+.teach-empty {
+  text-align: left;
+  padding: 1.6rem 1.8rem;
+}
+.teach-step {
+  display: flex;
+  gap: 0.85rem;
+  align-items: flex-start;
+  margin-top: 1.2rem;
+}
+.teach-step-n {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.72rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

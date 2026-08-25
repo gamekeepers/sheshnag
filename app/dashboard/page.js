@@ -63,6 +63,7 @@ export default function DashboardPage() {
   const [availableModels, setAvailableModels] = useState([]);
   const [modelCatalog, setModelCatalog] = useState([]);
   const [copiedModelId, setCopiedModelId] = useState(null);
+  const [copiedSnippet, setCopiedSnippet] = useState(null);
 
   // Settings Forms
   const [settingsOrgName, setSettingsOrgName] = useState('');
@@ -304,10 +305,12 @@ export default function DashboardPage() {
     } else if (activeTab === 'batches') {
       loadBatches();
       loadFiles();
+      loadModels();  // the first-batch sample names a live catalogue id
     } else if (activeTab === 'models') {
       loadModels();
     } else if (activeTab === 'files') {
       loadFiles();
+      loadModels();  // the dropzone sample line names a live catalogue id
     } else if (activeTab === 'settings') {
       // loadMembers();  // org settings parked — relocating to the provider portal
     }
@@ -764,6 +767,71 @@ export default function DashboardPage() {
     }
     setCopiedModelId(id);
     setTimeout(() => setCopiedModelId(current => (current === id ? null : current)), 1500);
+  };
+
+  // ── First-batch teaching ───────────────────────────────────────────────
+  // Four facts a new user can get nowhere else in the product: input is OpenAI
+  // batch JSONL; every line needs custom_id/method/url/body; files upload first
+  // and a batch references the returned file_id; validation is asynchronous.
+  // The model id comes from the live catalogue rather than a constant, so the
+  // sample never names a model this deployment cannot serve.
+
+  const sampleModelId = modelCatalog[0]?.id || null;
+
+  const buildSampleJsonl = (modelId) => [
+    'Summarise the causes of the 1973 oil crisis in two sentences.',
+    'List three risks of over-fitting on a small dataset.',
+    'Explain gradient clipping to a first-year student.',
+  ].map((prompt, i) => JSON.stringify({
+    custom_id: `request-${i + 1}`,
+    method: 'POST',
+    url: '/v1/chat/completions',
+    body: { model: modelId || 'MODEL_ID', messages: [{ role: 'user', content: prompt }] },
+  })).join('\n');
+
+  const buildSubmitSnippet = (modelId) => (
+    `from openai import OpenAI\n` +
+    `client = OpenAI(api_key="$SHESHNAG_API_KEY", base_url="${BACKEND}/v1")\n` +
+    `\n` +
+    `# 1. the file is uploaded first and gets an id\n` +
+    `f = client.files.create(file=open("batch.jsonl", "rb"), purpose="batch")\n` +
+    `\n` +
+    `# 2. the batch references that id — it never carries the bytes\n` +
+    `batch = client.batches.create(\n` +
+    `    input_file_id=f.id,\n` +
+    `    endpoint="/v1/chat/completions",\n` +
+    `    completion_window="24h",\n` +
+    `)\n` +
+    `print(batch.id, batch.status)  # queued now, validated a moment later\n` +
+    (modelId ? '' : `\n# every body.model must be an id from the Models tab\n`)
+  );
+
+  const handleCopySnippet = async (text, key) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Clipboard API unavailable (http origin) — same fallback as model ids
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    }
+    setCopiedSnippet(key);
+    setTimeout(() => setCopiedSnippet(current => (current === key ? null : current)), 1500);
+  };
+
+  const handleDownloadSample = () => {
+    const blob = new Blob([`${buildSampleJsonl(sampleModelId)}\n`], { type: 'application/jsonl' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'sample_batch.jsonl';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   };
 
   const getPageTitle = () => {
@@ -1234,6 +1302,37 @@ export default function DashboardPage() {
               {!uploadFile && <div className="dz-sub">ACCEPTS .JSONL — UP TO 500MB</div>}
             </div>
 
+            {/* A2 — say what belongs in the file before it is uploaded, not after
+                the backend rejects it. Sits outside .dropzone: that element opens
+                the file picker on click, which would swallow the copy button. */}
+            <div className="teach">
+              <div className="teach-head">
+                <span className="teach-title">What goes in the file</span>
+                <button
+                  className="btn"
+                  style={{ padding: '2px 10px', fontSize: '0.72rem', color: copiedSnippet === 'dz' ? '#00D287' : undefined }}
+                  onClick={() => handleCopySnippet(buildSampleJsonl(sampleModelId), 'dz')}
+                >
+                  {copiedSnippet === 'dz' ? 'Copied ✓' : 'Copy 3-line sample'}
+                </button>
+              </div>
+              <p className="teach-body">
+                One JSON object per line — the OpenAI batch format. Every line needs
+                <span className="mono"> custom_id</span>,<span className="mono"> method</span>,
+                <span className="mono"> url</span> and<span className="mono"> body</span>.
+              </p>
+              <pre className="teach-code">{buildSampleJsonl(sampleModelId).split('\n')[0]}</pre>
+              <p className="teach-body">
+                Every line must use the same <span className="mono">body.model</span>, and it must be an
+                id from the{' '}
+                <button className="teach-link" onClick={() => setActiveTab('models')}>Models tab</button>
+                {sampleModelId
+                  ? <> — this deployment currently serves <span className="mono">{sampleModelId}</span>.</>
+                  : <> — no models are published yet, so the sample above says <span className="mono">MODEL_ID</span>.</>}
+                {' '}A file that mixes models fails validation.
+              </p>
+            </div>
+
             <div className="section-title">Uploaded Files</div>
             <div className="panel" style={{ padding: '0.5rem' }}>
               <div className="table-container">
@@ -1412,8 +1511,59 @@ export default function DashboardPage() {
                 );
               })}
               {batches.length === 0 && (
-                <div className="panel" style={{ gridColumn: 'span 2', textAlign: 'center', color: 'var(--dim)', padding: '3rem' }}>
-                  No batch jobs submitted. Click "New Batch" to queue a job.
+                /* A1 — the empty state is the only place a first-time user is
+                   guaranteed to look, so it carries the whole path to a result. */
+                <div className="panel teach-empty" style={{ gridColumn: 'span 2' }}>
+                  <div className="teach-title" style={{ fontSize: '1rem' }}>Submit your first batch</div>
+
+                  <div className="teach-step">
+                    <span className="teach-step-n">1</span>
+                    <div>
+                      <div className="teach-body">
+                        Build a <span className="mono">.jsonl</span> file — one request per line.
+                      </div>
+                      <pre className="teach-code">{buildSampleJsonl(sampleModelId)}</pre>
+                      <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.6rem' }}>
+                        <button
+                          className="btn"
+                          style={{ padding: '3px 10px', fontSize: '0.74rem', color: copiedSnippet === 'jsonl' ? '#00D287' : undefined }}
+                          onClick={() => handleCopySnippet(buildSampleJsonl(sampleModelId), 'jsonl')}
+                        >
+                          {copiedSnippet === 'jsonl' ? 'Copied ✓' : 'Copy'}
+                        </button>
+                        <button className="btn" style={{ padding: '3px 10px', fontSize: '0.74rem' }} onClick={handleDownloadSample}>
+                          Download sample
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="teach-step">
+                    <span className="teach-step-n">2</span>
+                    <div className="teach-body">
+                      Upload it on the{' '}
+                      <button className="teach-link" onClick={() => setActiveTab('files')}>Files tab</button>, or from
+                      code. The file is stored first and handed back an id; the batch references that
+                      id rather than carrying the bytes.
+                      <pre className="teach-code">{buildSubmitSnippet(sampleModelId)}</pre>
+                      <button
+                        className="btn"
+                        style={{ padding: '3px 10px', fontSize: '0.74rem', marginTop: '0.6rem', color: copiedSnippet === 'py' ? '#00D287' : undefined }}
+                        onClick={() => handleCopySnippet(buildSubmitSnippet(sampleModelId), 'py')}
+                      >
+                        {copiedSnippet === 'py' ? 'Copied ✓' : 'Copy'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="teach-step">
+                    <span className="teach-step-n">3</span>
+                    <div className="teach-body">
+                      Or click <strong>New Batch</strong> above and pick the uploaded file.
+                      Either way the job is <em>accepted first and validated after</em> — a malformed
+                      file is taken, then fails a moment later, and the reason appears on its card here.
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
