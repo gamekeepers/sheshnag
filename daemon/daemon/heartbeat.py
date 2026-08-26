@@ -32,6 +32,7 @@ class HeartbeatManager:
         self._get_loaded_models = get_loaded_models
         self._get_loaded_model_digests = get_loaded_model_digests
         self._declared_vram_gb = declared_vram_gb
+        self._warned_zero_vram = False
         self._running = False
         self._task: Optional[asyncio.Task] = None
 
@@ -110,6 +111,26 @@ class HeartbeatManager:
         # and permanently (provider_picker.find_best_batch).
         if self._declared_vram_gb:
             memory_total = self._declared_vram_gb
+        if not memory_total and not self._warned_zero_vram:
+            # The #53 failure mode: register fine, heartbeat fine, show
+            # "online", never get a batch — with nothing logged. Say it once.
+            self._warned_zero_vram = True
+            logger.warning(
+                "Advertising 0 GB VRAM — the scheduler will never assign this "
+                "worker a batch. Set DAEMON_VRAM_GB if GPU probing is not "
+                "supported on this host."
+            )
+
+        # Available memory is only meaningful when "used" is a real machine-
+        # wide reading. Unified memory (Apple Silicon) has none → None, so
+        # the dashboard shows "—" instead of a saturated worker as fully free.
+        # With a declared total smaller than the card, clamp: a 24 GB card at
+        # 20 GB used lent as 12 GB is not "0 free" for the lease.
+        if memory_used is None:
+            memory_available = None
+        else:
+            memory_used = min(memory_used, memory_total)
+            memory_available = round(max(memory_total - memory_used, 0.0), 2)
         return {
             "worker_id": self._worker_id,
             # Activity (idle | busy | downloading_model) — distinct from the
@@ -118,9 +139,9 @@ class HeartbeatManager:
             "current_job_id": self._current_job_id,
             "progress": self._progress,
             "gpu_utilization": gpu_stats.get("utilization", 0.0),
-            "gpu_memory_used_gb": memory_used,
+            "gpu_memory_used_gb": memory_used if memory_used is not None else 0.0,
             "vram_total_gb": memory_total,
-            "vram_available_gb": round(max(memory_total - memory_used, 0.0), 2),
+            "vram_available_gb": memory_available,
             "loaded_models": await self._fetch_loaded_models(),
             "loaded_model_digests": await self._fetch_loaded_model_digests(),
             "uptime_seconds": int(time.time() - self._start_time),

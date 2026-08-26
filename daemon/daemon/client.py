@@ -140,7 +140,7 @@ class BackendClient:
             "gpus": [
                 {
                     "index": gpu.index,
-                    "vendor": "nvidia",
+                    "vendor": gpu.vendor,
                     "name": gpu.name,
                     "vram_gb": gpu.vram_gb,
                     "driver": gpu.driver_version,

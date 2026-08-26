@@ -1,3 +1,4 @@
+import functools
 import json
 import logging
 import platform
@@ -64,8 +65,15 @@ def _metal_vram_gb() -> Optional[float]:
         return None
 
 
+@functools.lru_cache(maxsize=1)
 def _apple_vram_gb() -> float:
-    """Usable GPU memory on Apple Silicon, in GiB.
+    """Usable GPU memory on Apple Silicon, in GiB. Computed once per process.
+
+    Cached because the heartbeat asks every 30 s for a value that only
+    changes on reboot or a wired-limit change — and because a transient
+    Metal hiccup must not silently switch the source mid-run (17.76 from
+    Metal vs 15.84 from the ratio would flap models in and out of the
+    scheduler's eligibility and disagree with what registration advertised).
 
     Apple Silicon has no dedicated VRAM — CPU and GPU share one pool — so
     the meaningful number is the cap macOS puts on how much of it the GPU
@@ -113,7 +121,10 @@ def _apple_gpu() -> Optional[Dict[str, Any]]:
             m = re.search(r"metal(\d+)", family)
             metal = f"Metal {m.group(1)}" if m else None
             break
-    except (subprocess.SubprocessError, OSError, ValueError, KeyError) as e:
+    except (subprocess.SubprocessError, OSError, ValueError, KeyError,
+            TypeError, AttributeError) as e:
+        # system_profiler renders some fields as lists or nests them; any
+        # shape surprise degrades to the name-less entry below, never raises.
         logger.debug(f"system_profiler GPU detection failed: {e}")
 
     vram_gb = _apple_vram_gb()
@@ -122,6 +133,7 @@ def _apple_gpu() -> Optional[Dict[str, Any]]:
 
     return {
         "name": f"{name} ({cores}-core GPU)" if cores else name,
+        "vendor": "apple",
         "vram_gb": vram_gb,
         "driver_version": metal or "",
         "cuda_version": "",   # Metal, not CUDA
@@ -168,20 +180,24 @@ def detect_hardware() -> Dict[str, Any]:
         except Exception:
             pass
     elif info["os"] == "Darwin": # macOS fallback
-        try:
-            cpu_model = subprocess.check_output(["sysctl", "-n", "machdep.cpu.brand_string"], timeout=_SMI_DETECT_TIMEOUT).decode().strip()
+        cpu_model = _sysctl("machdep.cpu.brand_string")
+        if cpu_model:
             info["cpu_model"] = cpu_model
-            mem_bytes = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], timeout=_SMI_DETECT_TIMEOUT).decode().strip())
-            info["ram_gb"] = round(mem_bytes / (1024**3), 2)
-        except Exception:
-            pass
+        memsize = _sysctl("hw.memsize")
+        if memsize and memsize.isdigit():
+            info["ram_gb"] = round(int(memsize) / (1024 ** 3), 2)
 
-        # Apple Silicon: no nvidia-smi will ever exist here, and the SoC GPU
-        # is real and Metal-capable. Reporting no GPU makes the scheduler's
-        # VRAM guard reject this worker for every batch.
-        apple = _apple_gpu()
-        if apple:
-            info["gpus"].append(apple)
+        # Apple Silicon only (arm64): no nvidia-smi will ever exist here, and
+        # the SoC GPU is real and Metal-capable. Reporting no GPU makes the
+        # scheduler's VRAM guard reject this worker for every batch.
+        # Intel Macs deliberately fall through to the nvidia-smi probe: their
+        # iGPU has no unified-memory ceiling, and the ratio fallback would
+        # advertise ~2/3 of RAM as VRAM for a 1.5 GB iGPU.
+        if platform.machine() == "arm64":
+            apple = _apple_gpu()
+            if apple:
+                info["gpus"].append(apple)
+            return info
 
     # Detect GPUs via nvidia-smi
     if shutil.which("nvidia-smi") is None:
@@ -218,6 +234,7 @@ def detect_hardware() -> Dict[str, Any]:
 
                 info["gpus"].append({
                     "name": gpu_name,
+                    "vendor": "nvidia",
                     "vram_gb": round(vram_mb / 1024, 2),
                     "driver_version": driver_version,
                     "cuda_version": cuda_version,
@@ -236,6 +253,9 @@ def get_gpu_utilization() -> Dict[str, Any]:
     the scheduler matches models against total machine VRAM, which is
     valid for runtimes that split layers across GPUs (Ollama, vLLM with
     tensor parallelism) and mirrors what registration advertises.
+
+    `memory_used_gb` is None when the platform exposes no machine-wide
+    "in use" counter (Apple Silicon); callers must not treat that as 0.
     """
     stats = {
         "utilization": 0.0,
@@ -243,14 +263,16 @@ def get_gpu_utilization() -> Dict[str, Any]:
         "memory_total_gb": 0.0
     }
 
-    if platform.system() == "Darwin":
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
         # Unified memory exposes no machine-wide "GPU memory in use" counter —
         # there is no equivalent of nvidia-smi's memory.used, and Metal's
         # currentAllocatedSize only sees this process. Report the ceiling and
-        # leave used at 0; the picker reads memory_total_gb only. Per-model
-        # residency would have to come from the runtime (Ollama's /api/ps
-        # reports size_vram), which belongs at a different layer than this.
+        # mark used as unknown (None) rather than a confident 0 that the
+        # dashboard would render as "fully free". Per-model residency would
+        # have to come from the runtime (Ollama's /api/ps reports size_vram),
+        # which belongs at a different layer than this.
         stats["memory_total_gb"] = _apple_vram_gb()
+        stats["memory_used_gb"] = None
         return stats
 
     if shutil.which("nvidia-smi") is None:
@@ -279,3 +301,39 @@ def get_gpu_utilization() -> Dict[str, Any]:
         logger.debug(f"GPU stats via nvidia-smi failed: {e}")
 
     return stats
+
+
+def apply_declared_vram(gpus: List[Dict[str, Any]], declared_gb: float,
+                        name: str = "unknown") -> List[Dict[str, Any]]:
+    """
+    Reconcile probed GPUs with an operator-declared capacity (DAEMON_VRAM_GB).
+
+    Used by registration so the advertised hardware agrees with what the
+    heartbeat reports; the declaration is the total the scheduler may use:
+      - no declaration → probed list unchanged;
+      - nothing probed  → one synthetic entry (vendor "other") so an
+        unprobeable host (AMD/ROCm, Intel, CPU-only) is not a GPU-less worker;
+      - one GPU         → its vram_gb becomes the declaration;
+      - several GPUs    → scaled proportionally so they sum to the declaration.
+    """
+    if not declared_gb or declared_gb <= 0:
+        return gpus
+    if not gpus:
+        return [{
+            "name": name,
+            "vendor": "other",
+            "vram_gb": round(declared_gb, 2),
+            "driver_version": "",
+            "cuda_version": "",
+            "index": 0,
+        }]
+    probed_total = sum(g.get("vram_gb", 0.0) for g in gpus)
+    out = []
+    for g in gpus:
+        g = dict(g)
+        if len(gpus) == 1 or probed_total <= 0:
+            g["vram_gb"] = round(declared_gb / len(gpus), 2)
+        else:
+            g["vram_gb"] = round(declared_gb * g.get("vram_gb", 0.0) / probed_total, 2)
+        out.append(g)
+    return out

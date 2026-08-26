@@ -205,7 +205,11 @@ than the worker reports, so this number decides what the worker is offered.
 It is resolved in this order, first match wins:
 
 1. **`DAEMON_VRAM_GB`**, when set above 0. An explicit declaration always
-   wins, so a provider can lend less than the hardware holds.
+   wins — in registration and in every heartbeat — so a provider can lend
+   less than the hardware holds. If nothing was probed, registration
+   advertises one synthetic GPU (`vendor: other`, name from
+   `DAEMON_GPU_NAME`) of that size; if several GPUs were probed, their sizes
+   are scaled to sum to the declaration.
 2. **NVIDIA** — `nvidia-smi`, summed across GPUs.
 3. **Apple Silicon** — Metal's `recommendedMaxWorkingSetSize`, the cap macOS
    places on how much unified memory the GPU may wire. Requires
@@ -217,15 +221,18 @@ It is resolved in this order, first match wins:
 That last case is the one to watch: a host with neither `nvidia-smi` nor
 Metal — AMD/ROCm, Intel, CPU-only — registers cleanly, heartbeats cleanly,
 and shows **online** in the dashboard while never being handed a single
-batch. Set `DAEMON_VRAM_GB` on those hosts.
+batch. The daemon logs one warning (`Advertising 0 GB VRAM …`) when this
+happens. Set `DAEMON_VRAM_GB` on those hosts.
 
 > **Apple Silicon note.** There is no dedicated VRAM; CPU and GPU share one
 > memory pool. The reported figure is macOS's *permission ceiling* (about
 > 17.8 GB on a 24 GB machine), not free memory — the two differ whenever
 > anything else on the machine is using RAM. `vram_available_gb` is
-> therefore reported equal to the total on macOS: unified memory exposes no
-> machine-wide "GPU memory in use" counter. The scheduler reads only the
-> total today.
+> therefore reported as *unknown* (`null`, shown as "—") on macOS: unified
+> memory exposes no machine-wide "GPU memory in use" counter, and a confident
+> "fully free" would be wrong whenever a model is resident. The scheduler
+> reads only the total today. Intel Macs are not detected (no unified-memory
+> ceiling); set `DAEMON_VRAM_GB` there.
 
 ## Production checklist
 
