@@ -6,6 +6,26 @@ dashboard/API; organizations host GPU workers by running a lightweight
 daemon; the control plane validates, schedules, tracks, and returns
 results.
 
+It is **software you host**, not a service you sign up for.
+
+## Start here
+
+Pick whichever describes you. Each guide reads front to back, once.
+
+| You want to… | Read | Roughly |
+|---|---|---|
+| **Submit jobs** to a deployment someone else runs | [docs/using-sheshnag.md](docs/using-sheshnag.md) | swap `base_url`, submit, poll, download |
+| **Lend a GPU** to a deployment | [docs/provider.md](docs/provider.md) | one command, 10 minutes, no clone, no sudo |
+| **Run Sheshnag** for your institution | [docs/self-host.md](docs/self-host.md) | an afternoon — Postgres, TLS, first provider |
+| **Change the code** | [docs/develop.md](docs/develop.md) | three services locally, tests green |
+
+Reference material — every endpoint, every environment variable, the data model,
+the model catalogue — is under [`docs/reference/`](docs/reference/). The
+[v1 spec](docs/spec/v1-spec.md) states intent and may lag the implementation.
+
+The docs are a MkDocs site; each deployment serves its own copy at `/docs/`. To
+read them locally, see [Documentation](#documentation) below.
+
 ## Components
 
 | Component | Path | Stack | Docs |
@@ -17,10 +37,10 @@ results.
 
 ## Quick start
 
-> Canonical guide for working on the code: **[docs/develop.md](docs/develop.md)** — prerequisites,
-> the full environment-variable reference, and the production checklist.
-> Running it for real — services, TLS, production: **[docs/self-host.md](docs/self-host.md)**.
-> What follows is the 60-second version.
+> The 60-second version, for someone who already knows the shape of it.
+> If anything below is unclear, use [docs/develop.md](docs/develop.md) instead —
+> it is the canonical local-setup guide and explains the database step, which
+> this skips.
 
 **Backend** (port 8000):
 

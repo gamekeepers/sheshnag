@@ -1,5 +1,7 @@
 # OpenAI Parameter Compatibility Matrix
 
+*Last updated 2026-08-10. Moved into its current location on 2026-08-26 and **not** re-verified against code since. Its own warning about being doc-derived rather than live-tested still stands.*
+
 The Sheshnag platform claims "existing OpenAI batch code migrates by
 changing `base_url`." This document records which OpenAI sampling
 parameters are actually honoured, translated, or dropped by each

@@ -12,6 +12,9 @@
     [daemon internals](../reference/daemon.md), all of which are verified
     against code and dated.
 
+*Last updated 2026-08-02. Never re-verified against code — by design; a
+specification is not supposed to track the implementation.*
+
 
 ## 1. Overview
 
@@ -912,7 +915,7 @@ These are intentionally postponed.
 
 ---
 
-I have domain gamekeepers.in as my organization web identity. I intend to host this project as `sheshnag.io` as moonknight domains are expensive.
+I have domain gamekeepers.in as my organization web identity. I intend to host this project as `sheshnag.io` — the domains under the project's former name, *moonknight*, were expensive.
 Critique and suggest. 
 
 
