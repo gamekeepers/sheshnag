@@ -73,9 +73,10 @@ Open [http://localhost:3000](http://localhost:3000).
 
 #### 3. Daemon (on a GPU worker machine)
 
-To try the daemon without a real backend or real GPUs, use mock mode — the
-walkthrough lives in [`daemon/README.md`](https://github.com/gamekeepers/sheshnag/blob/develop/daemon/README.md#quick-start),
-which is canonical for daemon-specific detail.
+To try the daemon without a real backend or real GPUs, use mock mode —
+[section 2](#2-without-a-gpu-or-a-backend) below. How the daemon is built, and
+its contract with the backend, is in
+[Daemon internals](reference/daemon.md).
 
 For real usage you need an org worker API key from the dashboard:
 

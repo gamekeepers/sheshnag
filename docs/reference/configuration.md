@@ -58,4 +58,4 @@ Configured via a three-layer system: CLI > env (`DAEMON_*` prefix) > YAML file >
 | `DAEMON_GPU_NAME` | `unknown` | GPU model name for registration |
 | `DAEMON_VRAM_GB` | 0.0 | GPU VRAM in GB for registration |
 
-See `daemon/README.md` for full CLI flag and YAML config details.
+See [Daemon internals](daemon.md) for the architecture and the backend contract.

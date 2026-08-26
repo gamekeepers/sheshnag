@@ -58,7 +58,9 @@ nav:
   - Work on Sheshnag: develop.md
 
   - Reference:
+      - API: reference/api.md
       - Configuration: reference/configuration.md
+      - Daemon internals: reference/daemon.md
       - OpenAI compatibility: reference/openai-compatibility.md
       - Structured outputs: reference/structured-outputs.md
       - Model catalogue: reference/model-catalogue.md

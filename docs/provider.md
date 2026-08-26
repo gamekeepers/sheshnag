@@ -211,7 +211,7 @@ the name in capitals, e.g. `DAEMON_LOG_LEVEL=DEBUG`. Precedence is command line,
 then environment, then this file, then the built-in defaults.
 
 The full list, including flags a provider rarely needs, is in the
-[daemon README](https://github.com/gamekeepers/sheshnag/blob/develop/daemon/README.md).
+[Daemon internals](reference/daemon.md).
 
 ---
 

@@ -10,8 +10,8 @@ results.
 
 | Component | Path | Stack | Docs |
 |---|---|---|---|
-| Control plane (API) | [`backend/`](backend/) | FastAPI + Postgres | [backend/README.md](backend/README.md) |
-| Worker daemon | [`daemon/`](daemon/) | Python, Ollama/vLLM runtimes | [daemon/README.md](daemon/README.md) |
+| Control plane (API) | [`backend/`](backend/) | FastAPI + Postgres | [docs/reference/api.md](docs/reference/api.md) |
+| Worker daemon | [`daemon/`](daemon/) | Python, Ollama/vLLM runtimes | [docs/reference/daemon.md](docs/reference/daemon.md) |
 | Dashboard (this app) | [`app/`](app/) | Next.js | below |
 | Spec & design docs | [`docs/`](docs/) | — | [docs/spec/v1-spec.md](docs/spec/v1-spec.md), [docs/reference/data-model.md](docs/reference/data-model.md) |
 

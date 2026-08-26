@@ -55,7 +55,7 @@ import-time work breaking pytest collection, the daemon's config precedence, and
 |---|---|
 | To change any code | [`docs/develop.md`](docs/develop.md) |
 | Every environment variable | [`docs/reference/configuration.md`](docs/reference/configuration.md) |
-| The API contract | [`backend/README.md`](backend/README.md) |
+| The API contract | [`docs/reference/api.md`](docs/reference/api.md) |
 | Model rules — there is **no path to run an uncatalogued model** | [`docs/reference/model-catalogue.md`](docs/reference/model-catalogue.md) |
 | The database shape | [`docs/reference/data-model.md`](docs/reference/data-model.md) |
 | To deploy it | [`docs/self-host.md`](docs/self-host.md) |

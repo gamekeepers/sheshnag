@@ -1,6 +1,17 @@
-# v1-spec.md
-
 # Distributed Batch AI Compute Platform — V1 Specification
+
+!!! warning "This is intent, not a description of what exists"
+    The specification states what Sheshnag is meant to be. It **may lag the
+    implementation**, and in places it describes things that were never built or
+    were built differently.
+
+    **Where the spec and the code disagree, the code is the fact and the spec is
+    the bug.** For what the system actually does today, read the
+    [API reference](../reference/api.md), the
+    [data model](../reference/data-model.md) and the
+    [daemon internals](../reference/daemon.md), all of which are verified
+    against code and dated.
+
 
 ## 1. Overview
 

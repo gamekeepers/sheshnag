@@ -78,8 +78,10 @@ agents rather than product readers:
 - [`README.md`](https://github.com/gamekeepers/sheshnag/blob/develop/README.md) — repository overview
 - [`CONTRIBUTING.md`](https://github.com/gamekeepers/sheshnag/blob/develop/CONTRIBUTING.md) — process, conventions, review
 - [`AGENTS.md`](https://github.com/gamekeepers/sheshnag/blob/develop/AGENTS.md) — rules for coding agents
-- [`backend/README.md`](https://github.com/gamekeepers/sheshnag/blob/develop/backend/README.md) — API contract, until it moves to `reference/api.md`
-- [`daemon/README.md`](https://github.com/gamekeepers/sheshnag/blob/develop/daemon/README.md) — daemon internals, until they move to `reference/daemon.md`
+
+The component READMEs are stubs now: the API contract is
+[API reference](reference/api.md) and the daemon's internals are
+[Daemon internals](reference/daemon.md).
 
 ---
 
