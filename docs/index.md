@@ -43,11 +43,7 @@ front of you.
 Someone already runs a deployment and gave you a URL and a key. You swap
 `base_url`, submit a JSONL batch, poll it, download the results.
 
-!!! info "Batch-user guide — being written"
-    Until it lands, the dashboard teaches the batch format itself, and
-    [OpenAI compatibility](reference/openai-compatibility.md) plus
-    [Structured outputs](reference/structured-outputs.md) are the parameter
-    tables.
+**→ [Submit batches to Sheshnag](using-sheshnag.md)**
 
 ---
 
