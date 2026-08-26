@@ -8,6 +8,12 @@ docs_dir: docs
 
 theme:
   name: material
+  # overrides/home.html is the landing page, ported from app/page.js so the docs
+  # and the product look like one thing. docs/index.md selects it.
+  custom_dir: overrides
+  font:
+    text: Inter
+    code: Roboto Mono
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
@@ -25,9 +31,14 @@ theme:
     # meant to be copied, not retyped.
     - content.code.copy
     - navigation.sections
+    - navigation.tabs
     - navigation.top
     - search.highlight
     - toc.follow
+
+extra_css:
+  - stylesheets/extra.css
+  - stylesheets/home.css
 
 markdown_extensions:
   - admonition
