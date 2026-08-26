@@ -1,20 +1,16 @@
-# Sheshnag
-
-**Distributed batch AI compute.** Sheshnag pools idle GPUs from labs and
-researchers and runs asynchronous, OpenAI-style JSONL batch inference on them.
-Users submit batches through a dashboard or the API; organisations lend GPUs by
-running one lightweight daemon; a control plane validates, schedules, tracks and
-returns results.
-
-It is **software you host**, not a service you sign up for. Everything below
-assumes someone runs their own deployment.
-
+---
+template: home.html
+title: Sheshnag
+hide:
+  - navigation
+  - toc
 ---
 
 ## Who are you?
 
 Pick the one that describes why you are here. Each guide is meant to be read
-front to back, once.
+front to back, once. Everything assumes someone runs their own deployment —
+Sheshnag is software you host, not a service you sign up for.
 
 ### I have a GPU to lend
 
