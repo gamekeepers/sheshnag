@@ -168,7 +168,8 @@ class WorkerHeartbeatRequest(BaseModel):
     gpu_utilization: float = 0.0
     gpu_memory_used_gb: float = 0.0
     vram_total_gb: float = 0.0
-    vram_available_gb: float = 0.0
+    # None = unknown (unified memory has no machine-wide "in use" counter).
+    vram_available_gb: Optional[float] = None
     loaded_models: List[str] = []
     # Optional name → digest map for the loaded models (additive; older
     # daemons omit it and fall back to name matching).

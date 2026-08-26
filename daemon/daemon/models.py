@@ -44,6 +44,7 @@ class JobStatus(str, Enum):
 
 class GPUInfo(BaseModel):
     name: str = "unknown"
+    vendor: str = "nvidia"       # spec §8.4: nvidia | amd | intel | apple | other
     vram_gb: float = 0.0
     driver_version: str = ""
     cuda_version: str = ""

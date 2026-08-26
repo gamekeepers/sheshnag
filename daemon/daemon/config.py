@@ -115,7 +115,8 @@ class DaemonConfig(BaseModel):
         api_key:        Org worker API key for authentication (spec §8.0/§17).
                         Created in the platform dashboard; required to register.
         gpu_name:       Human-readable GPU model name for registration (spec §8).
-        vram_gb:        GPU VRAM in gigabytes for registration (spec §8).
+        vram_gb:        Advertised GPU memory in GB. When > 0 it overrides
+                        probing in both registration and every heartbeat.
         models:         List of model names available on this worker (spec §8).
         runtime:        Inference runtime type — "ollama" (default) or "vllm" .
         inference_timeout: Per-prompt inference timeout in seconds (any runtime).
