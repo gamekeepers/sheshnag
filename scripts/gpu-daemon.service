@@ -8,12 +8,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/.gpu-daemon/src/daemon
-ExecStart=%h/.gpu-daemon/venv/bin/python -m daemon.main --config %h/.gpu-daemon/config.yaml
-Environment=PATH=%h/.gpu-daemon/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/workplace/gamekeepers/repos/sheshnag/daemon
+ExecStart=%h/workplace/gamekeepers/repos/sheshnag/.venv/bin/python -m daemon.main --config %h/workplace/gamekeepers/repos/sheshnag/daemon/config.yaml
+Environment=PATH=%h/workplace/gamekeepers/repos/sheshnag/bin:/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=10
-EnvironmentFile=-%h/.gpu-daemon/.env
+EnvironmentFile=-%h/workplace/gamekeepers/repos/sheshnag/daemon/.env
 
 [Install]
 WantedBy=default.target

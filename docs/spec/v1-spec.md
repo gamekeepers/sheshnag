@@ -1,6 +1,20 @@
-# v1-spec.md
-
 # Distributed Batch AI Compute Platform — V1 Specification
+
+!!! warning "This is intent, not a description of what exists"
+    The specification states what Sheshnag is meant to be. It **may lag the
+    implementation**, and in places it describes things that were never built or
+    were built differently.
+
+    **Where the spec and the code disagree, the code is the fact and the spec is
+    the bug.** For what the system actually does today, read the
+    [API reference](../reference/api.md), the
+    [data model](../reference/data-model.md) and the
+    [daemon internals](../reference/daemon.md), all of which are verified
+    against code and dated.
+
+*Last updated 2026-08-02. Never re-verified against code — by design; a
+specification is not supposed to track the implementation.*
+
 
 ## 1. Overview
 
@@ -108,7 +122,7 @@ free-form or raw runtime string. Users select from a curated catalogue
   **digest**; the tag alone never establishes identity.
 - The raw runtime string lives only in `runtime_model_id` (internal); the
   scheduler hands it to the daemon at poll time. See §8.3 and
-  `docs/model_catalogue.md`.
+  [`docs/reference/model-catalogue.md`](../reference/model-catalogue.md).
 - **Onboarding** a new model = adding a pinned catalogue entry (curated /
   org-private / request→promote) — never an "run an uncatalogued model" path.
 
@@ -429,7 +443,7 @@ even though V1 scheduling/execution only targets vLLM.
 > `size_bytes`) was moved to the **`model_catalog`** table (curated once,
 > not replicated per worker). `body.model` is a `model_catalog` id;
 > registrations feed availability, matched to catalogue entries by
-> `digest`. See §5.2 and `docs/model_catalogue.md`.
+> `digest`. See §5.2 and [`docs/reference/model-catalogue.md`](../reference/model-catalogue.md).
 
 Each runtime hosts one or more models with capability metadata used by
 the scheduler for matching:
@@ -901,7 +915,7 @@ These are intentionally postponed.
 
 ---
 
-I have domain gamekeepers.in as my organization web identity. I intend to host this project as `sheshnag.io` as moonknight domains are expensive.
+I have domain gamekeepers.in as my organization web identity. I intend to host this project as `sheshnag.io` — the domains under the project's former name, *moonknight*, were expensive.
 Critique and suggest. 
 
 

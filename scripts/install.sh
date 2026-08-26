@@ -1,5 +1,5 @@
 #!/bin/bash
-# MoonKnight Worker Daemon — Rootless Linux Installer
+# Sheshnag Worker Daemon — Rootless Linux Installer
 #
 # Installs everything under ~/.gpu-daemon for a non-privileged user —
 # no sudo required at any step. Services run via `systemctl --user`.
@@ -40,7 +40,7 @@ if [ ! -t 0 ] && { [ -z "${BACKEND_URL:-}" ] || [ -z "${API_KEY:-}" ]; }; then
 fi
 
 DAEMON_DIR="$HOME/.gpu-daemon"
-REPO_URL="${REPO_URL:-https://github.com/gamekeepers/moonknight.git}"
+REPO_URL="${REPO_URL:-https://github.com/gamekeepers/sheshnag.git}"
 
 # 1. Prerequisites — check only; installing them needs an admin.
 echo "[1/6] Checking prerequisites..."

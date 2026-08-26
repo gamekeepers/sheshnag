@@ -125,10 +125,54 @@ bind a human typing the same command.
 
 ## Repository conventions
 
-- **Docs:** [`docs/setup.md`](docs/setup.md) is canonical for setup; component
+- **Docs:** [`docs/develop.md`](docs/develop.md) is canonical for local setup; component
   READMEs point at it rather than repeating it.
 - **Models:** every servable model is a pinned catalogue entry. See
-  [`docs/model_catalogue.md`](docs/model_catalogue.md) — there is no
+  [`docs/reference/model-catalogue.md`](docs/reference/model-catalogue.md) — there is no
   "run an arbitrary model" path, by design.
 - **Secrets:** never commit `.env`. `backend/.env.example` documents every
   variable the backend reads; add to it when you add a variable.
+
+---
+
+## Writing documentation
+
+The docs under `docs/` are a MkDocs site, organised by **who is reading**, not
+by which component a thing belongs to. Six rules keep it that way.
+
+1. **Route by audience.** There are four guides —
+   [using-sheshnag](docs/using-sheshnag.md),
+   [provider](docs/provider.md), [self-host](docs/self-host.md),
+   [develop](docs/develop.md) — and everything is reachable in one hop from one
+   of them. A page that belongs to no audience is homeless; find it a home or
+   do not write it.
+2. **One genre per file.** Guide (do this, in order) · Reference (look this up) ·
+   Spec (what we intend). Never two in one file. Mixing a localhost quickstart
+   into a production runbook is exactly what this refactor undid.
+3. **Every guide ends in a verified state** — a "check it worked" section with a
+   command and the output to expect.
+4. **One canonical home per fact.** Everything else links. Component READMEs are
+   stubs that point into `docs/`; keep them that way.
+5. **Date every page.** A `Last updated` or `Verified against code:` line near
+   the top. If you did not re-verify it, say so rather than restamping it — a
+   false date is worse than an old one.
+6. **Link style is not a preference — the build enforces it:**
+
+   | Target | Style |
+   |---|---|
+   | Another page under `docs/` | relative, keep `.md` — `[Setup](develop.md)` |
+   | Code, or anything outside `docs/` | `https://github.com/gamekeepers/sheshnag/blob/develop/…` |
+
+   MkDocs resolves relative links against `docs/`, so a relative path to
+   something outside it cannot resolve and fails the build.
+
+**Run `mkdocs build --strict` before opening a PR that touches `docs/`.** It
+fails on broken links, broken in-page anchors, and nav entries pointing at
+missing files. CI runs the same command.
+
+```bash
+python3 -m venv .venv-docs
+.venv-docs/bin/pip install -r docs/requirements.txt
+.venv-docs/bin/mkdocs serve          # preview at http://127.0.0.1:8000
+.venv-docs/bin/mkdocs build --strict # what CI runs
+```
