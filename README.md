@@ -17,9 +17,9 @@ results.
 
 ## Quick start
 
-> Canonical setup guide: **[docs/setup.md](docs/setup.md)** — prerequisites,
+> Canonical guide for working on the code: **[docs/develop.md](docs/develop.md)** — prerequisites,
 > the full environment-variable reference, and the production checklist.
-> Running as services (rootless `systemctl --user`): **[docs/services.md](docs/services.md)**.
+> Running it for real — services, TLS, production: **[docs/self-host.md](docs/self-host.md)**.
 > What follows is the 60-second version.
 
 **Backend** (port 8000):

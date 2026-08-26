@@ -29,17 +29,14 @@ database, no `sudo`.
 You are standing up the control plane on your own premises: TLS, an admin
 account, the model catalogue, the first provider onboarded.
 
-!!! info "Self-host guide — being written"
-    Until it lands, read [Setup](setup.md) — the production half — and then
-    [Running as rootless services](services.md).
+**→ [Run Sheshnag for your institution](self-host.md)**
 
 ### I want to change the code
 
 Frontend, backend and daemon running locally, tests green, and the contract in
 front of you.
 
-!!! info "Developer guide — being written"
-    Until it lands, read [Setup](setup.md) — the development half.
+**→ [Work on Sheshnag](develop.md)**
 
 ### I want to submit jobs
 

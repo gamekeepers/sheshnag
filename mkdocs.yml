@@ -41,24 +41,24 @@ markdown_extensions:
 # The nav IS the audience routing (D5). A page that belongs to no audience is
 # visibly homeless, which is the point.
 #
-# Three entries are still deliberately ABSENT because their files do not exist:
-#   Self-host       -> docs/self-host.md       (phase 4)
-#   Develop         -> docs/develop.md         (phase 5)
+# One entry is still deliberately ABSENT because its file does not exist:
 #   Use Sheshnag    -> docs/using-sheshnag.md  (phase 7)
-# `mkdocs build --strict` fails on a nav entry pointing at a missing file, so
-# each is added by the phase that writes it. A gap is honest; a placeholder page
-# is a document that lies about existing.
+# `mkdocs build --strict` fails on a nav entry pointing at a missing file, so it
+# is added by the phase that writes it. A gap is honest; a placeholder page is a
+# document that lies about existing.
+#
+# The interim section is gone: services.md was consumed by self-host.md in phase
+# 4, and setup.md was split three ways in phase 5 — localhost into develop.md,
+# production into self-host.md, environment variables into
+# reference/configuration.md.
 nav:
   - Home: index.md
   - Lend your GPU: provider.md
-
-  # Interim — setup.md and services.md are split into the audience guides by
-  # phases 4 and 5, and this section disappears when they are.
-  - Interim guides:
-      - Setup — development and production: setup.md
-      - Running as rootless services: services.md
+  - Run it for your institution: self-host.md
+  - Work on Sheshnag: develop.md
 
   - Reference:
+      - Configuration: reference/configuration.md
       - OpenAI compatibility: reference/openai-compatibility.md
       - Structured outputs: reference/structured-outputs.md
       - Model catalogue: reference/model-catalogue.md
@@ -76,5 +76,8 @@ validation:
     not_found: warn
     absolute_links: warn
     unrecognized_links: warn
+    # Guides cross-reference their own sections; a heading rename would
+    # otherwise break those silently.
+    anchors: warn
   nav:
     omitted_files: info

@@ -277,17 +277,20 @@ script, and the daemon source. Today neither is reachable without access to a
 private repository — the raw script URL returns `404` and an anonymous clone
 returns `401`. Verified 2026-08-26.
 
-Until that is closed, one of these has to be true:
+**Serve the installer and the source yourself.** This is the chosen direction,
+and it is the same shape as the decision to serve these docs from your own nginx
+at `/docs/` — see
+[Serve the documentation](self-host.md#serve-the-documentation). The script
+already expects it: its own usage line reads
+`curl -fsSL https://platform.example.com/install.sh | bash`, and it honours a
+`REPO_URL` environment variable, so pointing it at a source mirror you host is a
+one-variable change. Providers already have your URL; that is the one channel
+that reaches them.
 
-- **Serve the installer and the source yourself.** The script already expects
-  this — its own usage line reads
-  `curl -fsSL https://platform.example.com/install.sh | bash`. It also honours a
-  `REPO_URL` environment variable, so pointing it at a mirror you host is a
-  one-variable change.
-- **Give the provider repository access**, which only works for people inside
-  the organisation.
-- **Make the repository public**, which resolves this and the documentation
-  hosting question together.
+The alternatives are worse. Giving each provider repository access only works
+for people inside the organisation — which is not this audience. Making the
+repository public resolves it, but that is a much larger decision than
+onboarding one GPU.
 
-This is tracked as a blocker against the documentation plan; it is a
-distribution decision, not a docs one.
+This is tracked as a blocker against the documentation plan; the docs half is
+settled, the installer half is not yet implemented.

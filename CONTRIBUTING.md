@@ -125,7 +125,7 @@ bind a human typing the same command.
 
 ## Repository conventions
 
-- **Docs:** [`docs/setup.md`](docs/setup.md) is canonical for setup; component
+- **Docs:** [`docs/develop.md`](docs/develop.md) is canonical for local setup; component
   READMEs point at it rather than repeating it.
 - **Models:** every servable model is a pinned catalogue entry. See
   [`docs/reference/model-catalogue.md`](docs/reference/model-catalogue.md) — there is no

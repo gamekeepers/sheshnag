@@ -3,13 +3,13 @@
 ## Quick Start
 
 Setup, environment variables, and the three-terminal walkthrough live in
-**[docs/setup.md](../docs/setup.md)** — the canonical setup guide. The short
+**[docs/develop.md](../docs/develop.md)** — the canonical developer guide. The short
 version:
 
 ```bash
 # once per environment — the app creates its tables, not the database itself.
 # Needs no sudo, but does need an account allowed to create databases; see
-# docs/setup.md §0 for what to do when it isn't.
+# docs/self-host.md section 1 for what to do when it isn't.
 createdb -h HOST -p PORT -U USER sheshnag
 
 cd backend

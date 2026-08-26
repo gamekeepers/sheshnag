@@ -6,11 +6,12 @@
 # while files move between phases — from something to remember into something
 # the machine checks.
 #
-# There is deliberately NO deploy step. Where the built site gets published is
-# still open (D5a in the documentation plan): the repository is private, so
-# GitHub Pages needs Enterprise. Until that is answered the site is built to
-# prove it is correct, authored locally with `mkdocs serve`, and — when it
-# matters — served from the same nginx that docs/services.md already documents.
+# There is deliberately NO deploy step, and now there is a settled reason rather
+# than an open question. Each deployment builds and serves its own copy of the
+# docs at /docs/, from the same nginx that docs/self-host.md documents, so the
+# documentation always matches the code that deployment is running. There is no
+# single published site for CI to push to. See "Serve the documentation" in
+# docs/self-host.md.
 
 name: Docs
 
