@@ -11,6 +11,7 @@ Single source of truth for getting the platform running. Everything in this doc 
 | Node.js | 20+ (LTS) | Next.js 16 runtime; engine field is `>=18.18.0` |
 | npm | 10+ | Ships with Node.js 20+ |
 | Ollama **or** vLLM | any recent | Runtime for inference; Ollama is default for the daemon |
+| GPU tooling (daemon only) | `nvidia-smi` (NVIDIA) or `rocm-smi` (AMD, ROCm 5.x/6.x) | How the daemon inventories GPUs; see [GPU vendors](#gpu-vendors) |
 
 No sudo required. If you have no Postgres at all and want one locally, `docker run -d -e POSTGRES_USER=sheshnag -e POSTGRES_PASSWORD=sheshnag -e POSTGRES_DB=sheshnag -p 5432:5432 postgres:16` gives you one; pick a free host port if 5432 is taken. Production and rootless service setup are covered in [docs/services.md](services.md).
 
@@ -145,6 +146,24 @@ python -m daemon.main \
 ```
 
 Or use the guided rootless installer: `scripts/install.sh` (no sudo; everything under `~/.gpu-daemon/`).
+
+#### GPU vendors
+
+The daemon inventories GPUs at registration and reports utilisation on every
+heartbeat by shelling out to the vendor tool on `PATH`. A machine with neither
+tool registers with **zero GPUs** and is never scheduled work.
+
+| Vendor | Tool probed | Registration fields | Runtime notes |
+|---|---|---|---|
+| NVIDIA | `nvidia-smi` | `vendor: nvidia`, `driver`, `cuda` | Ollama and vLLM both work out of the box |
+| AMD | `rocm-smi` (ships with ROCm) | `vendor: amd`, `driver` (amdgpu), `rocm` (from `/opt/rocm/.info/version`) | Ollama supports ROCm natively. vLLM needs a **ROCm build** — the PyPI wheels are CUDA-only; the daemon warns at startup if `runtime: vllm` is selected on an AMD-only box |
+| Apple Silicon | — | not yet ([#53](https://github.com/gamekeepers/moonknight/issues/53)) | |
+
+Both tools may be present; the daemon reports every GPU it finds, each with
+its own `vendor`. Memory is summed across GPUs and utilisation averaged, so an
+AMD APU's small carve-out (e.g. 512 MB on a Cezanne iGPU) adds to the
+advertised total; if that skews scheduling, disable the iGPU in firmware or
+hide it with `ROCR_VISIBLE_DEVICES` for now.
 
 ## Environment variable reference
 

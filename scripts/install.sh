@@ -61,10 +61,18 @@ if [ -n "$missing" ]; then
 fi
 
 # GPU check — advisory only
+GPU_TOOLING=""
 if command -v nvidia-smi >/dev/null 2>&1; then
-    echo "NVIDIA GPU tooling detected."
-else
-    echo "WARNING: nvidia-smi not found. The daemon will run but report no GPU."
+    echo "NVIDIA GPU tooling detected (nvidia-smi)."
+    GPU_TOOLING="nvidia"
+fi
+if command -v rocm-smi >/dev/null 2>&1; then
+    ROCM_VER="$(sed -n '1s/^\([0-9.]*\).*/\1/p' /opt/rocm/.info/version 2>/dev/null)"
+    echo "AMD GPU tooling detected (rocm-smi${ROCM_VER:+, ROCm $ROCM_VER})."
+    GPU_TOOLING="${GPU_TOOLING:+$GPU_TOOLING+}amd"
+fi
+if [ -z "$GPU_TOOLING" ]; then
+    echo "WARNING: neither nvidia-smi nor rocm-smi found. The daemon will run but report no GPU."
 fi
 
 # 2. Ollama — user-local install when not already on PATH.

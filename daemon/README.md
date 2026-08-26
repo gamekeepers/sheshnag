@@ -155,7 +155,7 @@ daemon/
 │   ├── client.py            # BackendClient — all control-plane HTTP
 │   ├── worker.py            # Poll → download → execute → upload loop
 │   ├── heartbeat.py         # HeartbeatManager (activity + capability stats)
-│   ├── hardware.py          # GPU/CPU/RAM inspection (nvidia-smi etc.)
+│   ├── hardware.py          # GPU/CPU/RAM inspection (nvidia-smi, rocm-smi)
 │   ├── registration.py      # Registration + credential persistence
 │   ├── model_manager.py     # Ollama model pulls (on-the-fly downloads)
 │   ├── executor_factory.py  # runtime config → executor instance
