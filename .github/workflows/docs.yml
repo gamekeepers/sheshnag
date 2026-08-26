@@ -1,0 +1,65 @@
+# The repository's first CI workflow.
+#
+# It exists for one reason: `mkdocs build --strict` fails on a broken internal
+# link or a nav entry pointing at a file that does not exist. That turns the
+# documentation refactor's biggest risk — link rot across ~30 internal links
+# while files move between phases — from something to remember into something
+# the machine checks.
+#
+# There is deliberately NO deploy step. Where the built site gets published is
+# still open (D5a in the documentation plan): the repository is private, so
+# GitHub Pages needs Enterprise. Until that is answered the site is built to
+# prove it is correct, authored locally with `mkdocs serve`, and — when it
+# matters — served from the same nginx that docs/services.md already documents.
+
+name: Docs
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - '.github/workflows/docs.yml'
+  push:
+    branches: [develop, main]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - '.github/workflows/docs.yml'
+  # Lets a maintainer confirm the site still builds without pushing anything.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: mkdocs build --strict
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+
+      - name: Install docs dependencies
+        run: pip install -r docs/requirements.txt
+
+      - name: Build the site
+        run: mkdocs build --strict
+
+      # Kept for a reviewer who wants to read the rendered pages before
+      # approving, and for the day D5a is answered and this becomes a deploy.
+      - name: Upload the built site
+        uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: site/
+          retention-days: 14

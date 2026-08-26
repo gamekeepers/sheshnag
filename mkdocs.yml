@@ -1,0 +1,80 @@
+site_name: Sheshnag
+site_description: Distributed batch AI compute — pool idle GPUs, run OpenAI-style JSONL batches on them.
+repo_url: https://github.com/gamekeepers/sheshnag
+repo_name: gamekeepers/sheshnag
+edit_uri: edit/develop/docs/
+
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    # The two reasons the theme was chosen (D5): search, and copy buttons on
+    # code blocks — the provider install line and the batch-user snippets are
+    # meant to be copied, not retyped.
+    - content.code.copy
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+
+# The nav IS the audience routing (D5). A page that belongs to no audience is
+# visibly homeless, which is the point.
+#
+# Four entries are deliberately ABSENT because their files do not exist yet:
+#   Provider        -> docs/provider.md        (phase 3)
+#   Self-host       -> docs/self-host.md       (phase 4)
+#   Develop         -> docs/develop.md         (phase 5)
+#   Use Sheshnag    -> docs/using-sheshnag.md  (phase 7)
+# `mkdocs build --strict` fails on a nav entry pointing at a missing file, so
+# each is added by the phase that writes it. A gap is honest; a placeholder page
+# is a document that lies about existing.
+nav:
+  - Home: index.md
+
+  # Interim — setup.md and services.md are split into the audience guides by
+  # phases 4 and 5, and this section disappears when they are.
+  - Interim guides:
+      - Setup — development and production: setup.md
+      - Running as rootless services: services.md
+
+  - Reference:
+      - OpenAI compatibility: reference/openai-compatibility.md
+      - Structured outputs: reference/structured-outputs.md
+      - Model catalogue: reference/model-catalogue.md
+      - Data model: reference/data-model.md
+      - Google OAuth: reference/google-oauth.md
+      - Machine inspection: reference/machine-inspection.md
+
+  - Spec:
+      - v1 spec — intent, may lag implementation: spec/v1-spec.md
+
+validation:
+  # Broken internal links must fail the build — that is the whole reason the
+  # site arrives at phase 2 instead of phase 6.
+  links:
+    not_found: warn
+    absolute_links: warn
+    unrecognized_links: warn
+  nav:
+    omitted_files: info

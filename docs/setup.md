@@ -131,7 +131,7 @@ Open [http://localhost:3000](http://localhost:3000).
 ### 3. Daemon (on a GPU worker machine)
 
 To try the daemon without a real backend or real GPUs, use mock mode — the
-walkthrough lives in [`daemon/README.md`](../daemon/README.md#quick-start),
+walkthrough lives in [`daemon/README.md`](https://github.com/gamekeepers/sheshnag/blob/develop/daemon/README.md#quick-start),
 which is canonical for daemon-specific detail.
 
 For real usage you need an org worker API key from the dashboard:
@@ -216,4 +216,4 @@ Before deploying to production, address each item and note whether it requires a
 
 - **Rootless services (systemd --user)** — [docs/services.md](services.md)
 - **Google OAuth setup** — [docs/reference/google-oauth.md](reference/google-oauth.md)
-- **Component-specific details** — [`backend/README.md`](../backend/README.md), [`daemon/README.md`](../daemon/README.md)
+- **Component-specific details** — [`backend/README.md`](https://github.com/gamekeepers/sheshnag/blob/develop/backend/README.md), [`daemon/README.md`](https://github.com/gamekeepers/sheshnag/blob/develop/daemon/README.md)

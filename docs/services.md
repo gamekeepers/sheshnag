@@ -316,4 +316,4 @@ sudo loginctl enable-linger worker-user
 ## See also
 
 - **Setup guide** — [setup.md](setup.md) (prerequisites, env vars, quick start)
-- **Daemon README** — [`daemon/README.md`](../daemon/README.md) (architecture, config details, API contract)
+- **Daemon README** — [`daemon/README.md`](https://github.com/gamekeepers/sheshnag/blob/develop/daemon/README.md) (architecture, config details, API contract)
