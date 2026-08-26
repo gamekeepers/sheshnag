@@ -41,8 +41,7 @@ markdown_extensions:
 # The nav IS the audience routing (D5). A page that belongs to no audience is
 # visibly homeless, which is the point.
 #
-# Four entries are deliberately ABSENT because their files do not exist yet:
-#   Provider        -> docs/provider.md        (phase 3)
+# Three entries are still deliberately ABSENT because their files do not exist:
 #   Self-host       -> docs/self-host.md       (phase 4)
 #   Develop         -> docs/develop.md         (phase 5)
 #   Use Sheshnag    -> docs/using-sheshnag.md  (phase 7)
@@ -51,6 +50,7 @@ markdown_extensions:
 # is a document that lies about existing.
 nav:
   - Home: index.md
+  - Lend your GPU: provider.md
 
   # Interim — setup.md and services.md are split into the audience guides by
   # phases 4 and 5, and this section disappears when they are.

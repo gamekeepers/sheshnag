@@ -22,8 +22,7 @@ You want your machine to pick up jobs from a deployment someone else runs. One
 command, one key, about ten minutes — no repository clone, no Python, no
 database, no `sudo`.
 
-!!! info "Provider guide — being written"
-    Until it lands, the installer is `scripts/install.sh` in the repository.
+**→ [Lend your GPU to Sheshnag](provider.md)**
 
 ### I want to run Sheshnag for my institution
 
