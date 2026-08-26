@@ -21,7 +21,7 @@ Pick whichever describes you. Each guide reads front to back, once.
 
 Reference material — every endpoint, every environment variable, the data model,
 the model catalogue — is under [`docs/reference/`](docs/reference/). The
-[v1 spec](docs/spec/v1-spec.md) states intent and may lag the implementation.
+
 
 The docs are a MkDocs site; each deployment serves its own copy at `/docs/`. To
 read them locally, see [Documentation](#documentation) below.
@@ -33,7 +33,7 @@ read them locally, see [Documentation](#documentation) below.
 | Control plane (API) | [`backend/`](backend/) | FastAPI + Postgres | [docs/reference/api.md](docs/reference/api.md) |
 | Worker daemon | [`daemon/`](daemon/) | Python, Ollama/vLLM runtimes | [docs/reference/daemon.md](docs/reference/daemon.md) |
 | Dashboard (this app) | [`app/`](app/) | Next.js | below |
-| Spec & design docs | [`docs/`](docs/) | — | [docs/spec/v1-spec.md](docs/spec/v1-spec.md), [docs/reference/data-model.md](docs/reference/data-model.md) |
+| Spec & design docs | [`docs/`](docs/) | — | [docs/reference/](docs/reference/) |
 
 ## Quick start
 

@@ -1,5 +1,8 @@
 site_name: Sheshnag
 site_description: Distributed batch AI compute — pool idle GPUs, run OpenAI-style JSONL batches on them.
+# Canonical URLs and sitemap.xml. docs/CNAME carries the same domain into the
+# built site so GitHub Pages keeps it across deploys.
+site_url: https://sheshnag.io/
 repo_url: https://github.com/gamekeepers/sheshnag
 repo_name: gamekeepers/sheshnag
 edit_uri: edit/develop/docs/
@@ -78,8 +81,6 @@ nav:
       - Google OAuth: reference/google-oauth.md
       - Machine inspection: reference/machine-inspection.md
 
-  - Spec:
-      - v1 spec — intent, may lag implementation: spec/v1-spec.md
 
 validation:
   # Broken internal links must fail the build — that is the whole reason the

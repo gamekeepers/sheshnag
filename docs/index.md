@@ -56,11 +56,9 @@ Look these up; do not read them front to back.
 | [Google OAuth](reference/google-oauth.md) | Configuring Google sign-in for a deployment |
 | [Machine inspection](reference/machine-inspection.md) | What the daemon detects about a host, and how |
 
-## Spec
-
-[v1 spec](spec/v1-spec.md) — **intent, not a description of what exists.** It
-states what Sheshnag is meant to be and may lag the implementation. Where the
-spec and the code disagree, the code is the fact and the spec is the bug.
+Every reference page is dated and verified against the code it describes. Where
+a document and the code disagree, the code is the fact and the document is the
+bug — please open an issue.
 
 ## Elsewhere in the repository
 

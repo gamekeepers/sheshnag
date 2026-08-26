@@ -1,17 +1,11 @@
-# The repository's first CI workflow.
+# Builds the documentation site and publishes it to sheshnag.io.
 #
-# It exists for one reason: `mkdocs build --strict` fails on a broken internal
-# link or a nav entry pointing at a file that does not exist. That turns the
-# documentation refactor's biggest risk — link rot across ~30 internal links
-# while files move between phases — from something to remember into something
-# the machine checks.
+# `mkdocs build --strict` fails on a broken internal link, a broken in-page
+# anchor, or a nav entry pointing at a file that does not exist. That turns the
+# documentation's biggest risk -- link rot as files move -- from something to
+# remember into something the machine checks, on every pull request.
 #
-# There is deliberately NO deploy step, and now there is a settled reason rather
-# than an open question. Each deployment builds and serves its own copy of the
-# docs at /docs/, from the same nginx that docs/self-host.md documents, so the
-# documentation always matches the code that deployment is running. There is no
-# single published site for CI to push to. See "Serve the documentation" in
-# docs/self-host.md.
+# Pull requests build only. Pushes to the default branch build and deploy.
 
 name: Docs
 
@@ -19,15 +13,17 @@ on:
   pull_request:
     paths:
       - 'docs/**'
+      - 'overrides/**'
       - 'mkdocs.yml'
       - '.github/workflows/docs.yml'
   push:
-    branches: [develop, main]
+    branches: [develop]
     paths:
       - 'docs/**'
+      - 'overrides/**'
       - 'mkdocs.yml'
       - '.github/workflows/docs.yml'
-  # Lets a maintainer confirm the site still builds without pushing anything.
+  # Lets a maintainer redeploy without pushing anything.
   workflow_dispatch:
 
 permissions:
@@ -56,11 +52,29 @@ jobs:
       - name: Build the site
         run: mkdocs build --strict
 
-      # Kept for a reviewer who wants to read the rendered pages before
-      # approving, and for the day D5a is answered and this becomes a deploy.
+      # On a pull request this is the artifact a reviewer can download to read
+      # the rendered pages. On the default branch it is what deploys.
       - name: Upload the built site
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: site
           path: site/
-          retention-days: 14
+
+  deploy:
+    name: Deploy to sheshnag.io
+    # Only from the default branch -- a pull request must never publish.
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write        # to publish to GitHub Pages
+      id-token: write     # for the deployment's OIDC token
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Publish
+        id: deployment
+        uses: actions/deploy-pages@v4

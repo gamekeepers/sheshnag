@@ -48,16 +48,9 @@ You can stop lending at any time with one command — see
 | **The platform URL** | From whoever runs the deployment, e.g. `https://sheshnag.example.edu`. |
 | **A worker key** (`gk-…`) | See below. |
 
-!!! warning "Right now this needs repository access"
-    The installer downloads itself from a URL and then clones this repository to
-    fetch the daemon code. **The repository is private**, so both steps fail for
-    anyone outside the organisation — the install URL returns `404` and the
-    clone returns `401`.
-
-    Until that is resolved you need either a GitHub account with access to
-    `gamekeepers/sheshnag`, or the operator has to hand you the daemon another
-    way. If you are the operator reading this, see
-    [Making this work for outside providers](#making-this-work-for-outside-providers).
+Nothing else — no GitHub account, no clone, no permissions from anyone. Sheshnag
+is open source under the Apache License 2.0, so the installer and the daemon
+source are public.
 
 ---
 
@@ -83,11 +76,16 @@ anyone holding it can register workers into your organisation.
 One command, run as your ordinary user:
 
 ```bash
-curl -fsSL https://<your-platform-host>/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gamekeepers/sheshnag/develop/scripts/install.sh | bash
 ```
 
-Ask the operator for the exact URL — it is served by their deployment, not by
-GitHub.
+Some deployments serve their own copy at `https://<their-host>/install.sh` — if
+the operator gave you a URL, use theirs. Both fetch the same script.
+
+!!! tip "Read it first if you like"
+    Piping a script into `bash` deserves scepticism. Drop the `| bash` to read
+    it — it is about 150 lines, installs only under `~/.gpu-daemon/`, and exits
+    if you run it as root.
 
 It asks three questions:
 
@@ -268,29 +266,25 @@ was ever put there.
 
 ---
 
-## Making this work for outside providers
+## Serving the installer yourself
 
 *For operators, not providers.*
 
-The install flow above assumes a provider can fetch two things: the installer
-script, and the daemon source. Today neither is reachable without access to a
-private repository — the raw script URL returns `404` and an anonymous clone
-returns `401`. Verified 2026-08-26.
+You do not have to. Sheshnag is public, so the command in
+[Install](#2-install) works for anyone, and most operators can simply hand a
+provider that line plus a key.
 
-**Serve the installer and the source yourself.** This is the chosen direction,
-and it is the same shape as the decision to serve these docs from your own nginx
-at `/docs/` — see
-[Serve the documentation](self-host.md#serve-the-documentation). The script
-already expects it: its own usage line reads
-`curl -fsSL https://platform.example.com/install.sh | bash`, and it honours a
-`REPO_URL` environment variable, so pointing it at a source mirror you host is a
-one-variable change. Providers already have your URL; that is the one channel
-that reaches them.
+Two reasons you might still host your own copy:
 
-The alternatives are worse. Giving each provider repository access only works
-for people inside the organisation — which is not this audience. Making the
-repository public resolves it, but that is a much larger decision than
-onboarding one GPU.
+- **You want providers pinned to a version you have tested**, rather than to
+  whatever is on `develop` the day they install.
+- **Your providers are on a network that cannot reach GitHub**, which is common
+  enough on institutional machines.
 
-This is tracked as a blocker against the documentation plan; the docs half is
-settled, the installer half is not yet implemented.
+Both are the same fix: serve the script from the host that already serves the
+dashboard, next to the docs at `/docs/` — see
+[Serve the documentation](self-host.md#serve-the-documentation). The installer
+expects this; its own usage line reads
+`curl -fsSL https://platform.example.com/install.sh | bash`. To pin the source
+as well, set `REPO_URL` to your mirror and, if you want a fixed version, a tag
+rather than a branch.
