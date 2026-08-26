@@ -10,10 +10,12 @@ Before running any of these:
 
 1. **Clone the repo** (or have `scripts/install.sh` clone it for you):
    ```bash
-   git clone https://github.com/gamekeepers/moonknight.git ~/.sheshnag
+   git clone https://github.com/gamekeepers/sheshnag.git ~/.sheshnag
    ```
-   The remote is still named `moonknight` — the repository name lags the
-   product rename to Sheshnag. This is not a typo; clone it as shown.
+   The repository was renamed `moonknight` → `sheshnag`. GitHub redirects the
+   old URL, so existing clones keep working, but new clones should use the name
+   above. Update an old clone with
+   `git remote set-url origin https://github.com/gamekeepers/sheshnag.git`.
 2. **Environment files ready** — copy and edit from `.env.example`:
    ```bash
    cp .env.example .env.local              # frontend
@@ -38,6 +40,8 @@ sudo loginctl enable-linger "$(whoami)"
 ```
 
 Without linger the services stop when your session ends. They still work fine for interactive development.
+
+See [Running on startup](#4-running-on-startup) below for the full boot checklist.
 
 ## 1. Daemon as user-level service
 
@@ -180,6 +184,75 @@ The unit assumes:
 **Rebuild after env changes:** whenever you edit `.env.local`, restart the service to trigger a fresh build:
 ```bash
 systemctl --user restart sheshnag-frontend
+```
+
+## 4. Running on startup
+
+Two things have to be true for a unit to come up on boot:
+
+1. **The unit is enabled** — `systemctl --user enable <unit>` links it into
+   `default.target`, which every unit in this repo declares under `[Install]`.
+2. **Linger is on for your user** — without it, your user's systemd instance is
+   only started when you log in, so an enabled unit still waits for a login.
+
+Enable everything you intend to run at boot, then turn on linger:
+
+```bash
+loginctl enable-linger "$USER"
+
+systemctl --user daemon-reload
+systemctl --user enable ollama gpu-daemon          # worker machine
+systemctl --user enable sheshnag-backend sheshnag-frontend   # control plane
+```
+
+Use `enable --now` instead of `enable` to start the units in the same command
+rather than issuing a separate `start`.
+
+Ordering is already encoded in the units — `gpu-daemon` declares
+`After=ollama.service` and `sheshnag-frontend` declares
+`After=sheshnag-backend.service` — so you don't need to sequence the enables.
+Note that `After=` only orders startup; it does not pull in a unit you forgot to
+enable.
+
+### Verify
+
+Confirm linger is on and each unit is enabled:
+
+```bash
+loginctl show-user "$USER" --property=Linger    # expect Linger=yes
+systemctl --user is-enabled gpu-daemon sheshnag-backend sheshnag-frontend
+systemctl --user list-unit-files --state=enabled
+```
+
+The real test is a reboot. Afterwards, without logging in interactively:
+
+```bash
+systemctl --user status gpu-daemon sheshnag-backend sheshnag-frontend
+```
+
+Note that `sheshnag-frontend` runs `next build` in `ExecStartPre`, so it can sit
+in `activating` for several minutes after boot before it reports `active` — that
+is expected, and `TimeoutStartSec=900` in the unit allows for it.
+
+### Troubleshooting boot-time starts
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Unit only runs while you're logged in | Linger not enabled | `sudo loginctl enable-linger "$(whoami)"` |
+| `is-enabled` reports `disabled` | Never enabled, or unit copied after the last `enable` | `systemctl --user enable <unit>` |
+| Unit not found after copying it in | systemd hasn't rescanned unit files | `systemctl --user daemon-reload` |
+| Starts but immediately fails at boot | Env file or venv path wrong, or a dependency (network, DB) not up yet | `journalctl --user -u <unit> -b` |
+
+`journalctl --user -u <unit> -b` shows logs from the current boot only, which is
+the quickest way to see why something failed to come up.
+
+### Disabling startup
+
+To stop a service from starting at boot while keeping it installed:
+
+```bash
+systemctl --user disable <unit>       # leave it running for now
+systemctl --user disable --now <unit> # stop it as well
 ```
 
 ## Admin appendix (requires sudo)

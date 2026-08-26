@@ -108,7 +108,7 @@ free-form or raw runtime string. Users select from a curated catalogue
   **digest**; the tag alone never establishes identity.
 - The raw runtime string lives only in `runtime_model_id` (internal); the
   scheduler hands it to the daemon at poll time. See §8.3 and
-  `docs/model_catalogue.md`.
+  [`docs/reference/model-catalogue.md`](../reference/model-catalogue.md).
 - **Onboarding** a new model = adding a pinned catalogue entry (curated /
   org-private / request→promote) — never an "run an uncatalogued model" path.
 
@@ -429,7 +429,7 @@ even though V1 scheduling/execution only targets vLLM.
 > `size_bytes`) was moved to the **`model_catalog`** table (curated once,
 > not replicated per worker). `body.model` is a `model_catalog` id;
 > registrations feed availability, matched to catalogue entries by
-> `digest`. See §5.2 and `docs/model_catalogue.md`.
+> `digest`. See §5.2 and [`docs/reference/model-catalogue.md`](../reference/model-catalogue.md).
 
 Each runtime hosts one or more models with capability metadata used by
 the scheduler for matching:

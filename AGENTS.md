@@ -4,8 +4,9 @@ Instructions for any coding agent working in this repo (Claude Code, Codex,
 Cursor, …). Humans: the same process rules apply — see
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-> The repository is still named `moonknight`; the product was renamed to
-> **Sheshnag**. Both names appear in older docs. Use Sheshnag in anything new.
+> The repository and the product are both named **Sheshnag**. `moonknight` is
+> the old name and still appears in some older prose; GitHub redirects the old
+> URL. Use Sheshnag in anything new, and fix stale mentions as you pass them.
 
 ---
 
@@ -134,5 +135,5 @@ Two traps:
 Every servable model is a **pinned catalogue entry** (weights + quantization +
 runtime), matched to workers by digest. Identity is curated; availability is
 derived from worker registrations. There is deliberately **no path to run an
-uncatalogued model**. See [`docs/model_catalogue.md`](docs/model_catalogue.md)
+uncatalogued model**. See [`docs/reference/model-catalogue.md`](docs/reference/model-catalogue.md)
 before changing anything in this area.

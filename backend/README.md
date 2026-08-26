@@ -258,7 +258,7 @@ runtime tag. Each `model_catalog` row is **one pinned artifact** — weights +
 quantization + runtime — so a batch never silently swaps precision or
 runtime (reproducibility). The raw runtime string (`mistral:7b`, an HF repo
 id) lives only in `runtime_model_id`; the backend hands the daemon that at
-poll time. See **[docs/model_catalogue.md](../docs/model_catalogue.md)** for
+poll time. See **[docs/reference/model-catalogue.md](../docs/reference/model-catalogue.md)** for
 the full design, scheduling, and curation runbook.
 
 **`model_catalog` columns:** `id` (slug, = `body.model`), `display_name`,

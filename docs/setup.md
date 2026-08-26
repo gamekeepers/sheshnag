@@ -215,5 +215,5 @@ Before deploying to production, address each item and note whether it requires a
 ## See also
 
 - **Rootless services (systemd --user)** — [docs/services.md](services.md)
-- **Google OAuth setup** — [docs/google_oauth.md](google_oauth.md)
+- **Google OAuth setup** — [docs/reference/google-oauth.md](reference/google-oauth.md)
 - **Component-specific details** — [`backend/README.md`](../backend/README.md), [`daemon/README.md`](../daemon/README.md)

@@ -128,7 +128,7 @@ bind a human typing the same command.
 - **Docs:** [`docs/setup.md`](docs/setup.md) is canonical for setup; component
   READMEs point at it rather than repeating it.
 - **Models:** every servable model is a pinned catalogue entry. See
-  [`docs/model_catalogue.md`](docs/model_catalogue.md) — there is no
+  [`docs/reference/model-catalogue.md`](docs/reference/model-catalogue.md) — there is no
   "run an arbitrary model" path, by design.
 - **Secrets:** never commit `.env`. `backend/.env.example` documents every
   variable the backend reads; add to it when you add a variable.

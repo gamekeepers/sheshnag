@@ -139,4 +139,4 @@ onto a worker that lacks it — never run an arbitrary id.
 
 - Design/decisions (vault): *Sheshnag - Batch processing via Ollama runtime*,
   *Sheshnag - Digest-based model matching*.
-- Spec: v1-spec.md §5 (workloads) and §8.3 (model metadata).
+- Spec: [v1-spec.md](../spec/v1-spec.md) §5 (workloads) and §8.3 (model metadata).
