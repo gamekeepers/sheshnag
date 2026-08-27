@@ -30,6 +30,16 @@ export async function completeLogin(token, router, { requireSuperadmin = false, 
       full_name: me.full_name || fallbackName || fallbackEmail,
       platform_role: platformRole,
     }));
+
+    // The backend sets must_change_password on the seeded superadmin, which
+    // ships with a password published in the docs. Send those accounts to the
+    // change form instead of the portal; /dashboard and /admin re-check the
+    // same flag, so this cannot be stepped around by typing the URL.
+    if (me.must_change_password) {
+      router.push('/change-password');
+      return { ok: true };
+    }
+
     router.push(platformRole === 'superadmin' ? '/admin' : '/dashboard');
     return { ok: true };
   } catch {

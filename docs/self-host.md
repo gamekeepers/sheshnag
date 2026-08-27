@@ -160,12 +160,33 @@ Google sign-in has its own setup — see
 
 On first startup `Base.metadata.create_all()` creates every table and the
 model catalogue is seeded. A default superadmin is created too:
-`admin@platform.com` / `admin`. You will be asked to change the password on
-first login.
+`admin@platform.com` / `admin`.
 
-**Change that password immediately.** Until you do, anyone who can reach the
-dashboard has superadmin. The forced prompt on first login is the only thing
-standing in front of it.
+**Change that password immediately.** It is published in this documentation, so
+until you change it anyone who can reach your dashboard has superadmin.
+
+Signing in with it routes you straight to a change-password screen, and the
+dashboard and admin portals both re-check the flag, so the screen cannot be
+stepped around by typing a URL. Afterwards you can change it again whenever you
+like from **Settings → Password**.
+
+!!! warning "The forced screen is enforced in the browser, not the API"
+    `must_change_password` gates the web portals. It does **not** make the
+    backend refuse other calls, so anything talking to the API directly can
+    still authenticate with the default credentials until you replace them.
+    Treat the screen as a reminder, not a lock.
+
+Note that the seeded account's address does not exist, so the
+[password reset](reference/api.md) flow cannot help it — no mail can be
+delivered to `admin@platform.com`. The change-password screen and the Settings
+card are its only routes, which is another reason to do this on first login
+rather than later.
+
+The seed is also matched **by that exact address** (`main.py`), so do not simply
+rename the row in the database: the lookup would miss and a fresh
+`admin@platform.com` / `admin` superadmin would be recreated on the next
+restart. To run day to day under a real address, leave the seeded row in place
+with a long password and add a second superadmin alongside it.
 
 ## 4. Run it as services
 
