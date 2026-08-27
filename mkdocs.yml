@@ -1,0 +1,98 @@
+site_name: Sheshnag
+site_description: Distributed batch AI compute — pool idle GPUs, run OpenAI-style JSONL batches on them.
+# Canonical URLs and sitemap.xml. docs/CNAME carries the same domain into the
+# built site so GitHub Pages keeps it across deploys.
+site_url: https://sheshnag.io/
+repo_url: https://github.com/gamekeepers/sheshnag
+repo_name: gamekeepers/sheshnag
+edit_uri: edit/develop/docs/
+
+docs_dir: docs
+
+theme:
+  name: material
+  # overrides/home.html is the landing page, ported from app/page.js so the docs
+  # and the product look like one thing. docs/index.md selects it.
+  custom_dir: overrides
+  font:
+    text: Inter
+    code: Roboto Mono
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    # The two reasons the theme was chosen (D5): search, and copy buttons on
+    # code blocks — the provider install line and the batch-user snippets are
+    # meant to be copied, not retyped.
+    - content.code.copy
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - search.highlight
+    - toc.follow
+
+extra_css:
+  - stylesheets/extra.css
+  - stylesheets/home.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+
+# The nav IS the audience routing (D5). A page that belongs to no audience is
+# visibly homeless, which is the point.
+#
+# All four audiences now have a guide, and the nav has no holes left. The interim
+# section is gone too: services.md was consumed by self-host.md in phase 4, and
+# setup.md was split three ways in phase 5 — localhost into develop.md,
+# production into self-host.md, environment variables into
+# reference/configuration.md.
+#
+# The order is deliberate: the two audiences who arrive from outside the team
+# come first.
+nav:
+  - Home: index.md
+  - Lend your GPU: provider.md
+  - Host your deployment: self-host.md
+  - Change the code: develop.md
+  # The contribution process lives at the repository root and is linked, not
+  # copied — one source of truth, per §5a of the documentation plan.
+  - Contribute: https://github.com/gamekeepers/sheshnag/blob/develop/CONTRIBUTING.md
+
+  - Reference:
+      - API: reference/api.md
+      - Configuration: reference/configuration.md
+      - Daemon internals: reference/daemon.md
+      - OpenAI compatibility: reference/openai-compatibility.md
+      - Structured outputs: reference/structured-outputs.md
+      - Model catalogue: reference/model-catalogue.md
+      - Data model: reference/data-model.md
+      - Google OAuth: reference/google-oauth.md
+      - Machine inspection: reference/machine-inspection.md
+
+
+validation:
+  # Broken internal links must fail the build — that is the whole reason the
+  # site arrives at phase 2 instead of phase 6.
+  links:
+    not_found: warn
+    absolute_links: warn
+    unrecognized_links: warn
+    # Guides cross-reference their own sections; a heading rename would
+    # otherwise break those silently.
+    anchors: warn
+  nav:
+    omitted_files: info

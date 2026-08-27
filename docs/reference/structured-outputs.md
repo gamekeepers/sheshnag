@@ -1,5 +1,7 @@
 # Structured Outputs (JSON Mode) on Ollama Runtime
 
+*Last updated 2026-08-04. Moved into its current location on 2026-08-26 and **not** re-verified against code since.*
+
 The Sheshnag platform supports schema-constrained JSON outputs (structured outputs) on the Ollama runtime (Ollama version >= 0.5.0). This capability enforces that the model responses conform strictly to JSON structures, eliminating prose wrapping or formatting errors.
 
 ---

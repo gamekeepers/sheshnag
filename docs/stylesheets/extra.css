@@ -1,0 +1,75 @@
+/* Site-wide palette and type, matched to the landing page in app/page.js.
+
+   Material's stock indigo is the single biggest reason a MkDocs site reads as
+   "a MkDocs site". Overriding the primary colour and putting headings in the
+   same serif the product uses does most of the work of making this look like
+   Sheshnag rather than like a theme. */
+
+:root {
+  --md-primary-fg-color:        #16182d;   /* ink */
+  --md-primary-fg-color--light: #2b2e4a;
+  --md-primary-fg-color--dark:  #0e0f1c;
+  --md-accent-fg-color:         #4a4fa3;   /* the hero's eyebrow blue */
+
+  --sn-serif: Georgia, "Times New Roman", serif;
+}
+
+[data-md-color-scheme="default"] {
+  --md-default-bg-color: #faf8f5;           /* paper, not white */
+  --md-typeset-a-color:  #4a4fa3;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #1c1d2a;
+  --md-accent-fg-color:  #a8abe8;
+  --md-typeset-a-color:  #a8abe8;
+}
+
+/* Headings in the product's serif. Body stays sans for readability at length —
+   the serif is a signature, not a reading face. */
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  font-family: var(--sn-serif);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+.md-typeset h1 {
+  color: var(--md-default-fg-color);
+  font-size: 2.1rem;
+}
+
+.md-typeset h2 { font-size: 1.5rem; }
+
+/* Tables carry a lot of this documentation — endpoint contracts, environment
+   variables, the status machine. Make them calm rather than boxy. */
+.md-typeset table:not([class]) {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 10px;
+  overflow: hidden;
+  font-size: .74rem;
+}
+
+.md-typeset table:not([class]) th {
+  background: var(--md-default-fg-color--lightest);
+  font-weight: 600;
+}
+
+/* The dated "verified against code" line every page carries. */
+.md-typeset h1 + p em {
+  color: var(--md-default-fg-color--light);
+  font-size: .78rem;
+}
+
+/* Admonitions inherit the accent rather than Material's defaults for note. */
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: 10px;
+  font-size: .76rem;
+}
+
+/* Slightly roomier code blocks — several guides are mostly commands. */
+.md-typeset pre > code {
+  border-radius: 10px;
+}

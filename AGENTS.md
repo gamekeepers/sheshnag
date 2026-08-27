@@ -4,8 +4,9 @@ Instructions for any coding agent working in this repo (Claude Code, Codex,
 Cursor, …). Humans: the same process rules apply — see
 [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-> The repository is still named `moonknight`; the product was renamed to
-> **Sheshnag**. Both names appear in older docs. Use Sheshnag in anything new.
+> The repository and the product are both named **Sheshnag**. `moonknight` is
+> the old name and still appears in some older prose; GitHub redirects the old
+> URL. Use Sheshnag in anything new, and fix stale mentions as you pass them.
 
 ---
 
@@ -36,103 +37,37 @@ signal the task needs a human, not a signal to find a way around the rule.
 
 ---
 
-## Architecture (3-service monorepo)
+## Where everything else lives
 
-| Directory | Service | Stack |
-|---|---|---|
-| Root (`app/`, `package.json`) | Next.js frontend | JS (no TS), React 19, Tailwind v4 |
-| `backend/` | FastAPI REST API + Postgres | Python, no Alembic |
-| `daemon/` | GPU worker daemon | Python 3.12+, polls backend for jobs, runs Ollama (default) or vLLM |
+This file used to carry the architecture, the commands, the test matrix and the
+per-component quirks. They now live in the documentation, which is built and
+link-checked in CI, so there is one copy rather than two that drift.
 
-Frontend reads `NEXT_PUBLIC_BACKEND_URL` (default `http://localhost:8000`).
-Copy `.env.example` → `.env` for the frontend and `backend/.env.example` →
-`backend/.env` for the backend.
+**Read [`docs/develop.md`](docs/develop.md) before your first change.** It has
+the three-service architecture, how to run each of them locally, mock mode for
+working without a GPU or a backend, the test commands and their traps, a manual
+end-to-end runbook, and the quirks that used to be listed here — no TypeScript
+on the frontend, `create_all()` never adding columns to an existing table,
+import-time work breaking pytest collection, the daemon's config precedence, and
+`OllamaExecutor._translate_request`'s hard whitelist.
 
-Canonical setup guide: [`docs/setup.md`](docs/setup.md). Running as rootless
-user services: [`docs/services.md`](docs/services.md).
-
-## Developer commands
-
-**Frontend:**
-```bash
-npm run dev           # http://localhost:3000
-npm run build
-npm run lint          # eslint (next/core-web-vitals)
-```
-
-**Backend:**
-```bash
-cd backend
-pip install -r requirements.txt
-python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
-# Swagger UI at http://localhost:8000/docs
-```
-
-**Daemon:**
-```bash
-cd daemon
-pip install -e ".[dev]"       # editable + test deps
-gpu-daemon --config config.yaml
-```
-
-To exercise the daemon without a real backend, run `python -m tests.mock_backend`
-in a separate terminal first.
-
-## Testing
-
-| Area | Command |
+| You need | Read |
 |---|---|
-| Backend | `cd backend && python -m pytest tests/ -q` — needs a Postgres at `TEST_DATABASE_URL` (see `tests/conftest.py`) |
-| Daemon | `cd daemon && python -m pytest tests/ -q` — needs `pip install -e ".[dev]"` |
-| Frontend | `npm run lint` — no test framework yet |
+| To change any code | [`docs/develop.md`](docs/develop.md) |
+| Every environment variable | [`docs/reference/configuration.md`](docs/reference/configuration.md) |
+| The API contract | [`docs/reference/api.md`](docs/reference/api.md) |
+| Model rules — there is **no path to run an uncatalogued model** | [`docs/reference/model-catalogue.md`](docs/reference/model-catalogue.md) |
+| The database shape | [`docs/reference/data-model.md`](docs/reference/data-model.md) |
+| To deploy it | [`docs/self-host.md`](docs/self-host.md) |
+| Process — branching, review, who merges | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 
-Two traps:
+Two things worth repeating here because they cost time and an agent will hit
+them before it opens the docs:
 
-- **`pytest-asyncio` is in the `[dev]` extra, not `daemon/requirements.txt`.**
-  Without it the async daemon tests fail to run rather than passing — and those
-  are the ones covering the interesting logic.
-- **`backend/.gitignore` ignores `test_*.py`.** New backend tests need
-  `git add -f` or they silently never get committed.
+- **The backend test suite drops every table** in `TEST_DATABASE_URL` at session
+  start and end. Never point it at `DATABASE_URL` or any database that matters.
+- **`backend/.gitignore` ignores `test_*.py`.** A new backend test needs
+  `git add -f` or it is silently never committed.
 
-## Frontend quirks
-
-- **No TypeScript** — JS throughout (see `jsconfig.json`). Path alias `@/*`
-  maps to repo root (`./*`), not `app/`.
-- Tailwind v4 via `@tailwindcss/postcss` (no `tailwind.config`). CSS lives in
-  `app/globals.css`.
-
-## Backend quirks
-
-- **Postgres via `DATABASE_URL`**, schema auto-created via
-  `Base.metadata.create_all()`. No Alembic. To reset, drop and recreate the
-  database and restart.
-- **`create_all()` never adds columns to an existing table.** A new column on
-  an existing model appears on fresh databases only — everyone else needs to
-  recreate theirs, or add the column by hand.
-- **Do work at call time, not import time.** pytest imports every module during
-  collection, so a module-scope `raise` or config read takes out the whole
-  suite rather than one test. This has happened.
-- Default admin on first startup: `admin@platform.com` / `admin` (forced
-  password change).
-- Auth: JWT for dashboard users, `gk-*` API keys for workers/programmatic
-  access. Router prefixes are `/v1/*` and `/workers/*`.
-
-## Daemon quirks
-
-- Config precedence: CLI args > env (`DAEMON_*`) > `config.yaml` > defaults.
-  The mapping is `_ENV_MAP` in `daemon/daemon/config.py`.
-- Executors use the Strategy pattern — subclass
-  `daemon/daemon/executors/base.py` to add a runtime without touching
-  `worker.py`. Dependencies are constructor-injected specifically so tests can
-  substitute them; keep it that way.
-- `OllamaExecutor._translate_request` rebuilds the request from a **hard
-  whitelist**. Any OpenAI parameter not named there is dropped silently — be
-  deliberate when adding to it.
-
-## Models
-
-Every servable model is a **pinned catalogue entry** (weights + quantization +
-runtime), matched to workers by digest. Identity is curated; availability is
-derived from worker registrations. There is deliberately **no path to run an
-uncatalogued model**. See [`docs/model_catalogue.md`](docs/model_catalogue.md)
-before changing anything in this area.
+If you change behaviour these documents describe, update them in the same PR and
+run `mkdocs build --strict` — it fails on broken links and anchors.

@@ -1,5 +1,7 @@
 # Database Design Rationale
 
+*Last updated 2026-08-18. Moved into its current location on 2026-08-26 and **not** re-verified against code since.*
+
 > **Implementation note (2026-07-17):** the Worker Runtimes / Runtime
 > Models / Worker GPUs entities described below are **implemented** as
 > the `worker_runtimes`, `runtime_models`, and `worker_gpus` tables
