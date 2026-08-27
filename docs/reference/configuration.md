@@ -8,7 +8,7 @@ audited on 2026-08-02.*
 
 This is a reference — look things up here. For how to configure a real
 deployment in the right order, see
-[Run it for your institution](../self-host.md#2-configure).
+[Host your deployment](../self-host.md#2-configure).
 
 Every variable the platform reads at runtime. Defaults are pulled from live code.
 

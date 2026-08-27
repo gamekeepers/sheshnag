@@ -39,7 +39,7 @@ and claimed a job.
 | **Administrator help, once** | For nginx, the certificate, and `loginctl enable-linger`. Nothing else needs root. |
 
 If you only want to try it on a laptop, you do not need this guide — the
-localhost path in [Work on Sheshnag](develop.md) is shorter and skips TLS entirely.
+localhost path in [Change the code](develop.md) is shorter and skips TLS entirely.
 
 ## 1. Create the database
 
@@ -647,7 +647,7 @@ Once it is up, hand people deep links rather than the repository:
 
 **The dashboard already links here.** Each portal carries a **Documentation**
 entry in its sidebar footer, pointed at the guide for that audience — the user
-portal at [Submit batches](using-sheshnag.md), the provider portal at
+portal at [Run your prompts](using-sheshnag.md), the provider portal at
 [Lend your GPU](provider.md), the admin portal at this page — and the worker-key
 screen deep-links to the install command at the moment an operator is handing a
 key over. All of them resolve against `/docs/` on your own host, so building the
@@ -755,5 +755,5 @@ Before deploying to production, address each item and note whether it requires a
 - [Model catalogue](reference/model-catalogue.md) — curation and pinning
 - [Google OAuth](reference/google-oauth.md) — sign-in setup
 - [Data model](reference/data-model.md) — what the database holds
-- [Work on Sheshnag](develop.md) — the development path
+- [Change the code](develop.md) — the development path
 - [Configuration](reference/configuration.md) — every environment variable

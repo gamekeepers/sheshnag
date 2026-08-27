@@ -315,5 +315,5 @@ This is the only part that needs Ollama running and a **catalogued** model.
 - [OpenAI compatibility](reference/openai-compatibility.md) — which parameters are honoured, ignored or rejected
 - [Structured outputs](reference/structured-outputs.md)
 - [Machine inspection](reference/machine-inspection.md) — what the daemon detects about a host
-- [Run it for your institution](self-host.md) — the production path
+- [Host your deployment](self-host.md) — the production path
 - [Lend your GPU](provider.md) — the provider path

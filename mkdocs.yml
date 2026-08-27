@@ -65,10 +65,12 @@ markdown_extensions:
 # come first.
 nav:
   - Home: index.md
-  - Submit batches: using-sheshnag.md
   - Lend your GPU: provider.md
-  - Run it for your institution: self-host.md
-  - Work on Sheshnag: develop.md
+  - Host your deployment: self-host.md
+  - Change the code: develop.md
+  # The contribution process lives at the repository root and is linked, not
+  # copied — one source of truth, per §5a of the documentation plan.
+  - Contribute: https://github.com/gamekeepers/sheshnag/blob/develop/CONTRIBUTING.md
 
   - Reference:
       - API: reference/api.md
