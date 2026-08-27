@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import SheshnagLogo from '../components/SheshnagLogo';
 import PortalSwitch from '../components/PortalSwitch';
+import DocsLink from '../components/DocsLink';
 import '../dashboard/dashboard.css';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
@@ -336,6 +337,7 @@ export default function AdminPage() {
 
         <div className="sidebar-bottom">
           <PortalSwitch to="user" />
+          <DocsLink page="self-host/" />
           <div className="profile-card">
             <div className="avatar"></div>
             <div className="profile-meta">

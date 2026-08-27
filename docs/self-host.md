@@ -443,6 +443,12 @@ server {
 
     # This documentation, built as static HTML and served alongside the
     # product. See "Serve the documentation" below.
+    #
+    # The exact-match redirect matters: `location /docs/` does not match a
+    # bare `/docs`, which would otherwise fall through to the frontend and
+    # 404 — the one URL people type by hand.
+    location = /docs { return 301 /docs/; }
+
     location /docs/ {
         alias /home/sheshnag/.sheshnag/site/;
         index index.html;
@@ -496,6 +502,28 @@ the usual reason a fresh `/docs/` returns 403.
 Once it is up, hand people deep links rather than the repository:
 `https://your-host/docs/provider/` is the provider guide,
 `https://your-host/docs/` is the audience fork.
+
+**The dashboard already links here.** Each portal carries a **Documentation**
+entry in its sidebar footer, pointed at the guide for that audience — the user
+portal at [Submit batches](using-sheshnag.md), the provider portal at
+[Lend your GPU](provider.md), the admin portal at this page — and the worker-key
+screen deep-links to the install command at the moment an operator is handing a
+key over. All of them resolve against `/docs/` on your own host, so building the
+site is what makes them work; skip the build and they lead to a 404.
+
+If you would rather not build the site, point the frontend elsewhere instead of
+leaving the links broken:
+
+```bash
+# in your frontend .env.local, then rebuild
+NEXT_PUBLIC_DOCS_URL=https://sheshnag.io/
+```
+
+That is a deliberate trade: the links work immediately, but they describe the
+newest published version rather than the one you deployed. See
+[`NEXT_PUBLIC_DOCS_URL`](reference/configuration.md) — like every
+`NEXT_PUBLIC_*` value it is baked in at build time, so changing it means
+`npm run build`, not a restart.
 
 ### HTTPS (certbot)
 
