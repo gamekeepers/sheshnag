@@ -3,12 +3,6 @@ const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 /**
  * POST /v1/auth/change-password — the authenticated password change.
  *
- * Distinct from the forgot/reset pair: this one proves identity with the
- * current password rather than an emailed token, so it works for accounts
- * whose address cannot receive mail. The seeded superadmin
- * (admin@platform.com) is exactly that case, and until this was wired up the
- * endpoint had no caller at all.
- *
  * Shared by the forced-change page and the Settings card. Only the request
  * lives here — each surface renders in its own idiom.
  *
