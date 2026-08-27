@@ -160,12 +160,11 @@ Google sign-in has its own setup — see
 
 On first startup `Base.metadata.create_all()` creates every table and the
 model catalogue is seeded. A default superadmin is created too:
-`admin@platform.com` / `admin`. You will be asked to change the password on
-first login.
+`admin@platform.com` / `admin`.
 
-**Change that password immediately.** Until you do, anyone who can reach the
-dashboard has superadmin. The forced prompt on first login is the only thing
-standing in front of it.
+**Change that password immediately.** It is published in this documentation, so
+until you change it anyone who can reach your dashboard has superadmin.
+
 
 ## 4. Run it as services
 

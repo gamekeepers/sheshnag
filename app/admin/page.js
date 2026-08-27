@@ -174,15 +174,23 @@ export default function AdminPage() {
   const [domainBusy,    setDomainBusy]    = useState(false);
 
   /* ── load admin profile ── */
-  async function loadAdminProfile() {
+  // useCallback like the other loaders below: it now closes over `router` for
+  // the must_change_password redirect, so the effect needs a stable identity.
+  const loadAdminProfile = useCallback(async () => {
     try {
       const res = await fetch(`${BACKEND}/v1/auth/me`, { headers: authHeaders() });
       if (res.ok) {
         const d = await res.json();
+        // The seeded superadmin lands here first and is exactly the account
+        // that ships with a published password — send it to the change form.
+        if (d.must_change_password) {
+          router.replace('/change-password');
+          return;
+        }
         setAdminUser({ name: d.full_name || d.email || 'Admin', platform_role: d.platform_role || 'superadmin' });
       }
     } catch {}
-  }
+  }, [router]);
 
   /* ── load all jobs ── */
   const loadJobs = useCallback(async () => {
@@ -290,7 +298,7 @@ export default function AdminPage() {
     loadUsers();
     loadWorkers();
     loadDomains();
-  }, [router, loadJobs, loadUsers, loadWorkers, loadDomains]);
+  }, [router, loadAdminProfile, loadJobs, loadUsers, loadWorkers, loadDomains]);
 
   function handleLogout() {
     localStorage.removeItem('mk_token');
