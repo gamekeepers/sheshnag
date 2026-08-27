@@ -1,6 +1,9 @@
 # systemd USER unit for the Ollama runtime the daemon executes against.
 # Uses the user-local binary installed by scripts/install.sh when present
-# (PATH puts ~/.gpu-daemon/bin first), else a system-wide ollama.
+# (PATH puts the install directory's bin/ first), else a system-wide ollama.
+#
+# install.sh rewrites the paths below when installing under an INSTANCE, so
+# do not assume this file is what ends up in ~/.config/systemd/user/.
 [Unit]
 Description=Ollama inference runtime (user)
 After=network-online.target
