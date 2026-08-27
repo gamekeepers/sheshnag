@@ -140,11 +140,12 @@ class BackendClient:
             "gpus": [
                 {
                     "index": gpu.index,
-                    "vendor": "nvidia",
+                    "vendor": gpu.vendor,
                     "name": gpu.name,
                     "vram_gb": gpu.vram_gb,
-                    "driver": gpu.driver_version,
-                    "cuda": gpu.cuda_version,
+                    "driver": gpu.driver_version or None,
+                    "cuda": gpu.cuda_version or None,
+                    "rocm": gpu.rocm_version or None,
                 }
                 for gpu in (worker_info.hardware.gpus if worker_info.hardware else [])
             ],
