@@ -6,8 +6,9 @@ Sheshnag deployment has asked you to contribute it. About ten minutes.
 *Verified against code: 2026-08-26.*
 
 You do **not** need to clone this repository, know Python, install a database, or
-have `sudo`. Everything lands under `~/.gpu-daemon/` in your own home directory,
-and the installer refuses to run as root.
+have `sudo`. Everything lands in one directory in your own home — `~/.gpu-daemon/`,
+or a host-specific one where several machines share a home — and the installer
+refuses to run as root.
 
 ---
 
@@ -23,7 +24,8 @@ uploads the results, and goes back to waiting.
 - Uses your GPU when a job is running, and nothing when idle.
 - Downloads model weights on demand — these can be large, and they land under
   your home directory.
-- Runs two background services under your own user account.
+- Runs one or two background services under your own user account — the daemon,
+  and Ollama as well if you did not already have it.
 
 **What it does not do**
 
@@ -87,10 +89,12 @@ the operator gave you a URL, use theirs. Both fetch the same script.
     it — it is about 150 lines, installs only under `~/.gpu-daemon/`, and exits
     if you run it as root.
 
-It asks three questions:
+It asks four questions, all at the start, so nothing waits on you once the
+install is running:
 
 | Prompt | Answer |
 |---|---|
+| Install directory | Press Enter — the default is `~/.gpu-daemon`, or a host-specific one if your home looks shared |
 | Platform URL | The deployment's address, e.g. `https://sheshnag.example.edu` |
 | Org worker API key | The `gk-…` key from step 1 |
 | Worker ID | Press Enter — the control plane assigns one |
@@ -108,15 +112,16 @@ Worth knowing, because it is your machine:
 
 1. **Checks prerequisites** — `python3` (3.10+), `git`, `curl`. Reports
    `nvidia-smi` as a warning only, never a failure.
-2. **Installs Ollama** into `~/.gpu-daemon/` if it is not already on your
+2. **Asks its questions and writes `~/.gpu-daemon/config.yaml`**, `chmod 600`
+   because it contains the key. Everything interactive happens here, before the
+   slow steps, so you are not called back to a prompt ten minutes later.
+3. **Installs Ollama** into `~/.gpu-daemon/` if it is not already on your
    `PATH` — a user-local copy, not a system package.
-3. **Writes `~/.gpu-daemon/config.yaml`** with your answers, `chmod 600` because
-   it contains the key.
 4. **Clones the daemon code** into `~/.gpu-daemon/src`.
 5. **Creates a Python virtual environment** at `~/.gpu-daemon/venv` and installs
    the daemon's dependencies into it. Nothing touches your system Python.
 6. **Registers user services**, starts them, and enables *linger* so they
-   survive logout. Always `gpu-daemon`; plus `ollama` **only** when step 2
+   survive logout. Always `gpu-daemon`; plus `ollama` **only** when step 3
    installed a user-local copy. If your machine already had Ollama, the
    installer leaves it alone rather than starting a second copy to fight it
    for port 11434.
@@ -132,8 +137,57 @@ Everything it creates lives in one directory:
 ├── venv/         its Python environment
 ├── config.yaml   your settings — mode 600, holds the key
 ├── credentials   the key plus the worker id the backend assigned
+├── installed-by  which machine owns this directory
 └── jobs/         job inputs and outputs, transient
 ```
+
+### Several machines, one home directory
+
+Clusters commonly mount the same home directory on every node. An install
+belongs to one machine, so on a shared home each machine takes its own
+directory and its own service name.
+
+The installer picks the right one for you. On a local disk it uses
+`~/.gpu-daemon/`. On a networked filesystem — NFS, CIFS, Lustre, GPFS, BeeGFS,
+Ceph — it offers a host-specific directory instead, and Enter accepts it:
+
+```
+[2/6] Configuration
+Your home directory is on nfs, so it is probably shared between machines.
+Install directory [~/.gpu-daemon-gpubox1]:
+```
+
+Everything that machine owns follows that directory — its config, credentials,
+virtual environment and job files — and so does the unit name, because
+`~/.config/systemd/user/` is shared too. Manage it under that name:
+
+```bash
+systemctl --user status gpu-daemon-gpubox1
+journalctl --user -u gpu-daemon-gpubox1 -f
+```
+
+Type any directory you like at the prompt, or name the machine up front, which
+is also the form to use when there is no terminal:
+
+```bash
+INSTANCE=$(hostname -s) bash install.sh
+```
+
+Each directory records its owner in `installed-by`, and the installer stops if
+you point a second machine at a directory that already belongs to one.
+
+Separate directories are what keep the two workers distinct. The control plane
+assigns a worker id per machine and the daemon keeps it in `credentials`; one
+file shared between machines would eventually have both answering as the same
+worker, so each keeps its own.
+
+Your machines appear separately in the dashboard either way — registration
+identifies a worker by hostname, so that part needs nothing from you.
+
+!!! note "Model weights are shared too"
+    Ollama stores weights in `~/.ollama`, and two Ollama servers should not
+    write to one store. Either set `OLLAMA_MODELS` per machine, or point every
+    daemon at a single host's Ollama with `ollama_url` in its config.
 
 ---
 
@@ -264,6 +318,11 @@ rm -f ~/.config/systemd/user/gpu-daemon.service ~/.config/systemd/user/ollama.se
 systemctl --user daemon-reload
 rm -rf ~/.gpu-daemon
 ```
+
+On a machine installed under its own name, substitute it throughout — the
+service is `gpu-daemon-<name>` and the directory `~/.gpu-daemon-<name>`. The
+completion banner and `systemctl --user list-units 'gpu-daemon*'` will both tell
+you which you have.
 
 Then revoke the key in **Provider portal → Worker keys** if no other machine of
 yours is using it. Nothing is left outside your home directory, because nothing
