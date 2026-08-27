@@ -8,6 +8,7 @@ import { CopyableCode, TeachingEmptyState, TeachingStep } from '../components/Te
 import { groupValidationErrors, preflightJsonl } from '../lib/validationHelp';
 import PortalSwitch from '../components/PortalSwitch';
 import DocsLink from '../components/DocsLink';
+import { changePassword } from '../lib/changePassword';
 import SheshnagLogo from '../components/SheshnagLogo';
 import './dashboard.css';
 
@@ -63,6 +64,14 @@ export default function DashboardPage() {
   const [settingsProfileEmail, setSettingsProfileEmail] = useState('');
   const [settingsStatus, setSettingsStatus] = useState('');
   const [settingsLoading, setSettingsLoading] = useState(false);
+  // Change password (Settings). Kept separate from settingsStatus so a
+  // password error never reads as a profile-save error, or the reverse.
+  const [pwOld, setPwOld] = useState('');
+  const [pwNew, setPwNew] = useState('');
+  const [pwConfirm, setPwConfirm] = useState('');
+  const [pwError, setPwError] = useState('');
+  const [pwStatus, setPwStatus] = useState('');
+  const [pwLoading, setPwLoading] = useState(false);
   const [orgMembers, setOrgMembers] = useState([]);
   const [orgInvites, setOrgInvites] = useState([]);
   const [inviteEmail, setInviteEmail] = useState('');
@@ -130,6 +139,15 @@ export default function DashboardPage() {
       });
       if (profileRes.ok) {
         const data = await profileRes.json();
+
+        // An account still on its issued password never reaches the portal —
+        // the same check runs in completeLogin(), so typing this URL directly
+        // does not skip it.
+        if (data.must_change_password) {
+          router.replace('/change-password');
+          return;
+        }
+
         setUserProfile(data);
         setSettingsProfileName(data.full_name || '');
         setSettingsProfileEmail(data.email || '');
@@ -644,6 +662,28 @@ export default function DashboardPage() {
       setSettingsStatus('Server connection failed.');
     }
     setTimeout(() => setSettingsStatus(''), 3000);
+  };
+
+  const handleChangePassword = async () => {
+    setPwLoading(true);
+    setPwError('');
+    setPwStatus('');
+
+    const result = await changePassword({
+      oldPassword: pwOld,
+      newPassword: pwNew,
+      confirmPassword: pwConfirm,
+    });
+
+    setPwLoading(false);
+    if (!result.ok) {
+      setPwError(result.error);
+      return;
+    }
+
+    setPwOld(''); setPwNew(''); setPwConfirm('');
+    setPwStatus('Password changed.');
+    setTimeout(() => setPwStatus(''), 3000);
   };
 
   const handleInvite = async () => {
@@ -1665,7 +1705,7 @@ export default function DashboardPage() {
           {/* ============ SETTINGS PAGE ============ */}
           <div className={`page-panel ${activeTab === 'settings' ? 'active' : ''}`}>
             <h1 className="page-title">Settings</h1>
-            <p className="page-sub">Manage your profile.</p>
+            <p className="page-sub">Manage your profile and password.</p>
 
             <div className="grid-2">
               {/* Org settings parked — relocating to the provider portal */}
@@ -1691,6 +1731,46 @@ export default function DashboardPage() {
                   <input value={settingsProfileEmail} disabled style={{ opacity: 0.6, cursor: 'not-allowed' }} />
                 </div>
                 <button className="btn primary" onClick={handleSaveProfile} disabled={settingsLoading}>Save profile</button>
+              </div>
+
+              <div className="panel">
+                <div className="section-title" style={{ marginTop: 0 }}>Password</div>
+                <div className="field">
+                  <label>Current password</label>
+                  <input
+                    type="password"
+                    autoComplete="current-password"
+                    value={pwOld}
+                    onChange={e => setPwOld(e.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label>New password</label>
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={pwNew}
+                    onChange={e => setPwNew(e.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label>Confirm new password</label>
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={pwConfirm}
+                    onChange={e => setPwConfirm(e.target.value)}
+                  />
+                </div>
+                {pwError && (
+                  <p style={{ color: 'var(--danger)', fontSize: '0.85rem', marginBottom: '0.75rem' }}>{pwError}</p>
+                )}
+                {pwStatus && (
+                  <p style={{ color: 'var(--accent)', fontSize: '0.85rem', marginBottom: '0.75rem' }}>{pwStatus}</p>
+                )}
+                <button className="btn primary" onClick={handleChangePassword} disabled={pwLoading}>
+                  {pwLoading ? 'Changing…' : 'Change password'}
+                </button>
               </div>
             </div>
             
