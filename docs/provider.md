@@ -115,8 +115,13 @@ Worth knowing, because it is your machine:
 4. **Clones the daemon code** into `~/.gpu-daemon/src`.
 5. **Creates a Python virtual environment** at `~/.gpu-daemon/venv` and installs
    the daemon's dependencies into it. Nothing touches your system Python.
-6. **Registers two user services** — `gpu-daemon` and `ollama` — starts them, and
-   enables *linger* so they survive logout.
+6. **Registers user services**, starts them, and enables *linger* so they
+   survive logout. Always `gpu-daemon`; plus `ollama` **only** when step 2
+   installed a user-local copy. If your machine already had Ollama, the
+   installer leaves it alone rather than starting a second copy to fight it
+   for port 11434.
+7. **Reports what systemd actually did.** The last line tells you whether
+   `gpu-daemon` came up, rather than claiming success regardless.
 
 Everything it creates lives in one directory:
 
