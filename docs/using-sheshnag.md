@@ -1,4 +1,4 @@
-# Submit batches to Sheshnag
+# Run your prompts on Sheshnag
 
 **Who this is for:** someone runs a Sheshnag deployment and gave you its URL.
 You want to send it a batch of prompts and get results back.

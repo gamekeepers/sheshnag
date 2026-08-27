@@ -39,7 +39,7 @@ and claimed a job.
 | **Administrator help, once** | For nginx, the certificate, and `loginctl enable-linger`. Nothing else needs root. |
 
 If you only want to try it on a laptop, you do not need this guide — the
-localhost path in [Work on Sheshnag](develop.md) is shorter and skips TLS entirely.
+localhost path in [Change the code](develop.md) is shorter and skips TLS entirely.
 
 ## 1. Create the database
 
@@ -443,6 +443,12 @@ server {
 
     # This documentation, built as static HTML and served alongside the
     # product. See "Serve the documentation" below.
+    #
+    # The exact-match redirect matters: `location /docs/` does not match a
+    # bare `/docs`, which would otherwise fall through to the frontend and
+    # 404 — the one URL people type by hand.
+    location = /docs { return 301 /docs/; }
+
     location /docs/ {
         alias /home/sheshnag/.sheshnag/site/;
         index index.html;
@@ -457,6 +463,90 @@ server {
 ```
 
 Adjust port mappings and paths for your deployment. The backend serves on `:8000`, frontend on `:3000`.
+
+### Apache reverse proxy
+
+Institutional machines often already run Apache, and often already terminate TLS
+with a commercial certificate rather than Let's Encrypt. This is the same
+deployment on `httpd`, split across two subdomains — frontend and API — which is
+the other shape these installs tend to take:
+
+```apache
+<VirtualHost *:80>
+    ServerName sheshnag.example.edu
+    Redirect permanent / https://sheshnag.example.edu/
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName sheshnag.example.edu
+
+    SSLEngine on
+    SSLCertificateFile      /etc/httpd/ssl/commercial.crt
+    SSLCertificateKeyFile   /etc/httpd/ssl/commercial.key
+    SSLCertificateChainFile /etc/httpd/ssl/chain.crt
+
+    ProxyPreserveHost On
+    ProxyRequests Off
+
+    RequestHeader set X-Forwarded-Proto "https"
+    RequestHeader set X-Forwarded-Port "443"
+
+    # Documentation — see "Serve the documentation" below.
+    # This exclusion must come BEFORE "ProxyPass /", which is greedy:
+    # placed after it, every /docs request is proxied to Next.js and 404s.
+    ProxyPass /docs !
+
+    Alias /docs /var/www/sheshnag-docs
+
+    <Directory /var/www/sheshnag-docs>
+        Options -Indexes +FollowSymLinks
+        AllowOverride None
+        Require all granted
+        DirectoryIndex index.html
+    </Directory>
+
+    ProxyPass        / http://127.0.0.1:3000/
+    ProxyPassReverse / http://127.0.0.1:3000/
+
+    ErrorLog  logs/sheshnag_error.log
+    CustomLog logs/sheshnag_access.log combined
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName sheshnag-api.example.edu
+
+    SSLEngine on
+    SSLCertificateFile      /etc/httpd/ssl/commercial.crt
+    SSLCertificateKeyFile   /etc/httpd/ssl/commercial.key
+    SSLCertificateChainFile /etc/httpd/ssl/chain.crt
+
+    ProxyPreserveHost On
+    ProxyRequests Off
+
+    RequestHeader set X-Forwarded-Proto "https"
+    RequestHeader set X-Forwarded-Port "443"
+
+    ProxyPass        / http://127.0.0.1:8000/
+    ProxyPassReverse / http://127.0.0.1:8000/
+</VirtualHost>
+```
+
+Two details in the docs block are load-bearing, and both fail quietly:
+
+- **`ProxyPass /docs !` must precede `ProxyPass /`.** Apache takes the first
+  matching rule. Below it, the exclusion never fires.
+- **`Alias /docs` carries no trailing slash on either side.** Written as
+  `Alias /docs/ /var/www/sheshnag-docs/` a bare `/docs` stops matching, falls
+  through to the proxy and 404s. The slashless form matches both, and `mod_dir`
+  redirects `/docs` to `/docs/` for you — Apache's equivalent of the nginx
+  `location = /docs { return 301 /docs/; }` above.
+
+On a split-subdomain layout like this one, set `NEXT_PUBLIC_BACKEND_URL` to the
+API subdomain (`https://sheshnag-api.example.edu`) rather than a path on the
+frontend host, and set the backend's `CORS_ORIGINS` to the frontend origin —
+both in [Configuration](reference/configuration.md). Leaving `CORS_ORIGINS`
+at its `*` default disables credentialed requests, because the two are mutually
+exclusive in the CORS spec.
 
 ### Serve the documentation
 
@@ -488,14 +578,94 @@ git pull --ff-only
 .venv-docs/bin/mkdocs build
 ```
 
-The `alias` path in the nginx block above must point at that `site/` directory.
-If your repository lives somewhere other than `~/.sheshnag/`, adjust it — and
-note that nginx's worker user needs read access along the whole path, which is
-the usual reason a fresh `/docs/` returns 403.
+#### Where to put the built site
+
+The `alias` in the nginx block, or the `Alias` in the Apache one, must point at
+that `site/` directory. **Point it at `site/`, never at the repository root** —
+the working tree holds `.env` files and database dumps, and aliasing its parent
+would serve all of them over HTTPS.
+
+Two placements, and the choice is really about who needs root:
+
+**Build straight into `/var/www/` (recommended).** Ask your administrator, once,
+to create the directory and hand you ownership:
+
+```bash
+mkdir -p /var/www/sheshnag-docs
+chown sheshnag:sheshnag /var/www/sheshnag-docs
+restorecon -Rv /var/www/sheshnag-docs     # RHEL/SELinux; harmless elsewhere
+```
+
+After that you rebuild with no privileges at all, and never need them again:
+
+```bash
+git pull --ff-only
+.venv-docs/bin/mkdocs build -d /var/www/sheshnag-docs
+```
+
+No reload after a rebuild — the web server reads the files off disk, so the
+update is live immediately.
+
+**Or alias the repository's own `site/`.** This works, and keeps everything in
+one place, but the web server then has to reach into a home directory. That
+costs the same single root visit and adds two failure modes:
+
+- **Traversal.** Every component of the path needs `o+x`, and files need `o+r`.
+  Diagnose with `namei -om <repo>/site/index.html`. RHEL creates home
+  directories as `700`; `chmod o+x ~` fixes it — prefer `711` over `755` so
+  other local users can pass through without listing your files.
+- **SELinux.** On RHEL the files carry the wrong label *and* home-directory
+  serving is off. Both need root, once:
+
+    ```bash
+    semanage fcontext -a -t httpd_sys_content_t "/home/sheshnag/sheshnag/site(/.*)?"
+    restorecon -R /home/sheshnag/sheshnag/site
+    setsebool -P httpd_enable_homedirs 1
+    ```
+
+    Use `semanage fcontext` rather than a bare `chcon`, which a filesystem
+    relabel discards. The label survives rebuilds: `mkdocs build` clears the
+    *contents* of `site/` but keeps the directory itself, so new files inherit
+    its context.
+
+A fresh `/docs/` that returns **403** is almost always one of the two above —
+check `/var/log/audit/audit.log` for an `avc: denied` line to tell SELinux from
+plain permissions. A **404 rendered in the app's own styling** means the request
+reached the frontend instead: the proxy rule is matching before the docs rule.
+
+Verify all three cases:
+
+```bash
+curl -sI https://your-host/docs/ | head -1    # 200
+curl -sI https://your-host/docs  | head -1    # 301 -> /docs/
+curl -sI https://your-host/      | head -1    # 200, still the app
+```
 
 Once it is up, hand people deep links rather than the repository:
 `https://your-host/docs/provider/` is the provider guide,
 `https://your-host/docs/` is the audience fork.
+
+**The dashboard already links here.** Each portal carries a **Documentation**
+entry in its sidebar footer, pointed at the guide for that audience — the user
+portal at [Run your prompts](using-sheshnag.md), the provider portal at
+[Lend your GPU](provider.md), the admin portal at this page — and the worker-key
+screen deep-links to the install command at the moment an operator is handing a
+key over. All of them resolve against `/docs/` on your own host, so building the
+site is what makes them work; skip the build and they lead to a 404.
+
+If you would rather not build the site, point the frontend elsewhere instead of
+leaving the links broken:
+
+```bash
+# in your frontend .env.local, then rebuild
+NEXT_PUBLIC_DOCS_URL=https://sheshnag.io/
+```
+
+That is a deliberate trade: the links work immediately, but they describe the
+newest published version rather than the one you deployed. See
+[`NEXT_PUBLIC_DOCS_URL`](reference/configuration.md) — like every
+`NEXT_PUBLIC_*` value it is baked in at build time, so changing it means
+`npm run build`, not a restart.
 
 ### HTTPS (certbot)
 
@@ -585,5 +755,5 @@ Before deploying to production, address each item and note whether it requires a
 - [Model catalogue](reference/model-catalogue.md) — curation and pinning
 - [Google OAuth](reference/google-oauth.md) — sign-in setup
 - [Data model](reference/data-model.md) — what the database holds
-- [Work on Sheshnag](develop.md) — the development path
+- [Change the code](develop.md) — the development path
 - [Configuration](reference/configuration.md) — every environment variable

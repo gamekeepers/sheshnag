@@ -6,7 +6,7 @@ it front to back.
 
 *Verified against code: 2026-08-26.*
 
-To get a backend running first, see [Work on Sheshnag](../develop.md). Every
+To get a backend running first, see [Change the code](../develop.md). Every
 environment variable it reads is in [Configuration](configuration.md).
 
 ---

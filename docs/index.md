@@ -34,12 +34,12 @@ front of you.
 
 **→ [Work on Sheshnag](develop.md)**
 
-### I want to submit jobs
+### I have prompts to run
 
 Someone already runs a deployment and gave you a URL and a key. You swap
 `base_url`, submit a JSONL batch, poll it, download the results.
 
-**→ [Submit batches to Sheshnag](using-sheshnag.md)**
+**→ [Run your prompts on Sheshnag](using-sheshnag.md)**
 
 ---
 

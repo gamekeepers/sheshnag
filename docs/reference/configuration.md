@@ -8,7 +8,7 @@ audited on 2026-08-02.*
 
 This is a reference — look things up here. For how to configure a real
 deployment in the right order, see
-[Run it for your institution](../self-host.md#2-configure).
+[Host your deployment](../self-host.md#2-configure).
 
 Every variable the platform reads at runtime. Defaults are pulled from live code.
 
@@ -19,6 +19,9 @@ Every variable the platform reads at runtime. Defaults are pulled from live code
 | `NEXT_PUBLIC_BACKEND_URL` | no | `http://localhost:8000` | Backend API base URL |
 | `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | if Google OAuth | _(must set)_ | Google OAuth client ID |
 | `NEXT_PUBLIC_NGROK_ENABLED` | no | unset / falsy | Set `"true"` behind ngrok tunnels to skip browser warnings |
+| `NEXT_PUBLIC_DOCS_URL` | no | `/docs/` | Target of the in-app **Documentation** links. The default assumes this deployment serves its own copy — see [Serve the documentation](../self-host.md#serve-the-documentation). Set it to an external copy if you do not build the site. |
+
+`NEXT_PUBLIC_*` values are **inlined at build time**, not read at runtime. Changing one means rebuilding the frontend (`npm run build`), not just restarting it.
 
 **Old `.env` caveat:** A stale variable `NEXT_PUBLIC_API_URL` used to exist. No code reads it — every call site uses `NEXT_PUBLIC_BACKEND_URL`. If your `.env` still has `API_URL=...`, the frontend silently falls back to port 8000. Remove the old entry or rename it.
 

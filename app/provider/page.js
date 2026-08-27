@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import PortalSwitch from '../components/PortalSwitch';
+import DocsLink, { DocsAnchor } from '../components/DocsLink';
 import SheshnagLogo from '../components/SheshnagLogo';
 import '../dashboard/dashboard.css';
 
@@ -447,6 +448,7 @@ export default function ProviderPage() {
 
         <div className="sidebar-bottom">
           <PortalSwitch to="user" />
+          <DocsLink page="provider/" />
           <button className="btn" style={{ width: '100%' }} onClick={handleSignOut}>Sign out</button>
         </div>
       </aside>
@@ -736,7 +738,10 @@ export default function ProviderPage() {
             <div className="page-actions">
               <div>
                 <h1 className="page-title">Worker keys</h1>
-                <p className="page-sub">Daemons register with an org key — one per lab machine or cluster keeps revocation surgical (spec §8.0).</p>
+                <p className="page-sub">
+                  Daemons register with an org key — one per lab machine or cluster keeps revocation surgical.{' '}
+                  <DocsAnchor className="docs-inline" page="provider/#1-get-your-worker-key">How keys work</DocsAnchor>
+                </p>
               </div>
               {canManage && (
                 <button className="btn primary" onClick={() => { setRevealedKey(''); setIsNewKeyModalOpen(true); }}>
@@ -772,7 +777,8 @@ export default function ProviderPage() {
                     ))}
                     {orgKeys.length === 0 && (
                       <tr><td colSpan={canManage ? 6 : 5} className="empty-hint">
-                        No worker keys yet — generate one, then start the daemon with it to register your first worker.
+                        No worker keys yet — generate one, then start the daemon with it to register your first worker.{' '}
+                        <DocsAnchor className="docs-inline" page="provider/">Provider guide</DocsAnchor>
                       </td></tr>
                     )}
                   </tbody>
@@ -892,6 +898,10 @@ export default function ProviderPage() {
               <div style={{ marginTop: '1rem' }}>
                 <div className="key-reveal">{revealedKey}</div>
                 <div className="key-warning">Shown once — copy it into the daemon&apos;s config now.</div>
+                <p className="modal-sub" style={{ marginTop: '0.6rem' }}>
+                  Hand this key to whoever owns the machine, along with{' '}
+                  <DocsAnchor className="docs-inline" page="provider/#2-install">the install command</DocsAnchor>.
+                </p>
               </div>
             )}
           </div>

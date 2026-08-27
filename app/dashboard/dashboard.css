@@ -229,6 +229,47 @@ html, body {
   opacity: 0.55;
 }
 
+/* Documentation — sits under the portal switch in the same footer, and is
+   deliberately quieter than it: the switch moves you within the product, this
+   leaves it. Same metrics so the two line up; no border so only one of them
+   reads as a control. */
+.docs-link {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.75rem;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--dim);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.82rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.docs-link:hover {
+  background: var(--bg-panel);
+  color: var(--fg);
+}
+.docs-link-arrow {
+  margin-left: auto;
+  opacity: 0.55;
+}
+
+/* An inline deep link into the docs, dropped wherever the reader needs it. */
+.docs-inline {
+  color: var(--dim);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--border);
+  transition: color 0.12s ease, text-decoration-color 0.12s ease;
+}
+.docs-inline:hover {
+  color: var(--fg);
+  text-decoration-color: currentColor;
+}
+
 .profile-card {
   margin-top: 1rem;
   border-top: 1px solid var(--border-soft);

@@ -7,6 +7,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'rec
 import { CopyableCode, TeachingEmptyState, TeachingStep } from '../components/Teaching';
 import { groupValidationErrors, preflightJsonl } from '../lib/validationHelp';
 import PortalSwitch from '../components/PortalSwitch';
+import DocsLink from '../components/DocsLink';
 import SheshnagLogo from '../components/SheshnagLogo';
 import './dashboard.css';
 
@@ -934,6 +935,7 @@ export default function DashboardPage() {
 
         <div className="sidebar-bottom">
           <PortalSwitch to="provider" />
+          <DocsLink page="using-sheshnag/" />
           <div className="profile-dropdown-wrap" style={{ position: 'relative' }}>
             <button
               className="profile-icon-btn"
