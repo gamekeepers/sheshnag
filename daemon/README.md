@@ -14,7 +14,6 @@ Nothing here needs root. Everything it installs lives under `~/.gpu-daemon/`.
 | To develop against it without a GPU or a backend | [`docs/develop.md`](../docs/develop.md) — mock mode |
 
 
-
 Quick sanity run against a local backend:
 
 ```bash
@@ -22,6 +21,9 @@ cd daemon
 pip install -r requirements.txt
 python -m daemon.main --backend-url http://localhost:8000 --api-key gk-...
 ```
+
+The daemon exits at startup if no API key is configured. Keys are created in the
+dashboard under **Provider portal → Worker keys**.
 
 ### Running tests
 
@@ -35,9 +37,8 @@ pip install -e ".[dev]"
 Then run the suite:
 
 ```bash
+cd daemon
 pytest
 ```
 
-The daemon exits at startup if no API key is configured. Keys are created in the
-dashboard under **Provider portal → Worker keys**. -->
 
