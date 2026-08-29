@@ -12,6 +12,13 @@ Pick the one that describes why you are here. Each guide is meant to be read
 front to back, once. Everything assumes someone runs their own deployment —
 Sheshnag is software you host, not a service you sign up for.
 
+### I have prompts to run
+
+Someone already runs a deployment and gave you a URL and a key. You swap
+`base_url`, submit a JSONL batch, poll it, download the results.
+
+**→ [Run your prompts on Sheshnag](using-sheshnag.md)**
+
 ### I have a GPU to lend
 
 You want your machine to pick up jobs from a deployment someone else runs. One
@@ -20,26 +27,19 @@ database, no `sudo`.
 
 **→ [Lend your GPU to Sheshnag](provider.md)**
 
+### I want to change the code
+
+Frontend, backend and daemon running locally, tests green, and the contract in
+front of you. It carries the process too — branching, review, who merges.
+
+**→ [Work on Sheshnag](develop.md)**
+
 ### I want to run Sheshnag for my institution
 
 You are standing up the control plane on your own premises: TLS, an admin
 account, the model catalogue, the first provider onboarded.
 
 **→ [Run Sheshnag for your institution](self-host.md)**
-
-### I want to change the code
-
-Frontend, backend and daemon running locally, tests green, and the contract in
-front of you.
-
-**→ [Work on Sheshnag](develop.md)**
-
-### I have prompts to run
-
-Someone already runs a deployment and gave you a URL and a key. You swap
-`base_url`, submit a JSONL batch, poll it, download the results.
-
-**→ [Run your prompts on Sheshnag](using-sheshnag.md)**
 
 ---
 
@@ -66,7 +66,6 @@ These live outside the documentation site because they address contributors and
 agents rather than product readers:
 
 - [`README.md`](https://github.com/gamekeepers/sheshnag/blob/develop/README.md) — repository overview
-- [`CONTRIBUTING.md`](https://github.com/gamekeepers/sheshnag/blob/develop/CONTRIBUTING.md) — process, conventions, review
 - [`AGENTS.md`](https://github.com/gamekeepers/sheshnag/blob/develop/AGENTS.md) — rules for coding agents
 
 The component READMEs are stubs now: the API contract is
