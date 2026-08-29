@@ -179,6 +179,16 @@ class OllamaExecutor(BaseExecutor):
             # Query version and cache it
             version_response = await client.get("/api/version", timeout=5.0)
             version_response.raise_for_status()
+
+            server_header = version_response.headers.get("server", "")
+            if server_header:
+                logger.info(f"Ollama server header: {server_header}")
+                if "ollama" not in server_header.lower():
+                    logger.warning(
+                        f"Detected non-Ollama server on {self._base_url} (Server: {server_header}). "
+                        "Inference may fail even though metadata endpoints respond."
+                    )
+
             self.version = version_response.json().get("version")
             if not self.version:
                 logger.warning("Retrieved empty version from Ollama")

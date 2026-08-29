@@ -7,9 +7,9 @@ from daemon.executors.ollama import OllamaExecutor, parse_version
 from daemon.models import PromptRequest, CompletionResult
 
 # Helper to create responses with mock request bound to prevent raise_for_status issues
-def create_mock_response(status_code: int, json_data: dict) -> httpx.Response:
+def create_mock_response(status_code: int, json_data: dict, headers: dict = None) -> httpx.Response:
     req = httpx.Request("POST", "http://localhost:11434/api/chat")
-    return httpx.Response(status_code=status_code, json=json_data, request=req)
+    return httpx.Response(status_code=status_code, json=json_data, headers=headers, request=req)
 
 # Test parse_version helper
 def test_parse_version():
@@ -316,6 +316,47 @@ async def test_health_check_success():
         healthy = await executor.health_check()
         assert healthy is True
         assert executor.version == "0.5.1"
+
+
+@pytest.mark.asyncio
+async def test_health_check_non_ollama_server_header_warning(caplog):
+    import logging
+    executor = OllamaExecutor()
+
+    version_res = create_mock_response(
+        200,
+        {"version": "0.5.1"},
+        headers={"Server": "Python/3.12 aiohttp/3.13.5"},
+    )
+    tags_res = create_mock_response(200, {"models": []})
+
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [version_res, tags_res]
+        with caplog.at_level(logging.WARNING):
+            healthy = await executor.health_check()
+            assert healthy is True
+            assert any("Detected non-Ollama server" in record.message for record in caplog.records)
+            assert any("Python/3.12 aiohttp/3.13.5" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_health_check_ollama_server_header_normal(caplog):
+    import logging
+    executor = OllamaExecutor()
+
+    version_res = create_mock_response(
+        200,
+        {"version": "0.5.1"},
+        headers={"Server": "ollama/0.5.1"},
+    )
+    tags_res = create_mock_response(200, {"models": []})
+
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [version_res, tags_res]
+        with caplog.at_level(logging.WARNING):
+            healthy = await executor.health_check()
+            assert healthy is True
+            assert not any("Detected non-Ollama server" in record.message for record in caplog.records)
 
 
 @pytest.mark.asyncio
