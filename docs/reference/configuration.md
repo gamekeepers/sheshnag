@@ -95,10 +95,11 @@ never being handed a single batch. The daemon logs one warning
 > memory pool. The reported figure is macOS's *permission ceiling* (about
 > 17.8 GB on a 24 GB machine), not free memory — the two differ whenever
 > anything else on the machine is using RAM. `vram_available_gb` is
-> therefore reported as *unknown* (`null`, shown as "—") on macOS: unified
-> memory exposes no machine-wide "GPU memory in use" counter, and a confident
-> "fully free" would be wrong whenever a model is resident. The scheduler
-> reads only the total today. Intel Macs are not detected (no unified-memory
+> therefore reported as *unknown* (`null`) on macOS: unified memory exposes
+> no machine-wide "GPU memory in use" counter, and a confident "fully free"
+> would be wrong whenever a model is resident. The provider portal renders
+> that as "—" in the fleet list and "free unknown" on the worker card. The
+> scheduler reads only the total today. Intel Macs are not detected (no unified-memory
 > ceiling); set `DAEMON_VRAM_GB` there.
 
 See [Daemon internals](daemon.md) for the architecture and the backend contract.

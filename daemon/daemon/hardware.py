@@ -289,7 +289,31 @@ def _metal_vram_gb() -> Optional[float]:
 
 
 @functools.lru_cache(maxsize=1)
-def _apple_vram_gb() -> float:
+def _is_apple_silicon() -> bool:
+    """True on an M-series Mac, including under Rosetta 2.
+
+    `platform.machine()` reports the *interpreter's* architecture, not the
+    machine's: an x86_64 Python on an M-series Mac (Intel Homebrew, an
+    x86_64 venv, anything launched via `arch -x86_64`) says "x86_64". Gating
+    on that alone sends the daemon down the nvidia-smi path on the exact
+    hardware this detection exists for, and it registers 0 GB VRAM.
+
+    Both sysctls are absent on a genuine Intel Mac, which is deliberate:
+    an Intel iGPU has no unified-memory ceiling and must keep falling
+    through to the SMI probes.
+
+    Cached because a process cannot change architecture, and the heartbeat
+    asks every 30 s.
+    """
+    if platform.system() != "Darwin":
+        return False
+    if platform.machine() == "arm64":
+        return True                      # native, no subprocess needed
+    return (_sysctl("sysctl.proc_translated") == "1"
+            or _sysctl("hw.optional.arm64") == "1")
+
+
+def _probe_apple_vram_gb() -> float:
     """Usable GPU memory on Apple Silicon, in GiB. Computed once per process.
 
     Cached because the heartbeat asks every 30 s for a value that only
@@ -318,6 +342,36 @@ def _apple_vram_gb() -> float:
         return round(int(memsize) / (1024 ** 3) * _APPLE_VRAM_FALLBACK_RATIO, 2)
 
     return 0.0
+
+
+# Memoised separately from the probe so that only a *usable* answer sticks.
+# lru_cache would also cache the 0.0: one unlucky probe at startup — Metal
+# missing and sysctl failing, e.g. a stripped PATH under launchd — would pin
+# the worker at 0 GB VRAM for the life of the process, and a worker
+# advertising 0 GB is never assigned a batch. Retrying costs one sysctl on
+# the heartbeat that follows a failure, and nothing at all once it succeeds.
+_apple_vram_memo: Optional[float] = None
+
+
+def _apple_vram_gb() -> float:
+    """Usable GPU memory on Apple Silicon, in GiB. See _probe_apple_vram_gb."""
+    global _apple_vram_memo
+    if _apple_vram_memo:
+        return _apple_vram_memo
+    value = _probe_apple_vram_gb()
+    if value:
+        _apple_vram_memo = value
+    return value
+
+
+def _clear_apple_vram_memo() -> None:
+    """Drop the memoised VRAM figure (tests)."""
+    global _apple_vram_memo
+    _apple_vram_memo = None
+
+
+# Keep the lru_cache-era name working for callers and tests.
+_apple_vram_gb.cache_clear = _clear_apple_vram_memo
 
 
 def _apple_gpu() -> Optional[Dict[str, Any]]:
@@ -414,13 +468,14 @@ def detect_hardware() -> Dict[str, Any]:
         if memsize and memsize.isdigit():
             info["ram_gb"] = round(int(memsize) / (1024 ** 3), 2)
 
-        # Apple Silicon only (arm64): no nvidia-smi will ever exist here, and
+        # Apple Silicon only (arm64, Rosetta included — see
+        # _is_apple_silicon): no nvidia-smi will ever exist here, and
         # the SoC GPU is real and Metal-capable. Reporting no GPU makes the
         # scheduler's VRAM guard reject this worker for every batch.
         # Intel Macs deliberately fall through to the nvidia-smi probe: their
         # iGPU has no unified-memory ceiling, and the ratio fallback would
         # advertise ~2/3 of RAM as VRAM for a 1.5 GB iGPU.
-        if platform.machine() == "arm64":
+        if _is_apple_silicon():
             apple = _apple_gpu()
             if apple:
                 info["gpus"].append(apple)
@@ -449,7 +504,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
         "memory_total_gb": 0.0
     }
 
-    if platform.system() == "Darwin" and platform.machine() == "arm64":
+    if _is_apple_silicon():
         # Unified memory exposes no machine-wide "GPU memory in use" counter —
         # there is no equivalent of nvidia-smi's memory.used, and Metal's
         # currentAllocatedSize only sees this process. Report the ceiling and

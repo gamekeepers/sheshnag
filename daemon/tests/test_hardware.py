@@ -23,10 +23,17 @@ from daemon.models import GPUInfo, HardwareInfo, WorkerInfo
 
 @pytest.fixture(autouse=True)
 def _fresh_vram_cache():
-    """_apple_vram_gb is memoised per process; tests must not share it."""
+    """Both Apple lookups are memoised per process; tests must not share them.
+
+    _is_apple_silicon caches the architecture (which no real process can
+    change), so without this a test that fakes an M-series Mac would leave
+    every later test believing it runs on one.
+    """
     hardware._apple_vram_gb.cache_clear()
+    hardware._is_apple_silicon.cache_clear()
     yield
     hardware._apple_vram_gb.cache_clear()
+    hardware._is_apple_silicon.cache_clear()
 
 
 # ─── Apple VRAM precedence ──────────────────────────────────
@@ -662,3 +669,93 @@ def test_registration_payload_carries_vendor_and_rocm():
     assert gpus[1]["vendor"] == "nvidia"
     assert gpus[1]["cuda"] == "12.2"
     assert gpus[1]["rocm"] is None
+
+
+# ══ Rosetta 2 and VRAM-probe recovery ════════════════════════════
+
+def _rosetta(monkeypatch, **extra):
+    """A Darwin host whose Python is x86_64 but whose silicon is not."""
+    monkeypatch.setattr(hardware.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(hardware.platform, "machine", lambda: "x86_64")
+    values = {"machdep.cpu.brand_string": "Apple M5",
+              "hw.memsize": str(24 * 1024 ** 3)}
+    values.update(extra)
+    monkeypatch.setattr(hardware, "_sysctl", lambda name: values.get(name))
+
+
+def test_rosetta_process_is_recognised_as_apple_silicon(monkeypatch):
+    """An x86_64 Python under Rosetta must not read as an Intel Mac."""
+    _rosetta(monkeypatch, **{"sysctl.proc_translated": "1"})
+    assert hardware._is_apple_silicon() is True
+
+
+def test_native_arm64_never_shells_out(monkeypatch):
+    """The common case answers from platform alone — no sysctl per heartbeat."""
+    monkeypatch.setattr(hardware.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(hardware.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(hardware, "_sysctl", lambda name: pytest.fail(
+        "sysctl called on a native arm64 host"
+    ))
+    assert hardware._is_apple_silicon() is True
+
+
+def test_apple_silicon_detected_via_hw_optional_arm64(monkeypatch):
+    """Fallback for x86_64 processes where proc_translated is unavailable."""
+    _rosetta(monkeypatch, **{"hw.optional.arm64": "1"})
+    assert hardware._is_apple_silicon() is True
+
+
+def test_intel_mac_is_not_apple_silicon(monkeypatch):
+    """Neither sysctl answers on real Intel hardware — keep falling through."""
+    _rosetta(monkeypatch)  # no proc_translated, no hw.optional.arm64
+    assert hardware._is_apple_silicon() is False
+
+
+def test_detect_under_rosetta_reports_the_apple_gpu(monkeypatch):
+    """Issue #53's failure, reached the other way: x86_64 Python on an M-series."""
+    _rosetta(monkeypatch, **{"sysctl.proc_translated": "1"})
+    monkeypatch.setattr(hardware, "_apple_gpu", lambda: {
+        "name": "Apple M5", "vendor": "apple", "vram_gb": 17.76,
+        "driver_version": "Metal 4", "cuda_version": "", "index": 0,
+    })
+    monkeypatch.setattr(hardware.shutil, "which", lambda _: pytest.fail(
+        "looked for nvidia-smi on Apple Silicon under Rosetta"
+    ))
+
+    assert [g["vendor"] for g in hardware.detect_hardware()["gpus"]] == ["apple"]
+
+
+def test_utilization_under_rosetta_uses_unified_memory(monkeypatch):
+    _rosetta(monkeypatch, **{"sysctl.proc_translated": "1"})
+    monkeypatch.setattr(hardware, "_apple_vram_gb", lambda: 17.76)
+    monkeypatch.setattr(hardware.shutil, "which", lambda _: pytest.fail(
+        "probed SMI tools on Apple Silicon under Rosetta"
+    ))
+
+    stats = hardware.get_gpu_utilization()
+    assert stats["memory_total_gb"] == 17.76
+    assert stats["memory_used_gb"] is None
+
+
+def test_failed_vram_probe_is_retried_not_memoised(monkeypatch):
+    """A worker stuck at 0 GB VRAM is never given a batch — so never cache it."""
+    answers = iter([0.0, 17.76])
+    monkeypatch.setattr(hardware, "_probe_apple_vram_gb", lambda: next(answers))
+
+    assert hardware._apple_vram_gb() == 0.0    # probe failed this once
+    assert hardware._apple_vram_gb() == 17.76  # recovers on the next heartbeat
+
+
+def test_successful_vram_probe_is_memoised(monkeypatch):
+    """Once it answers, it must not flap between sources mid-run."""
+    calls = []
+
+    def probe():
+        calls.append(1)
+        return 17.76
+
+    monkeypatch.setattr(hardware, "_probe_apple_vram_gb", probe)
+
+    assert hardware._apple_vram_gb() == 17.76
+    assert hardware._apple_vram_gb() == 17.76
+    assert len(calls) == 1
