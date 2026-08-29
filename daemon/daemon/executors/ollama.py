@@ -127,7 +127,12 @@ class OllamaExecutor(BaseExecutor):
                 # Extract message content
                 choices = openai_response.get("choices", [])
                 if not choices:
-                    raise ValueError("Response contains no choices")
+                    logger.warning(f"Ollama response contains no choices for {prompt.custom_id}")
+                    return CompletionResult(
+                        custom_id=prompt.custom_id,
+                        response=openai_response,
+                        error="EMPTY_RESPONSE: Response contains no choices"
+                    )
                 content = choices[0].get("message", {}).get("content", "")
                 
                 # Parse JSON (for both loose and strict modes)
@@ -339,12 +344,15 @@ class OllamaExecutor(BaseExecutor):
         
     def _translate_response(self, ollama_response: dict) -> dict:
         """Ollama response -> OpenAI-compatible response format."""
-        return {
-            "choices": [{
+        choices = []
+        if "message" in ollama_response and ollama_response["message"]:
+            choices.append({
                 "index": 0,
                 "message": ollama_response.get("message", {}),
                 "finish_reason": "stop" if ollama_response.get("done") else "length",
-            }],
+            })
+        return {
+            "choices": choices,
             "model": ollama_response.get("model", ""),
             "usage": {
                 "prompt_tokens": ollama_response.get("prompt_eval_count", 0),
