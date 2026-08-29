@@ -246,7 +246,7 @@ class OllamaExecutor(BaseExecutor):
     # Ollama nests most sampling parameters under an "options"
     # object rather than top-level. This mapping is the single
     # source of truth for which OpenAI keys map to which Ollama
-    # options keys. See docs/openai_compatibility.md for the
+    # options keys. See docs/reference/openai-compatibility.md for the
     # full matrix.
 
     _OPTION_TRANSLATIONS = {

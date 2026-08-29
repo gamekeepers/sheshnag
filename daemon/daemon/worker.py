@@ -36,6 +36,8 @@ from daemon.client import BackendClient
 from daemon.config import DaemonConfig
 from daemon.executors.base import BaseExecutor
 from daemon.executors.ollama import OllamaExecutor
+from daemon.executor_factory import VLLM_ROCM_HINT
+from daemon.hardware import gpu_vendors_present
 from daemon.log import get_logger
 from daemon.models import CompletionResult, Job, PromptRequest
 from daemon.heartbeat import HeartbeatManager
@@ -449,9 +451,12 @@ class Worker:
 
         # Don't crash — proceed anyway, individual prompts will fail
         # with descriptive errors if the executor is truly down
+        hint = ""
+        if self._config.runtime == "vllm" and gpu_vendors_present() == ["amd"]:
+            hint = f" {VLLM_ROCM_HINT}"
         logger.error(
             "Executor health check failed after all retries — "
-            "proceeding anyway (prompts may fail)"
+            f"proceeding anyway (prompts may fail).{hint}"
         )
 
     # ── Signal Handling ──────────────────────────────────────────

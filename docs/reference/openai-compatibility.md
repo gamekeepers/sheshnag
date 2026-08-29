@@ -1,5 +1,7 @@
 # OpenAI Parameter Compatibility Matrix
 
+*Last updated 2026-08-10. Moved into its current location on 2026-08-26 and **not** re-verified against code since. Its own warning about being doc-derived rather than live-tested still stands.*
+
 The Sheshnag platform claims "existing OpenAI batch code migrates by
 changing `base_url`." This document records which OpenAI sampling
 parameters are actually honoured, translated, or dropped by each
@@ -69,7 +71,7 @@ A future enhancement could reject unsupported parameters at batch
 submission time (before the job reaches any worker), providing instant
 feedback to the user. The integration point is:
 
-- [`batch_validator.py`](../backend/services/batch_validator.py):
+- [`batch_validator.py`](https://github.com/gamekeepers/sheshnag/blob/develop/backend/services/batch_validator.py):
   `_validate_chat_body()` (line 192) and `ENDPOINT_VALIDATORS` (line 226)
 - Requires looking up the model's runtime type from the catalogue during
   validation to apply runtime-specific parameter allowlists.

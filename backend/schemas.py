@@ -226,7 +226,8 @@ class GpuInfo(BaseModel):
     name: str
     vram_gb: float
     driver: Optional[str] = None
-    cuda: Optional[str] = None
+    cuda: Optional[str] = None      # NVIDIA only
+    rocm: Optional[str] = None      # AMD only (spec §8.4 worker_gpus.rocm)
 
 
 class RuntimeInfo(BaseModel):

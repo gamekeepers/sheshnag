@@ -1,25 +1,13 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import PortalSwitch from '../components/PortalSwitch';
+import DocsLink, { DocsAnchor } from '../components/DocsLink';
+import SheshnagLogo from '../components/SheshnagLogo';
 import '../dashboard/dashboard.css';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
-
-function SheshnagLogo({ size = 22 }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
-        <path d="M22.5 6.5C11.5 5.5 9.5 13 15.5 15.6C21.5 18.2 23 25.5 11 26.5" stroke="#fff" strokeWidth="3.2" strokeLinecap="round"/>
-        <circle cx="23" cy="6.7" r="2.2" fill="#fff"/>
-      </svg>
-      <span style={{ color: '#fff', fontSize: size * 0.63, fontWeight: 700, letterSpacing: '0.12em', fontFamily: 'IBM Plex Mono, monospace' }}>
-        SHESHNAG
-      </span>
-    </div>
-  );
-}
 
 function heartbeatAge(ts) {
   if (!ts) return 'never';
@@ -405,9 +393,7 @@ export default function ProviderPage() {
           <SheshnagLogo />
         </div>
 
-        <div style={{ padding: '0 1rem', fontSize: 11, letterSpacing: '0.08em', color: 'rgba(255,255,255,0.4)', marginBottom: 8 }}>
-          PROVIDER PORTAL
-        </div>
+        <div className="sidebar-eyebrow">Provider portal</div>
 
         <div className={`org-switcher ${isOrgDropdownOpen ? 'open' : ''}`}>
           <button onClick={() => setIsOrgDropdownOpen(!isOrgDropdownOpen)}>
@@ -460,10 +446,9 @@ export default function ProviderPage() {
           </div>
         </nav>
 
-        <div style={{ marginTop: 'auto', padding: '1rem' }}>
-          <Link href="/dashboard" style={{ display: 'block', fontSize: 13, color: 'rgba(255,255,255,0.5)', textDecoration: 'none', marginBottom: 10 }}>
-            ← User portal
-          </Link>
+        <div className="sidebar-bottom">
+          <PortalSwitch to="user" />
+          <DocsLink page="provider/" />
           <button className="btn" style={{ width: '100%' }} onClick={handleSignOut}>Sign out</button>
         </div>
       </aside>
@@ -753,7 +738,10 @@ export default function ProviderPage() {
             <div className="page-actions">
               <div>
                 <h1 className="page-title">Worker keys</h1>
-                <p className="page-sub">Daemons register with an org key — one per lab machine or cluster keeps revocation surgical (spec §8.0).</p>
+                <p className="page-sub">
+                  Daemons register with an org key — one per lab machine or cluster keeps revocation surgical.{' '}
+                  <DocsAnchor className="docs-inline" page="provider/#1-get-your-worker-key">How keys work</DocsAnchor>
+                </p>
               </div>
               {canManage && (
                 <button className="btn primary" onClick={() => { setRevealedKey(''); setIsNewKeyModalOpen(true); }}>
@@ -789,7 +777,8 @@ export default function ProviderPage() {
                     ))}
                     {orgKeys.length === 0 && (
                       <tr><td colSpan={canManage ? 6 : 5} className="empty-hint">
-                        No worker keys yet — generate one, then start the daemon with it to register your first worker.
+                        No worker keys yet — generate one, then start the daemon with it to register your first worker.{' '}
+                        <DocsAnchor className="docs-inline" page="provider/">Provider guide</DocsAnchor>
                       </td></tr>
                     )}
                   </tbody>
@@ -909,6 +898,10 @@ export default function ProviderPage() {
               <div style={{ marginTop: '1rem' }}>
                 <div className="key-reveal">{revealedKey}</div>
                 <div className="key-warning">Shown once — copy it into the daemon&apos;s config now.</div>
+                <p className="modal-sub" style={{ marginTop: '0.6rem' }}>
+                  Hand this key to whoever owns the machine, along with{' '}
+                  <DocsAnchor className="docs-inline" page="provider/#2-install">the install command</DocsAnchor>.
+                </p>
               </div>
             )}
           </div>
