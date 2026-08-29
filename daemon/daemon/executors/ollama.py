@@ -123,16 +123,16 @@ class OllamaExecutor(BaseExecutor):
             openai_response = self._translate_response(response.json())
             
             # Post-inference Validation
+            choices = openai_response.get("choices", [])
+            if not choices:
+                logger.warning(f"Ollama response contains no choices for {prompt.custom_id}")
+                return CompletionResult(
+                    custom_id=prompt.custom_id,
+                    response=openai_response,
+                    error="EMPTY_RESPONSE: Response contains no choices"
+                )
+
             if response_format is not None:
-                # Extract message content
-                choices = openai_response.get("choices", [])
-                if not choices:
-                    logger.warning(f"Ollama response contains no choices for {prompt.custom_id}")
-                    return CompletionResult(
-                        custom_id=prompt.custom_id,
-                        response=openai_response,
-                        error="EMPTY_RESPONSE: Response contains no choices"
-                    )
                 content = choices[0].get("message", {}).get("content", "")
                 
                 # Parse JSON (for both loose and strict modes)
