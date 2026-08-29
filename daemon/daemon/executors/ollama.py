@@ -174,6 +174,20 @@ class OllamaExecutor(BaseExecutor):
         try:
             # Query version and cache it
             version_response = await client.get("/api/version", timeout=5.0)
+
+            server_header = version_response.headers.get("server", "")
+            if server_header:
+                logger.info(f"Ollama server header: {server_header}")
+                is_known_proxy = any(
+                    proxy in server_header.lower()
+                    for proxy in ("nginx", "caddy", "apache", "cloudflare", "envoy", "traefik", "kong", "haproxy")
+                )
+                if "ollama" not in server_header.lower() and not is_known_proxy:
+                    logger.warning(
+                        f"Detected non-Ollama server on {self._base_url} (Server: {server_header}). "
+                        "Inference may fail even though metadata endpoints respond."
+                    )
+
             version_response.raise_for_status()
             self.version = version_response.json().get("version")
             if not self.version:
