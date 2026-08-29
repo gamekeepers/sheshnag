@@ -559,7 +559,16 @@ export default function ProviderPage() {
                   <div className="worker-specs">
                     <div>
                       <b>{worker.cpu_cores || '—'}</b> CPU cores · <b>{worker.ram_total_gb ? worker.ram_total_gb.toFixed(0) : '—'} GB</b> RAM
-                      {worker.vram_total_gb != null && <> · <b>{Math.round(worker.vram_available_gb || 0)}/{Math.round(worker.vram_total_gb)} GB</b> VRAM free</>}
+                      {/* `|| 0` here would render Apple Silicon's unknown (null)
+                          free figure as "0/18 GB free" — a worker that is in
+                          fact idle, shown as saturated. Unified memory exposes
+                          no machine-wide "in use" counter, so say what we know:
+                          the ceiling, and that free is unknown. */}
+                      {worker.vram_total_gb != null && (
+                        worker.vram_available_gb != null
+                          ? <> · <b>{Math.round(worker.vram_available_gb)}/{Math.round(worker.vram_total_gb)} GB</b> VRAM free</>
+                          : <> · <b>{Math.round(worker.vram_total_gb)} GB</b> VRAM · free unknown</>
+                      )}
                     </div>
                     {(worker.gpus || []).map((gpu, idx) => (
                       <div key={idx}>1x <b>{gpu.name || 'GPU'}</b> — {gpu.vram_gb} GB VRAM{gpu.driver ? ` · driver ${gpu.driver}` : ''}</div>

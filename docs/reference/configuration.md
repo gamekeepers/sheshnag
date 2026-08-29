@@ -59,6 +59,47 @@ Configured via a three-layer system: CLI > env (`DAEMON_*` prefix) > YAML file >
 | `DAEMON_WORK_DIR` | `~/.gpu-daemon/jobs` | Job artifacts directory |
 | `DAEMON_MODELS` | _(empty)_ | Comma-separated list of model names |
 | `DAEMON_GPU_NAME` | `unknown` | GPU model name for registration |
-| `DAEMON_VRAM_GB` | 0.0 | GPU VRAM in GB for registration |
+| `DAEMON_VRAM_GB` | 0.0 | Advertised GPU memory in GB. Overrides detection — see below |
+
+#### How a worker's VRAM is determined
+
+The scheduler filters a worker out of any batch whose model needs more VRAM
+than the worker reports, so this number decides what the worker is offered.
+
+1. **`DAEMON_VRAM_GB`**, when set above 0, wins over everything — in
+   registration and in every heartbeat — so a provider can lend less than the
+   hardware holds. If nothing was probed, registration advertises one
+   synthetic GPU (`vendor: other`, name from `DAEMON_GPU_NAME`) of that size;
+   if several GPUs were probed, their sizes are scaled to sum to the
+   declaration.
+2. **NVIDIA and AMD**, otherwise: `nvidia-smi` and `rocm-smi` are both
+   probed and their GPUs summed, so a mixed-vendor host advertises its whole
+   capacity. AMD hosts also report a ROCm version, read from
+   `/opt/rocm/.info/version` — not the amdgpu kernel module version
+   `rocm-smi` prints, which is a different number.
+3. **Apple Silicon**: Metal's `recommendedMaxWorkingSetSize`, the cap macOS
+   places on how much unified memory the GPU may wire. Requires
+   `pyobjc-framework-Metal` (installed automatically on macOS). Without it,
+   `iogpu.wired_limit_mb` is used when explicitly set, otherwise a
+   deliberately conservative fraction of `hw.memsize`. Detection stops here
+   on an Apple Silicon Mac; the SMI tools are not probed.
+4. **Otherwise 0.0**, and the worker is offered nothing.
+
+That last case is the one to watch: a host with none of `nvidia-smi`,
+`rocm-smi` or Metal — an Intel Mac, an Intel Arc box, CPU-only — registers
+cleanly, heartbeats cleanly, and shows **online** in the dashboard while
+never being handed a single batch. The daemon logs one warning
+(`Advertising 0 GB VRAM …`) when this happens. Set `DAEMON_VRAM_GB` there.
+
+> **Apple Silicon note.** There is no dedicated VRAM; CPU and GPU share one
+> memory pool. The reported figure is macOS's *permission ceiling* (about
+> 17.8 GB on a 24 GB machine), not free memory — the two differ whenever
+> anything else on the machine is using RAM. `vram_available_gb` is
+> therefore reported as *unknown* (`null`) on macOS: unified memory exposes
+> no machine-wide "GPU memory in use" counter, and a confident "fully free"
+> would be wrong whenever a model is resident. The provider portal renders
+> that as "—" in the fleet list and "free unknown" on the worker card. The
+> scheduler reads only the total today. Intel Macs are not detected (no unified-memory
+> ceiling); set `DAEMON_VRAM_GB` there.
 
 See [Daemon internals](daemon.md) for the architecture and the backend contract.
