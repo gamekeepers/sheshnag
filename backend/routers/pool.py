@@ -25,6 +25,7 @@ from models import (
     ModelCatalog,
     OrganizationMembership,
     Worker,
+    WorkerGpu,
     WorkerRuntime,
     unix_now,
 )
@@ -37,10 +38,10 @@ router = APIRouter()
 # costs accuracy nothing and makes the cost of a request constant.
 CACHE_TTL_SECONDS = 15
 
-# Below this many online workers, "312 GB of VRAM" stops being an
-# aggregate and starts naming whose machine is online. Suppress the
-# figure rather than the whole strip.
-MIN_WORKERS_FOR_VRAM = 3
+# Below this many online workers, "312 GB of VRAM" (or "8 GPUs") stops
+# being an aggregate and starts naming whose machine is online. Suppress
+# those figures rather than the whole strip.
+MIN_WORKERS_FOR_HARDWARE = 3
 
 _cache_lock = threading.Lock()
 _cache = {"expires_at": 0.0, "snapshot": None}
@@ -56,6 +57,7 @@ def _compute_snapshot(db: Session) -> dict:
         db.query(Worker)
         .options(
             joinedload(Worker.runtimes).joinedload(WorkerRuntime.models),
+            joinedload(Worker.gpus),
         )
         .filter(
             Worker.status == "online",
@@ -76,6 +78,7 @@ def _compute_snapshot(db: Session) -> dict:
 
     idle = sum(1 for w in workers if w.activity == "idle")
     vram = sum(w.vram_total_gb or 0 for w in workers)
+    gpus = sum(len(w.gpus) for w in workers)
 
     # A model is servable when at least one online worker could be given
     # a batch for it — the scheduler's own predicate, not a lookalike.
@@ -96,6 +99,7 @@ def _compute_snapshot(db: Session) -> dict:
         "workers_idle": idle,
         "workers_busy": len(workers) - idle,
         "vram_total_gb": round(vram, 1) if vram else 0.0,
+        "gpus_online": gpus,
         "servable": servable,
         "as_of": unix_now(),
     }
@@ -141,9 +145,9 @@ def pool_capacity(
     """Aggregate live capacity of the pool. Auth optional.
 
     Anonymous callers get worker counts and the publicly servable models.
-    Authenticated callers additionally get total VRAM (suppressed while
-    the pool is thin enough for the figure to identify a machine) and any
-    org-private catalogue entries they can actually select.
+    Authenticated callers additionally get total VRAM and GPU count (both
+    suppressed while the pool is thin enough for the figures to identify a
+    machine) and any org-private catalogue entries they can select.
 
     Never returns hostnames, GPU names, per-worker rows, or org ids.
     """
@@ -170,9 +174,13 @@ def pool_capacity(
         "as_of": snapshot["as_of"],
     }
 
-    if user is not None and snapshot["workers_online"] >= MIN_WORKERS_FOR_VRAM:
+    # VRAM and GPU count travel together: both describe the hardware, and
+    # both stop being aggregates on a thin pool.
+    if user is not None and snapshot["workers_online"] >= MIN_WORKERS_FOR_HARDWARE:
         body["vram_total_gb"] = snapshot["vram_total_gb"]
+        body["gpus_online"] = snapshot["gpus_online"]
     else:
         body["vram_total_gb"] = None
+        body["gpus_online"] = None
 
     return body

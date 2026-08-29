@@ -347,12 +347,11 @@ export default function DashboardPage() {
     }
   }, [getHeaders]);
 
-  // 30s, not the batches loop's 5s: workers heartbeat every 30s, so a faster
-  // poll only re-renders identical numbers. Paused while the tab is hidden so
-  // a dashboard left open overnight isn't a heartbeat of its own.
+  // Runs for the whole dashboard, not one tab: the strip lives in the sticky
+  // header. 30s, not the batches loop's 5s — workers heartbeat every 30s, so a
+  // faster poll only re-renders identical numbers. Paused while the tab is
+  // hidden so a dashboard left open overnight isn't a heartbeat of its own.
   useEffect(() => {
-    if (activeTab !== 'batches') return;
-
     const tick = () => {
       if (document.visibilityState === 'visible') loadPoolCapacity();
     };
@@ -364,7 +363,7 @@ export default function DashboardPage() {
       clearInterval(interval);
       document.removeEventListener('visibilitychange', tick);
     };
-  }, [activeTab, loadPoolCapacity]);
+  }, [loadPoolCapacity]);
 
   // Polling for active/running batches
   useEffect(() => {
@@ -1081,6 +1080,37 @@ export default function DashboardPage() {
           <div className="breadcrumbs">
             Dashboard / <span className="current">{getPageTitle()}</span>
           </div>
+          {/* Pool capacity — ambient, in the sticky header so every tab
+              carries it, not just Batches: the question "is anyone online?"
+              is just as live while picking a model or uploading a file.
+              Aggregate only — hostnames and GPU names would identify whose
+              machine is whose. No ETA either; a prediction over a volatile
+              pool erodes trust faster than an honest count builds it. */}
+          {poolCapacity && (
+            <div className="pool-strip">
+              {poolCapacity.workers_online === 0 ? (
+                <span>No workers online — batches wait in the queue until one joins the pool.</span>
+              ) : (
+                <>
+                  <span>
+                    <strong>{poolCapacity.workers_online}</strong>
+                    {' '}worker{poolCapacity.workers_online === 1 ? '' : 's'} online
+                    {' · '}{poolCapacity.workers_idle} idle
+                  </span>
+                  {poolCapacity.gpus_online != null && (
+                    <span><strong>{poolCapacity.gpus_online}</strong> GPU{poolCapacity.gpus_online === 1 ? '' : 's'}</span>
+                  )}
+                  {poolCapacity.vram_total_gb != null && (
+                    <span><strong>{Math.round(poolCapacity.vram_total_gb).toLocaleString()} GB</strong> VRAM</span>
+                  )}
+                  <span title={poolCapacity.models_servable.map(m => m.display_name || m.id).join(', ')}>
+                    <strong>{poolCapacity.models_servable.length}</strong>
+                    {' '}model{poolCapacity.models_servable.length === 1 ? '' : 's'} ready to run
+                  </span>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="content-body">
@@ -1585,33 +1615,6 @@ export default function DashboardPage() {
                 + New Batch
               </button>
             </div>
-
-            {/* Pool capacity — a quiet strip, not a dashboard. Aggregate only:
-                hostnames and GPU models would identify whose machine is whose.
-                No ETA either; a prediction over a volatile pool erodes trust
-                faster than an honest count builds it. */}
-            {poolCapacity && (
-              <div className="pool-strip">
-                {poolCapacity.workers_online === 0 ? (
-                  <span>No workers online — batches wait in the queue until one joins the pool.</span>
-                ) : (
-                  <>
-                    <span>
-                      <strong>{poolCapacity.workers_online}</strong>
-                      {' '}worker{poolCapacity.workers_online === 1 ? '' : 's'} online
-                      {' · '}{poolCapacity.workers_idle} idle
-                    </span>
-                    {poolCapacity.vram_total_gb != null && (
-                      <span><strong>{Math.round(poolCapacity.vram_total_gb).toLocaleString()} GB</strong> VRAM</span>
-                    )}
-                    <span title={poolCapacity.models_servable.map(m => m.display_name || m.id).join(', ')}>
-                      <strong>{poolCapacity.models_servable.length}</strong>
-                      {' '}model{poolCapacity.models_servable.length === 1 ? '' : 's'} ready to run
-                    </span>
-                  </>
-                )}
-              </div>
-            )}
 
             <div className="grid-2">
               {batches.map(batch => {

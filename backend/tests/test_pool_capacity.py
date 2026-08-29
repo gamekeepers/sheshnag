@@ -7,7 +7,7 @@ scheduler's, not a lookalike that promises a model no worker can run.
 
 import pytest
 
-from models import ModelCatalog, Worker, WorkerRuntime, RuntimeModel, unix_now
+from models import ModelCatalog, Worker, WorkerGpu, WorkerRuntime, RuntimeModel, unix_now
 from routers import pool
 
 
@@ -20,6 +20,7 @@ def _clean_pool(db_session):
     """
     db_session.query(RuntimeModel).delete()
     db_session.query(WorkerRuntime).delete()
+    db_session.query(WorkerGpu).delete()
     db_session.query(Worker).delete()
     db_session.commit()
     pool._reset_cache()
@@ -59,7 +60,8 @@ def _catalog_entry(db, entry_id="pool-test-model", vram_gb=8.0, org_id=None):
 
 
 def _worker(db, org_id, hostname, *, vram=24.0, activity="idle",
-            models=("pool-test-model:latest",), heartbeat_age=0, status="online"):
+            models=("pool-test-model:latest",), heartbeat_age=0, status="online",
+            gpus=1):
     worker = Worker(
         org_id=org_id,
         hostname=hostname,
@@ -70,6 +72,9 @@ def _worker(db, org_id, hostname, *, vram=24.0, activity="idle",
     )
     db.add(worker)
     db.flush()
+    for i in range(gpus):
+        db.add(WorkerGpu(worker_id=worker.id, gpu_index=i, vendor="nvidia",
+                         name="RTX 4090", vram_gb=vram / max(gpus, 1)))
     runtime = WorkerRuntime(worker_id=worker.id, engine="ollama", base_url="localhost")
     db.add(runtime)
     db.flush()
@@ -100,28 +105,35 @@ def test_anonymous_gets_counts_and_no_identifying_detail(auth_client, anon_clien
 
     # Nothing that names a machine or its owner, at any depth.
     blob = resp.text
-    for secret in ("gpu-box-01", "gpu-box-02", org, "hostname", "worker_id"):
+    for secret in ("gpu-box-01", "gpu-box-02", org, "hostname", "worker_id", "RTX 4090"):
         assert secret not in blob
 
 
-def test_vram_hidden_from_anonymous_and_on_a_thin_pool(auth_client, anon_client, db_session):
+def test_hardware_figures_hidden_from_anonymous_and_on_a_thin_pool(auth_client, anon_client, db_session):
+    """VRAM and GPU count travel together, and neither survives a thin pool."""
     org = _org_id(auth_client, "Pool Org B")
     _catalog_entry(db_session)
-    _worker(db_session, org, "thin-1", vram=141.0)
-    _worker(db_session, org, "thin-2", vram=141.0)
+    _worker(db_session, org, "thin-1", vram=141.0, gpus=2)
+    _worker(db_session, org, "thin-2", vram=141.0, gpus=2)
 
-    # Two workers: even an authenticated caller sees no VRAM figure, because
-    # "282 GB across 2 machines" names whose machines they are.
-    assert anon_client.get("/v1/pool/capacity").json()["vram_total_gb"] is None
-    assert auth_client.get("/v1/pool/capacity").json()["vram_total_gb"] is None
+    # Two workers: even an authenticated caller sees no hardware figures,
+    # because "282 GB across 2 machines" names whose machines they are.
+    for body in (anon_client.get("/v1/pool/capacity").json(),
+                 auth_client.get("/v1/pool/capacity").json()):
+        assert body["vram_total_gb"] is None
+        assert body["gpus_online"] is None
 
     pool._reset_cache()
-    _worker(db_session, org, "thin-3", vram=18.0)
+    _worker(db_session, org, "thin-3", vram=18.0, gpus=1)
 
-    assert auth_client.get("/v1/pool/capacity").json()["vram_total_gb"] == 300.0
+    body = auth_client.get("/v1/pool/capacity").json()
+    assert body["vram_total_gb"] == 300.0
+    assert body["gpus_online"] == 5
+
     # Still withheld from anonymous callers regardless of pool size.
     pool._reset_cache()
-    assert anon_client.get("/v1/pool/capacity").json()["vram_total_gb"] is None
+    anon = anon_client.get("/v1/pool/capacity").json()
+    assert anon["vram_total_gb"] is None and anon["gpus_online"] is None
 
 
 def test_servable_follows_the_scheduler_not_the_catalogue(auth_client, db_session):
@@ -184,3 +196,4 @@ def test_garbage_token_degrades_to_anonymous(anon_client, auth_client, db_sessio
     assert resp.status_code == 200
     assert resp.json()["workers_online"] == 3
     assert resp.json()["vram_total_gb"] is None
+    assert resp.json()["gpus_online"] is None
