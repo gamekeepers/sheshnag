@@ -89,6 +89,7 @@ In strict mode, you supply a target JSON Schema. The daemon translates this and 
 
 If a worker is unable to honor the JSON request constraint, the job row is failed and the specific error code/message is reported in `CompletionResult.error`:
 
+* **`EMPTY_RESPONSE`**: The Ollama engine returned no choices or an empty response body.
 * **`JSON_PARSE_ERROR`**: The response was not valid parseable JSON.
 * **`SCHEMA_VIOLATION`**: The response was valid JSON but violated the defined JSON Schema.
 * **`VERSION_MISMATCH`**: The assigned worker's Ollama engine is version < 0.5.0, which does not support schema-constrained formatting.
