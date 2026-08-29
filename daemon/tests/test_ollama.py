@@ -394,6 +394,41 @@ async def test_execute_version_unreachable():
         assert "OLLAMA_UNREACHABLE" in res.error
 
 
+@pytest.mark.asyncio
+async def test_version_probe_negative_caching_only_probes_once():
+    executor = OllamaExecutor()
+    assert executor._version_checked is False
+
+    prompt1 = PromptRequest(
+        custom_id="req-neg-1",
+        body={
+            "model": "llama3:8b",
+            "messages": [{"role": "user", "content": "hello"}],
+            "response_format": {"type": "json_object"}
+        }
+    )
+    prompt2 = PromptRequest(
+        custom_id="req-neg-2",
+        body={
+            "model": "llama3:8b",
+            "messages": [{"role": "user", "content": "hello again"}],
+            "response_format": {"type": "json_object"}
+        }
+    )
+
+    with patch.object(executor, "health_check", new_callable=AsyncMock) as mock_health:
+        mock_health.return_value = False
+        res1 = await executor.execute(prompt1)
+        res2 = await executor.execute(prompt2)
+
+        assert not res1.is_success
+        assert not res2.is_success
+        assert "OLLAMA_UNREACHABLE" in res1.error
+        assert "OLLAMA_UNREACHABLE" in res2.error
+        mock_health.assert_called_once()
+        assert executor._version_checked is True
+
+
 def test_translate_embeddings_request():
     executor = OllamaExecutor()
     openai_body = {

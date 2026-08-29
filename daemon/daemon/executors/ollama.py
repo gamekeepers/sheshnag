@@ -54,6 +54,7 @@ class OllamaExecutor(BaseExecutor):
         self._timeout = timeout
         self._client: Optional[httpx.AsyncClient] = None
         self.version: Optional[str] = None
+        self._version_checked: bool = False
         
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -91,8 +92,9 @@ class OllamaExecutor(BaseExecutor):
                     error=f"EMBEDDING_FAILED: {e}"
                 )
 
-        # Lazy check version if not set (chat path only — gates structured outputs)
-        if self.version is None:
+        # Lazy check version if not yet probed (chat path only — gates structured outputs)
+        if not self._version_checked:
+            self._version_checked = True
             await self.health_check()
 
         response_format = prompt.body.get("response_format")
@@ -174,6 +176,7 @@ class OllamaExecutor(BaseExecutor):
     
     async def health_check(self) -> bool:
         """Check Ollama is running via GET /api/version and GET /api/tags."""
+        self._version_checked = True
         client = self._get_client()
         try:
             # Query version and cache it
