@@ -428,6 +428,24 @@ h1.page-title {
 }
 
 /* ===================== SHARED GLASS PANEL ===================== */
+.pool-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.15rem 1rem;
+  color: var(--dim);
+  font-size: 0.76rem;
+  text-align: right;
+}
+.pool-strip strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+/* The header is a single row; below this the breadcrumb needs all of it. */
+@media (max-width: 900px) {
+  .pool-strip { display: none; }
+}
+
 .panel {
   background: var(--bg-panel);
   border: 1px solid var(--border);

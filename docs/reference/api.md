@@ -123,6 +123,52 @@ keys during worker registration — it derives the owning org from the key.
 |---|---|---|
 | `GET` | `/v1/models` | Selectable catalogue entries (public + caller's org) |
 
+### Pool — `/v1/pool` (auth optional)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/v1/pool/capacity` | Live pool capacity, aggregate only |
+
+The only endpoint that serves anonymous callers a view of the fleet. It
+exists so a batch user can answer "is anyone online, and can they run my
+model?" without being shown — or being able to infer — *whose* machine is
+whose. Per-worker rows stay on the superadmin `GET /v1/admin/workers`.
+
+```json
+{
+  "object": "pool.capacity",
+  "workers_online": 6,
+  "workers_idle": 3,
+  "workers_busy": 3,
+  "gpus_online": 14,
+  "vram_total_gb": 312.0,
+  "models_servable": [
+    {"id": "llama3.1-8b", "display_name": "Llama 3.1 8B", "parameter_size": "8B"}
+  ],
+  "as_of": 1756400000
+}
+```
+
+- **`models_servable`** is what the *scheduler* would dispatch, not what the
+  catalogue lists: an entry appears only when some online worker both hosts
+  the artifact and fits its `vram_gb`, decided by `provider_picker.can_serve`
+  — the same predicate `POST /workers/poll` matches on.
+- **Online** means `status = "online"` *and* a heartbeat within
+  `HEARTBEAT_TIMEOUT_SECONDS`. The sweeper only flips the column once a
+  minute, so this endpoint applies the cutoff at read time as well.
+- **`vram_total_gb` and `gpus_online` are `null`** for anonymous callers, and
+  for everyone while fewer than `MIN_WORKERS_FOR_HARDWARE` (3) workers are
+  online — on a thin pool "141 GB" names a specific machine, which is the
+  disclosure the aggregate exists to prevent. GPU *count* is aggregate and
+  travels with VRAM; GPU *names* are never returned at all.
+- **Org-private catalogue entries** appear only for members of that org
+  (superadmins see all), matching `GET /v1/models`.
+- **Never returned:** hostnames, GPU names, worker ids, org ids.
+- Responses are served from a 15-second in-process cache, so polling — and an
+  unauthenticated caller hammering it — costs a constant number of queries.
+  Poll no faster than the 30s heartbeat; anything quicker re-renders numbers
+  that have not changed.
+
 ### Workers — `/workers` (org worker key required)
 
 | Method | Endpoint | Description |
