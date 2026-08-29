@@ -428,6 +428,27 @@ h1.page-title {
 }
 
 /* ===================== SHARED GLASS PANEL ===================== */
+/* Pool capacity strip (Batches) — a quiet line of aggregate numbers, not a
+   dashboard. Deliberately static: numbers that animate as they refresh pull
+   the eye away from the batch the reader came to look at. */
+.pool-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.15rem 0.9rem;
+  margin: 0 0 1.5rem;
+  padding: 0.55rem 0.9rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  color: var(--dim);
+  font-size: 0.78rem;
+}
+.pool-strip strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+
 .panel {
   background: var(--bg-panel);
   border: 1px solid var(--border);
