@@ -1,4 +1,5 @@
 fastapi
+email-validator            # pydantic EmailStr on InviteRequest
 uvicorn
 sqlalchemy
 python-multipart

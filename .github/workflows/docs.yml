@@ -1,0 +1,80 @@
+# Builds the documentation site and publishes it to sheshnag.io.
+#
+# `mkdocs build --strict` fails on a broken internal link, a broken in-page
+# anchor, or a nav entry pointing at a file that does not exist. That turns the
+# documentation's biggest risk -- link rot as files move -- from something to
+# remember into something the machine checks, on every pull request.
+#
+# Pull requests build only. Pushes to the default branch build and deploy.
+
+name: Docs
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'overrides/**'
+      - 'mkdocs.yml'
+      - '.github/workflows/docs.yml'
+  push:
+    branches: [develop]
+    paths:
+      - 'docs/**'
+      - 'overrides/**'
+      - 'mkdocs.yml'
+      - '.github/workflows/docs.yml'
+  # Lets a maintainer redeploy without pushing anything.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: mkdocs build --strict
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+
+      - name: Install docs dependencies
+        run: pip install -r docs/requirements.txt
+
+      - name: Build the site
+        run: mkdocs build --strict
+
+      # On a pull request this is the artifact a reviewer can download to read
+      # the rendered pages. On the default branch it is what deploys.
+      - name: Upload the built site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+
+  deploy:
+    name: Deploy to sheshnag.io
+    # Only from the default branch -- a pull request must never publish.
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write        # to publish to GitHub Pages
+      id-token: write     # for the deployment's OIDC token
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Publish
+        id: deployment
+        uses: actions/deploy-pages@v4

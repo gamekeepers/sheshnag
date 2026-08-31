@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from daemon.hardware import detect_hardware
+from daemon.hardware import apply_declared_vram, detect_hardware
 from daemon.models import WorkerInfo
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,12 @@ class RegistrationManager:
         """
         logger.info("Detecting hardware for registration...")
         hardware = await asyncio.to_thread(detect_hardware)
+        # DAEMON_VRAM_GB must shape registration exactly as it shapes the
+        # heartbeat, or the dashboard shows a GPU-less worker running GPU
+        # batches (or a full-size GPU on a provider lending part of it).
+        hardware["gpus"] = apply_declared_vram(
+            hardware.get("gpus", []), config.vram_gb, name=config.gpu_name,
+        )
 
         worker_info = WorkerInfo(
             worker_id=config.worker_id,

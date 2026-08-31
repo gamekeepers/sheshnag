@@ -27,7 +27,7 @@ INVITE_EXPIRY_SECONDS = 7 * 24 * 3600  # 7 days
 # ─── Request Schemas ────────────────────────────────────────
 
 class InviteRequest(BaseModel):
-    email: str
+    email: EmailStr
     role: str = "viewer"   # "owner" | "admin" | "viewer"
 
 class RoleUpdateRequest(BaseModel):

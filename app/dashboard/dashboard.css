@@ -15,6 +15,8 @@ html, body {
 :root {
   --bg: #06060A;
   --bg-panel: rgba(255, 255, 255, 0.045);
+  /* Opaque fallback for OS-drawn <option> popups (see select option rule). */
+  --option-bg: #14141A;
   --bg-panel-hover: rgba(255, 255, 255, 0.07);
   --border: rgba(255, 255, 255, 0.09);
   --border-soft: rgba(255, 255, 255, 0.05);
@@ -41,6 +43,10 @@ html, body {
   overflow: hidden;
   background: var(--bg);
   color: var(--fg);
+  /* Tell the browser this subtree is dark so the parts it draws itself —
+     <option> popups, their scrollbars, spinners — are painted dark too.
+     Scoped here rather than :root because the auth pages are light. */
+  color-scheme: dark;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   background:
     radial-gradient(circle at 15% 0%, rgba(120, 110, 255, 0.07), transparent 40%),
@@ -68,6 +74,18 @@ html, body {
   padding: 0.4rem 0.6rem 1.3rem;
   color: #fff;
   font-weight: 600;
+}
+
+/* Which portal you are standing in. Provider and admin both label themselves;
+   the user dashboard is the default and does not. */
+.sidebar-eyebrow {
+  padding: 0 0.6rem;
+  margin-bottom: 0.75rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dimmer);
 }
 
 .org-switcher {
@@ -181,6 +199,75 @@ html, body {
   width: 18px;
   text-align: center;
   opacity: 0.9;
+}
+
+/* Portal switch — the one control that spans both portals. Lives in the
+   sidebar footer of each, deliberately not styled as a .nav-item: moving
+   between portals is a change of context, not a change of tab. */
+.portal-switch {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  color: var(--dim);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.82rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.portal-switch:hover {
+  background: var(--bg-panel);
+  border-color: var(--border);
+  color: var(--fg);
+}
+.portal-switch-arrow {
+  margin-left: auto;
+  opacity: 0.55;
+}
+
+/* Documentation — sits under the portal switch in the same footer, and is
+   deliberately quieter than it: the switch moves you within the product, this
+   leaves it. Same metrics so the two line up; no border so only one of them
+   reads as a control. */
+.docs-link {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.75rem;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--dim);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.82rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.docs-link:hover {
+  background: var(--bg-panel);
+  color: var(--fg);
+}
+.docs-link-arrow {
+  margin-left: auto;
+  opacity: 0.55;
+}
+
+/* An inline deep link into the docs, dropped wherever the reader needs it. */
+.docs-inline {
+  color: var(--dim);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--border);
+  transition: color 0.12s ease, text-decoration-color 0.12s ease;
+}
+.docs-inline:hover {
+  color: var(--fg);
+  text-decoration-color: currentColor;
 }
 
 .profile-card {
@@ -341,6 +428,24 @@ h1.page-title {
 }
 
 /* ===================== SHARED GLASS PANEL ===================== */
+.pool-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.15rem 1rem;
+  color: var(--dim);
+  font-size: 0.76rem;
+  text-align: right;
+}
+.pool-strip strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+/* The header is a single row; below this the breadcrumb needs all of it. */
+@media (max-width: 900px) {
+  .pool-strip { display: none; }
+}
+
 .panel {
   background: var(--bg-panel);
   border: 1px solid var(--border);
@@ -348,6 +453,26 @@ h1.page-title {
   backdrop-filter: blur(20px);
   padding: 1.5rem;
   margin-bottom: 1.5rem;
+}
+
+/* Callout panels. The state a panel is reporting is carried by a class rather
+   than an inline border tint, so the three states read the same everywhere and
+   the alpha values live next to the tokens they are derived from. */
+.panel.ok {
+  border-color: rgba(74, 222, 128, 0.3);
+}
+.panel.warn {
+  border-color: rgba(251, 191, 36, 0.35);
+}
+.panel.alert {
+  border-color: rgba(248, 113, 113, 0.35);
+  color: var(--danger);
+}
+.panel.ok strong {
+  color: var(--online);
+}
+.panel.warn strong {
+  color: var(--busy);
 }
 
 .grid-3 {
@@ -361,8 +486,20 @@ h1.page-title {
   grid-template-columns: repeat(2, 1fr);
   gap: 1rem;
 }
+/* Admin's overview counts four things (total / active / completed / failed). */
+.grid-4 {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+@media (max-width: 1100px) {
+  .grid-4 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
 @media (max-width: 900px) {
-  .grid-3, .grid-2 {
+  .grid-3, .grid-2, .grid-4 {
     grid-template-columns: 1fr;
   }
 }
@@ -497,6 +634,37 @@ td.mono {
 .badge.failed {
   color: var(--danger);
   border-color: rgba(248, 113, 113, 0.3);
+}
+
+/* The rest of the batch lifecycle. Admin lists every status the backend can
+   emit, not just the four the user dashboard happens to show, and used to
+   carry its own hardcoded palette for them. Same four colour roles, reused. */
+.badge.running,
+.badge.finalizing {
+  color: var(--accent);
+  border-color: rgba(201, 196, 255, 0.3);
+}
+.badge.queued,
+.badge.cancelling {
+  color: var(--busy);
+  border-color: rgba(251, 191, 36, 0.3);
+}
+.badge.expired {
+  color: var(--danger);
+  border-color: rgba(248, 113, 113, 0.3);
+}
+.badge.cancelled {
+  color: var(--dim);
+}
+
+/* Platform role, shown against a user row. */
+.badge.superadmin {
+  color: var(--accent);
+  border-color: rgba(201, 196, 255, 0.3);
+}
+.badge.user {
+  color: var(--online);
+  border-color: rgba(74, 222, 128, 0.3);
 }
 
 @keyframes pulse {
@@ -710,6 +878,63 @@ td.mono {
   border-color: var(--accent);
 }
 
+/* A row of fields that submits together, rather than a stacked modal form. */
+.form-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.form-row .field {
+  flex: 1 1 200px;
+  margin-bottom: 0;
+}
+.form-row .check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding-bottom: 0.65rem;
+  color: var(--dim);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+/* A row of mutually exclusive filters, each a .btn, the active one .primary. */
+.filter-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.2rem;
+  flex-wrap: wrap;
+  text-transform: capitalize;
+}
+
+/* Base treatment for selects outside a .field wrapper, so every dropdown in
+   the product reads the same rather than falling back to the browser's
+   light-theme widget. .field select is more specific and still wins. */
+select {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  color: var(--fg);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+/* The popup is drawn by the OS, which will not carry a translucent
+   background into it — it falls back to white while still inheriting our
+   light `color`, leaving options invisible until highlighted. color-scheme
+   on .app-layout handles this in current browsers; paint an opaque colour
+   as well for those that ignore it. */
+select option {
+  background-color: var(--option-bg);
+  color: var(--fg);
+}
+
 .modal-overlay {
   display: none;
   position: fixed;
@@ -731,7 +956,14 @@ td.mono {
   padding: 1.8rem;
   width: 420px;
   max-width: 92vw;
+  /* Modals grow when they carry a snippet (the key reveal does) — cap them
+     against the viewport so the actions stay reachable on a short screen. */
+  max-height: 86vh;
+  overflow-y: auto;
   box-shadow: 0 30px 60px rgba(0, 0, 0, 0.55);
+}
+.modal.modal-wide {
+  width: 560px;
 }
 .modal h3 {
   margin: 0 0 0.4rem 0;
@@ -771,4 +1003,86 @@ td.mono {
   color: var(--dimmer);
   text-align: center;
   padding: 1.2rem 0;
+}
+
+/* ===================== TEACHING BLOCKS ===================== */
+/* Explanation shown at the moment it is needed — see the in-product education
+   surfaces note, journey 2.1. Deliberately quieter than a .panel: this is
+   guidance sitting next to the control, not a section of its own. */
+.teach {
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
+  margin: 1rem 0 1.5rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+.teach-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+.teach-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--fg);
+}
+.teach-body {
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--dim);
+  margin: 0 0 0.5rem 0;
+}
+.teach-code {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  color: var(--fg);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 0.7rem 0.8rem;
+  margin: 0.5rem 0 0 0;
+  overflow-x: auto;
+  white-space: pre;
+}
+/* Reads as a link, but stays a button so it cannot be middle-clicked into a
+   dead route — these switch tabs in place rather than navigating. */
+.teach-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.teach-link:hover {
+  color: var(--fg);
+}
+
+.teach-empty {
+  text-align: left;
+  padding: 1.6rem 1.8rem;
+}
+.teach-step {
+  display: flex;
+  gap: 0.85rem;
+  align-items: flex-start;
+  margin-top: 1.2rem;
+}
+.teach-step-n {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.72rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }

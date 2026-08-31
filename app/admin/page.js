@@ -3,6 +3,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import SheshnagLogo from '../components/SheshnagLogo';
+import PortalSwitch from '../components/PortalSwitch';
+import DocsLink from '../components/DocsLink';
+import '../dashboard/dashboard.css';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
@@ -15,19 +19,6 @@ function authHeaders() {
   };
 }
 
-/* ── Logo ── */
-function SheshnagLogo({ size = 22 }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
-        <path d="M22.5 6.5C11.5 5.5 9.5 13 15.5 15.6C21.5 18.2 23 25.5 11 26.5" stroke="#fff" strokeWidth="3.2" strokeLinecap="round"/>
-        <circle cx="23" cy="6.7" r="2.2" fill="#fff"/>
-      </svg>
-      <span style={{ color: '#fff', fontSize: size * 0.63, fontWeight: 500, letterSpacing: '0.1em' }}>SHESHNAG</span>
-    </div>
-  );
-}
-
 /* ── Nav ── */
 const NAV_ITEMS = [
   { id: 'overview',  label: 'Overview',  icon: '⬛' },
@@ -37,29 +28,14 @@ const NAV_ITEMS = [
   { id: 'domains',   label: 'Domains',   icon: '🔒' },
 ];
 
-/* ── Status colours ── */
-const JOB_STATUS_COLORS = {
-  completed:  { bg: '#1a3a1a', border: '#2d5a2d', text: '#4ade80' },
-  running:    { bg: '#1a2a4a', border: '#2d4a8a', text: '#60a5fa' },
-  in_progress:{ bg: '#1a2a4a', border: '#2d4a8a', text: '#60a5fa' },
-  queued:     { bg: '#2a2010', border: '#5a4a20', text: '#fbbf24' },
-  validating: { bg: '#2a2010', border: '#5a4a20', text: '#fbbf24' },
-  finalizing: { bg: '#1a2a4a', border: '#2d4a8a', text: '#60a5fa' },
-  failed:     { bg: '#3a1a1a', border: '#5a2d2d', text: '#f87171' },
-  expired:    { bg: '#3a1a1a', border: '#5a2d2d', text: '#f87171' },
-  cancelled:  { bg: '#2a2a2a', border: '#333',    text: '#666' },
-  cancelling: { bg: '#2a2010', border: '#5a4a20', text: '#fbbf24' },
-};
-
+/* Status pill.
+   The whole lifecycle is styled by .badge.<status> in dashboard.css, the same
+   sheet the user and provider portals use, so this no longer carries a palette
+   of its own. Anything unrecognised falls back to the bare .badge. */
 function StatusPill({ status }) {
-  const c = JOB_STATUS_COLORS[status] || { bg: '#222', border: '#333', text: '#888' };
   return (
-    <span style={{
-      padding: '2px 10px', borderRadius: '999px', fontSize: '11px', fontWeight: 500,
-      backgroundColor: c.bg, border: `1px solid ${c.border}`, color: c.text,
-      textTransform: 'capitalize',
-    }}>
-      {status?.replace(/_/g, ' ')}
+    <span className={`badge ${status || ''}`}>
+      {(status || 'unknown').replace(/_/g, ' ')}
     </span>
   );
 }
@@ -89,26 +65,27 @@ function mapBatch(b) {
   };
 }
 
-/* ── Generic table shell ── */
-function AdminTable({ headers, cols, rows, renderRow, emptyMsg = 'No data' }) {
+/* Generic table shell.
+   Used to be a CSS-grid of divs with a `cols` prop and its own borders — a
+   third table implementation, after the semantic <table> the other two portals
+   share. It now emits exactly the markup they do (.table-container > table,
+   .empty-hint for the empty row) so all three are styled by one set of rules.
+   Kept as a component only because admin draws five of these; the DOM it
+   produces is the same one dashboard and provider write by hand. */
+function AdminTable({ headers, rows, renderRow, emptyMsg = 'No data' }) {
   return (
-    <div style={{ backgroundColor: '#111', border: '1px solid #1e1e1e', borderRadius: '12px', overflow: 'hidden' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: cols, padding: '10px 18px', borderBottom: '1px solid #1a1a1a' }}>
-        {headers.map(h => (
-          <span key={h} style={{ fontSize: '10px', color: '#444', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{h}</span>
-        ))}
-      </div>
-      {rows.length === 0
-        ? <div style={{ padding: '40px', textAlign: 'center', color: '#444', fontSize: '13px' }}>{emptyMsg}</div>
-        : rows.map((row, i) => (
-            <div key={row.id || i} style={{
-              display: 'grid', gridTemplateColumns: cols, padding: '12px 18px', alignItems: 'center',
-              borderBottom: i === rows.length - 1 ? 'none' : '1px solid #161616',
-            }}>
-              {renderRow(row)}
-            </div>
-          ))
-      }
+    <div className="table-container">
+      <table>
+        <thead>
+          <tr>{headers.map(h => <th key={h}>{h}</th>)}</tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => <tr key={row.id || i}>{renderRow(row)}</tr>)}
+          {rows.length === 0 && (
+            <tr><td colSpan={headers.length} className="empty-hint">{emptyMsg}</td></tr>
+          )}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -141,45 +118,35 @@ function EditUserModal({ user, onClose, onSaved }) {
     }
   }
 
-  const inputStyle = {
-    width: '100%', padding: '9px 12px', backgroundColor: '#1a1a1a', border: '1px solid #2a2a2a',
-    borderRadius: '8px', color: '#fff', fontSize: '13px', outline: 'none', boxSizing: 'border-box',
-  };
-  const labelStyle = { fontSize: '11px', color: '#555', textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: '6px' };
-
   return (
-    <div style={{
-      position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 999,
-    }}>
-      <div style={{ backgroundColor: '#111', border: '1px solid #2a2a2a', borderRadius: '16px', padding: '28px', width: '380px' }}>
-        <h2 style={{ color: '#fff', fontSize: '15px', fontWeight: 500, margin: '0 0 20px' }}>Edit User</h2>
+    <div className="modal-overlay open">
+      <div className="modal">
+        <h3>Edit user</h3>
+        <p className="modal-sub">{user.email}</p>
 
-        <div style={{ marginBottom: '16px' }}>
-          <label style={labelStyle}>Email (read-only)</label>
-          <input value={user.email || ''} disabled style={{ ...inputStyle, color: '#444', cursor: 'not-allowed' }} />
+        <div className="field">
+          <label>Email (read-only)</label>
+          <input value={user.email || ''} disabled />
         </div>
 
-        <div style={{ marginBottom: '16px' }}>
-          <label style={labelStyle}>Full Name</label>
-          <input value={fullName} onChange={e => setFullName(e.target.value)} style={inputStyle} />
+        <div className="field">
+          <label>Full name</label>
+          <input value={fullName} onChange={e => setFullName(e.target.value)} />
         </div>
 
-        <div style={{ marginBottom: '20px' }}>
-          <label style={labelStyle}>Role</label>
-          <select value={platformRole} onChange={e => setPlatformRole(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+        <div className="field">
+          <label>Role</label>
+          <select value={platformRole} onChange={e => setPlatformRole(e.target.value)}>
             <option value="user">User</option>
             <option value="superadmin">Superadmin</option>
           </select>
         </div>
 
-        {err && <p style={{ color: '#f87171', fontSize: '12px', marginBottom: '12px' }}>{err}</p>}
+        {err && <p className="empty-hint" style={{ color: 'var(--danger)' }}>{err}</p>}
 
-        <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-          <button onClick={onClose} style={{ padding: '8px 18px', borderRadius: '8px', border: '1px solid #2a2a2a', background: 'transparent', color: '#aaa', cursor: 'pointer', fontSize: '13px' }}>
-            Cancel
-          </button>
-          <button onClick={handleSave} disabled={saving} style={{ padding: '8px 18px', borderRadius: '8px', border: 'none', background: '#fff', color: '#000', cursor: saving ? 'default' : 'pointer', fontSize: '13px', fontWeight: 500 }}>
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn primary" onClick={handleSave} disabled={saving}>
             {saving ? 'Saving…' : 'Save'}
           </button>
         </div>
@@ -207,15 +174,23 @@ export default function AdminPage() {
   const [domainBusy,    setDomainBusy]    = useState(false);
 
   /* ── load admin profile ── */
-  async function loadAdminProfile() {
+  // useCallback like the other loaders below: it now closes over `router` for
+  // the must_change_password redirect, so the effect needs a stable identity.
+  const loadAdminProfile = useCallback(async () => {
     try {
       const res = await fetch(`${BACKEND}/v1/auth/me`, { headers: authHeaders() });
       if (res.ok) {
         const d = await res.json();
+        // The seeded superadmin lands here first and is exactly the account
+        // that ships with a published password — send it to the change form.
+        if (d.must_change_password) {
+          router.replace('/change-password');
+          return;
+        }
         setAdminUser({ name: d.full_name || d.email || 'Admin', platform_role: d.platform_role || 'superadmin' });
       }
     } catch {}
-  }
+  }, [router]);
 
   /* ── load all jobs ── */
   const loadJobs = useCallback(async () => {
@@ -323,7 +298,7 @@ export default function AdminPage() {
     loadUsers();
     loadWorkers();
     loadDomains();
-  }, [router, loadJobs, loadUsers, loadWorkers, loadDomains]);
+  }, [router, loadAdminProfile, loadJobs, loadUsers, loadWorkers, loadDomains]);
 
   function handleLogout() {
     localStorage.removeItem('mk_token');
@@ -343,277 +318,261 @@ export default function AdminPage() {
   const failedJobs    = jobs.filter(j => ['failed','expired','cancelled'].includes(j.status)).length;
   const filteredJobs  = jobFilter === 'all' ? jobs : jobs.filter(j => j.status === jobFilter);
 
-  /* ─────────────────── Shared styles ─────────────────── */
-  const S = {
-    card: { backgroundColor: '#111', border: '1px solid #1e1e1e', borderRadius: '12px', padding: '18px 20px' },
-  };
+  const pageTitle = NAV_ITEMS.find(n => n.id === activeNav)?.label;
 
   return (
-    <div style={{ display: 'flex', height: '100vh', backgroundColor: '#0a0a0a', color: '#ccc', fontFamily: "'Inter', sans-serif", overflow: 'hidden' }}>
+    <div className="app-layout">
 
       {/* ── SIDEBAR ── */}
-      <div style={{ width: '210px', flexShrink: 0, backgroundColor: '#0f0f0f', borderRight: '1px solid #1e1e1e', display: 'flex', flexDirection: 'column', padding: '16px 0' }}>
-        <div style={{ padding: '0 16px 16px', borderBottom: '1px solid #1e1e1e', marginBottom: '12px' }}>
-          <Link href="/"><SheshnagLogo size={22} /></Link>
-          <div style={{ marginTop: '8px', padding: '3px 8px', borderRadius: '6px', backgroundColor: '#1a1a1a', border: '1px solid #2a2a2a', fontSize: '10px', color: '#555', letterSpacing: '0.08em', display: 'inline-block' }}>
-            ADMIN PANEL
-          </div>
+      <aside className="sidebar">
+        <div className="logo">
+          <Link href="/"><SheshnagLogo /></Link>
         </div>
 
-        <div style={{ flex: 1, padding: '0 8px' }}>
-          <p style={{ fontSize: '9px', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', padding: '0 8px', marginBottom: '6px' }}>Manage</p>
+        <div className="sidebar-eyebrow">Admin panel</div>
+
+        <nav className="nav">
           {NAV_ITEMS.map(item => (
-            <button key={item.id} onClick={() => setActiveNav(item.id)} style={{
-              display: 'flex', alignItems: 'center', gap: '10px',
-              width: '100%', padding: '9px 10px', borderRadius: '8px', border: 'none', cursor: 'pointer',
-              fontSize: '13px', textAlign: 'left', marginBottom: '2px', transition: 'all 0.15s',
-              backgroundColor: activeNav === item.id ? '#1e1e1e' : 'transparent',
-              color: activeNav === item.id ? '#fff' : '#555',
-            }}>
-              <span style={{ fontSize: '14px' }}>{item.icon}</span>
-              {item.label}
-            </button>
+            <div
+              key={item.id}
+              className={`nav-item ${activeNav === item.id ? 'active' : ''}`}
+              onClick={() => setActiveNav(item.id)}
+            >
+              <span className="ic">{item.icon}</span> {item.label}
+            </div>
           ))}
-        </div>
+        </nav>
 
-        {/* Admin user + logout */}
-        <div style={{ padding: '12px 16px', borderTop: '1px solid #1e1e1e' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <div style={{ width: '28px', height: '28px', borderRadius: '50%', backgroundColor: '#2d3a5a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', color: '#fff', fontWeight: 600 }}>
-              {adminUser.name.charAt(0).toUpperCase()}
+        <div className="sidebar-bottom">
+          <PortalSwitch to="user" />
+          <DocsLink page="self-host/" />
+          <div className="profile-card">
+            <div className="avatar"></div>
+            <div className="profile-meta">
+              <div className="profile-name">{adminUser.name}</div>
+              <div className="profile-email" style={{ textTransform: 'capitalize' }}>{adminUser.platform_role}</div>
             </div>
-            <div>
-              <p style={{ fontSize: '12px', color: '#fff', margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '120px' }}>{adminUser.name}</p>
-              <p style={{ fontSize: '10px', color: '#444', margin: 0, textTransform: 'capitalize' }}>{adminUser.platform_role}</p>
-            </div>
+            <button className="signout" onClick={handleLogout}>Sign out</button>
           </div>
-          <button onClick={handleLogout} style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '8px 12px', marginTop: '12px', borderRadius: '6px', border: '1px solid #3a1a1a', cursor: 'pointer', fontSize: '12px', backgroundColor: '#1a0a0a', color: '#f87171' }}>
-            <span>🚪</span> Logout
-          </button>
         </div>
-      </div>
+      </aside>
 
       {/* ── MAIN ── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div className="main-content">
 
-        {/* Top bar */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 24px', borderBottom: '1px solid #1e1e1e', flexShrink: 0 }}>
-          <h1 style={{ fontSize: '15px', fontWeight: 500, color: '#fff', margin: 0 }}>
-            {NAV_ITEMS.find(n => n.id === activeNav)?.label}
-          </h1>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            {lastRefresh && <span style={{ fontSize: '11px', color: '#444' }}>Updated {lastRefresh}</span>}
-            <button onClick={() => { loadJobs(); loadUsers(); }} disabled={isLoading} style={{ padding: '5px 12px', borderRadius: '8px', border: '1px solid #2a2a2a', background: 'transparent', color: isLoading ? '#444' : '#aaa', cursor: isLoading ? 'default' : 'pointer', fontSize: '12px' }}>
-              {isLoading ? '↻ Loading...' : '↻ Refresh'}
+        <div className="header">
+          <div className="breadcrumbs">
+            Admin / <span className="current">{pageTitle}</span>
+          </div>
+          <div className="header-right">
+            {lastRefresh && <span className="page-sub" style={{ margin: 0 }}>Updated {lastRefresh}</span>}
+            <button className="btn" onClick={() => { loadJobs(); loadUsers(); }} disabled={isLoading}>
+              {isLoading ? '↻ Loading…' : '↻ Refresh'}
             </button>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ width: '7px', height: '7px', borderRadius: '50%', display: 'inline-block', backgroundColor: backendStatus === 'live' ? '#22c55e' : backendStatus === 'offline' ? '#ef4444' : '#f59e0b', boxShadow: backendStatus === 'live' ? '0 0 6px #22c55e' : 'none' }} />
-              <span style={{ fontSize: '11px', color: '#555' }}>
-                {backendStatus === 'live' ? 'Backend live' : backendStatus === 'offline' ? 'Backend offline' : 'Connecting...'}
-              </span>
-            </div>
+            <span className={`badge ${backendStatus === 'live' ? 'online' : backendStatus === 'offline' ? 'failed' : 'busy'}`}>
+              <span className="pip"></span>
+              {backendStatus === 'live' ? 'Backend live' : backendStatus === 'offline' ? 'Backend offline' : 'Connecting…'}
+            </span>
           </div>
         </div>
 
-        {/* Body */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+        <div className="content-body">
 
           {/* ── OVERVIEW ── */}
           {activeNav === 'overview' && (
-            <>
-              {/* Stat cards */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '24px' }}>
-                {[
-                  { label: 'Total Jobs',  value: totalJobs,     icon: '📋', color: '#fff' },
-                  { label: 'Active',      value: activeJobs,    icon: '⚙️',  color: '#60a5fa' },
-                  { label: 'Completed',   value: completedJobs, icon: '✅',  color: '#4ade80' },
-                  { label: 'Failed',      value: failedJobs,    icon: '❌',  color: '#f87171' },
-                ].map(c => (
-                  <div key={c.label} style={S.card}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '10px' }}>
-                      <p style={{ fontSize: '11px', color: '#444', textTransform: 'uppercase', letterSpacing: '0.06em', margin: 0 }}>{c.label}</p>
-                      <span style={{ fontSize: '16px' }}>{c.icon}</span>
-                    </div>
-                    <p style={{ fontSize: '28px', fontWeight: 600, color: c.color, margin: 0 }}>{c.value}</p>
-                  </div>
-                ))}
-              </div>
+            <div className="page-panel active">
+              <h1 className="page-title">Overview</h1>
+              <p className="page-sub">Everything on this deployment, across all organizations.</p>
 
-              {/* Users quick summary */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px', marginBottom: '24px' }}>
-                <div style={S.card}>
-                  <p style={{ fontSize: '11px', color: '#444', textTransform: 'uppercase', letterSpacing: '0.06em', margin: '0 0 10px' }}>Total Users</p>
-                  <p style={{ fontSize: '28px', fontWeight: 600, color: '#fff', margin: 0 }}>{users.length}</p>
+              <div className="grid-4">
+                <div className="panel stat-card">
+                  <div className="stat-label">Total jobs</div>
+                  <div className="stat-value">{totalJobs}</div>
                 </div>
-                <div style={S.card}>
-                  <p style={{ fontSize: '11px', color: '#444', textTransform: 'uppercase', letterSpacing: '0.06em', margin: '0 0 10px' }}>Superadmins</p>
-                  <p style={{ fontSize: '28px', fontWeight: 600, color: '#a78bfa', margin: 0 }}>{users.filter(isSuperadmin).length}</p>
+                <div className="panel stat-card">
+                  <div className="stat-label">Active</div>
+                  <div className="stat-value">{activeJobs}</div>
+                </div>
+                <div className="panel stat-card">
+                  <div className="stat-label">Completed</div>
+                  <div className="stat-value">{completedJobs}</div>
+                </div>
+                <div className="panel stat-card">
+                  <div className="stat-label">Failed</div>
+                  <div className="stat-value">{failedJobs}</div>
                 </div>
               </div>
 
-              <p style={{ fontSize: '11px', color: '#444', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>Recent Jobs</p>
-              <AdminTable
-                headers={['Job ID', 'User', 'Prompts', 'Status', 'Started']}
-                cols="180px 1fr 80px 130px 160px"
-                rows={jobs.slice(0, 8)}
-                emptyMsg={isLoading ? 'Loading…' : 'No jobs yet'}
-                renderRow={job => (<>
-                  <span style={{ fontFamily: 'monospace', fontSize: '11px', color: '#ddd' }}>{job.id}</span>
-                  <span style={{ fontSize: '12px', color: '#888' }}>{job.user}</span>
-                  <span style={{ fontSize: '13px', color: '#ddd' }}>{Number(job.prompts).toLocaleString()}</span>
-                  <StatusPill status={job.status} />
-                  <span style={{ fontSize: '11px', color: '#555' }}>{job.started}</span>
-                </>)}
-              />
-            </>
+              <div className="grid-2">
+                <div className="panel stat-card">
+                  <div className="stat-label">Total users</div>
+                  <div className="stat-value">{users.length}</div>
+                </div>
+                <div className="panel stat-card">
+                  <div className="stat-label">Superadmins</div>
+                  <div className="stat-value">{users.filter(isSuperadmin).length}</div>
+                </div>
+              </div>
+
+              <div className="section-title">Recent jobs</div>
+              <div className="panel">
+                <AdminTable
+                  headers={['Job ID', 'User', 'Prompts', 'Status', 'Started']}
+                  rows={jobs.slice(0, 8)}
+                  emptyMsg={isLoading ? 'Loading…' : 'No jobs yet'}
+                  renderRow={job => (<>
+                    <td className="mono">{job.id}</td>
+                    <td className="dim">{job.user}</td>
+                    <td>{Number(job.prompts).toLocaleString()}</td>
+                    <td><StatusPill status={job.status} /></td>
+                    <td className="dim">{job.started}</td>
+                  </>)}
+                />
+              </div>
+            </div>
           )}
 
           {/* ── JOBS ── */}
           {activeNav === 'jobs' && (
-            <>
-              {/* Filter bar */}
-              <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <div className="page-panel active">
+              <h1 className="page-title">Jobs</h1>
+              <p className="page-sub">
+                {filteredJobs.length} job{filteredJobs.length !== 1 ? 's' : ''}
+                {jobFilter !== 'all' && <> with status <span className="mono">{jobFilter.replace(/_/g, ' ')}</span></>}
+              </p>
+
+              <div className="filter-row">
                 {['all', 'validating', 'running', 'in_progress', 'completed', 'failed', 'cancelled', 'expired'].map(f => (
-                  <button key={f} onClick={() => setJobFilter(f)} style={{
-                    padding: '5px 14px', borderRadius: '999px', border: '1px solid',
-                    fontSize: '12px', cursor: 'pointer', transition: 'all 0.15s',
-                    borderColor: jobFilter === f ? '#fff' : '#2a2a2a',
-                    backgroundColor: jobFilter === f ? '#fff' : 'transparent',
-                    color: jobFilter === f ? '#000' : '#555',
-                    textTransform: 'capitalize',
-                  }}>
+                  <button
+                    key={f}
+                    className={`btn ${jobFilter === f ? 'primary' : ''}`}
+                    onClick={() => setJobFilter(f)}
+                  >
                     {f.replace(/_/g, ' ')}
                   </button>
                 ))}
-                <span style={{ marginLeft: 'auto', fontSize: '12px', color: '#444' }}>
-                  {filteredJobs.length} job{filteredJobs.length !== 1 ? 's' : ''}
-                </span>
               </div>
 
-              <AdminTable
-                headers={['Job ID', 'User', 'Prompts', 'Status', 'Provider', 'Started']}
-                cols="180px 1fr 80px 140px 120px 160px"
-                rows={filteredJobs}
-                emptyMsg={isLoading ? 'Loading…' : 'No jobs found'}
-                renderRow={job => (<>
-                  <span style={{ fontFamily: 'monospace', fontSize: '11px', color: '#ddd' }}>{job.id}</span>
-                  <span style={{ fontSize: '12px', color: '#888' }}>{job.user}</span>
-                  <span style={{ fontSize: '13px', color: '#ddd' }}>{Number(job.prompts).toLocaleString()}</span>
-                  <StatusPill status={job.status} />
-                  <span style={{ fontSize: '12px', color: '#666' }}>{job.provider}</span>
-                  <span style={{ fontSize: '11px', color: '#555' }}>{job.started}</span>
-                </>)}
-              />
-            </>
+              <div className="panel">
+                <AdminTable
+                  headers={['Job ID', 'User', 'Prompts', 'Status', 'Provider', 'Started']}
+                  rows={filteredJobs}
+                  emptyMsg={isLoading ? 'Loading…' : 'No jobs found'}
+                  renderRow={job => (<>
+                    <td className="mono">{job.id}</td>
+                    <td className="dim">{job.user}</td>
+                    <td>{Number(job.prompts).toLocaleString()}</td>
+                    <td><StatusPill status={job.status} /></td>
+                    <td className="dim">{job.provider}</td>
+                    <td className="dim">{job.started}</td>
+                  </>)}
+                />
+              </div>
+            </div>
           )}
 
           {/* ── USERS ── */}
           {activeNav === 'users' && (
-            <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <p style={{ fontSize: '11px', color: '#444', textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
-                  All Users — {users.length} total
-                </p>
+            <div className="page-panel active">
+              <h1 className="page-title">Users</h1>
+              <p className="page-sub">{users.length} account{users.length === 1 ? '' : 's'} on this deployment.</p>
+
+              <div className="panel">
+                <AdminTable
+                  headers={['Name', 'Email', 'Role', 'Actions']}
+                  rows={users}
+                  emptyMsg="No users found"
+                  renderRow={user => (<>
+                    <td>{user.full_name || '—'}</td>
+                    <td className="dim">{user.email}</td>
+                    <td>
+                      <span className={`badge ${isSuperadmin(user) ? 'superadmin' : 'user'}`}>
+                        {getDisplayRole(user)}
+                      </span>
+                    </td>
+                    <td>
+                      <button className="btn" onClick={() => setEditingUser(user)}>Edit</button>
+                    </td>
+                  </>)}
+                />
               </div>
-              <AdminTable
-                headers={['Name', 'Email', 'Role', 'Actions']}
-                cols="1fr 1fr 120px 100px"
-                rows={users}
-                emptyMsg="No users found"
-                renderRow={user => (<>
-                  <span style={{ fontSize: '13px', color: '#fff' }}>{user.full_name || '—'}</span>
-                  <span style={{ fontSize: '12px', color: '#888' }}>{user.email}</span>
-                  <span style={{ fontSize: '11px', padding: '2px 10px', borderRadius: '999px', border: '1px solid', display: 'inline-block',
-                    ...(isSuperadmin(user)
-                      ? { backgroundColor: '#1e1040', borderColor: '#4c1d95', color: '#a78bfa' }
-                      : { backgroundColor: '#1a3a1a', borderColor: '#2d5a2d', color: '#4ade80' })
-                  }}>
-                    {getDisplayRole(user)}
-                  </span>
-                  <button onClick={() => setEditingUser(user)} style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid #2a2a2a', background: 'transparent', color: '#aaa', cursor: 'pointer', fontSize: '12px' }}>
-                    Edit
-                  </button>
-                </>)}
-              />
-            </>
+            </div>
           )}
 
           {/* ── WORKERS ── */}
           {activeNav === 'workers' && (
-            <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                <p style={{ fontSize: '11px', color: '#444', textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
-                  All Workers — {workers.length} total
-                </p>
+            <div className="page-panel active">
+              <h1 className="page-title">Workers</h1>
+              <p className="page-sub">{workers.length} worker{workers.length === 1 ? '' : 's'} registered across all organizations.</p>
+
+              <div className="panel">
+                <AdminTable
+                  headers={['Worker ID', 'Org ID', 'GPUs', 'VRAM total', 'Loaded models', 'Status', 'Last heartbeat']}
+                  rows={workers}
+                  emptyMsg="No workers found"
+                  renderRow={p => (<>
+                    <td className="mono">{p.worker_id || p.id || '—'}</td>
+                    <td className="dim">{p.org_id || '—'}</td>
+                    <td className="dim">{(p.gpus || []).map(g => g.name).join(', ') || '—'}</td>
+                    <td>{(p.gpus || []).reduce((acc, g) => acc + (g.vram_gb || 0), 0)} GB</td>
+                    <td className="dim">{(p.runtimes || []).flatMap(r => r.models || []).join(', ') || '—'}</td>
+                    <td>
+                      <span className={`badge ${p.status === 'online' ? 'online' : p.status === 'busy' ? 'busy' : 'offline'}`}>
+                        <span className="pip"></span>{p.status || 'unknown'}
+                      </span>
+                    </td>
+                    <td className="dim">
+                      {p.last_heartbeat ? new Date(p.last_heartbeat * 1000).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '—'}
+                    </td>
+                  </>)}
+                />
               </div>
-              <AdminTable
-                headers={['Worker ID', 'Org ID', 'GPUs', 'VRAM Total', 'Loaded Models', 'Status', 'Last Heartbeat']}
-                cols="140px 140px 180px 100px 1fr 100px 140px"
-                rows={workers}
-                emptyMsg="No workers found"
-                renderRow={p => (<>
-                  <span style={{ fontFamily: 'monospace', fontSize: '11px', color: '#ddd' }}>{p.worker_id || p.id || '—'}</span>
-                  <span style={{ fontSize: '12px', color: '#888' }}>{p.org_id || '—'}</span>
-                  <span style={{ fontSize: '12px', color: '#aaa' }}>{(p.gpus || []).map(g => g.name).join(', ') || '—'}</span>
-                  <span style={{ fontSize: '13px', color: '#ddd' }}>{(p.gpus || []).reduce((acc, g) => acc + (g.vram_gb || 0), 0)} GB</span>
-                  <span style={{ fontSize: '12px', color: '#888' }}>{(p.runtimes || []).flatMap(r => r.models || []).join(', ') || '—'}</span>
-                  <span style={{
-                    fontSize: '11px', padding: '2px 10px', borderRadius: '999px', border: '1px solid', display: 'inline-block',
-                    ...(p.status === 'online'
-                      ? { backgroundColor: '#1a3a1a', borderColor: '#2d5a2d', color: '#4ade80' }
-                      : p.status === 'busy'
-                      ? { backgroundColor: '#1a2a4a', borderColor: '#2d4a8a', color: '#60a5fa' }
-                      : { backgroundColor: '#3a1a1a', borderColor: '#5a2d2d', color: '#f87171' })
-                  }}>
-                    {p.status || 'unknown'}
-                  </span>
-                  <span style={{ fontSize: '11px', color: '#555' }}>
-                    {p.last_heartbeat ? new Date(p.last_heartbeat * 1000).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '—'}
-                  </span>
-                </>)}
-              />
-            </>
+            </div>
           )}
 
           {/* ── DOMAINS ── */}
           {activeNav === 'domains' && (
-            <>
-              <div style={{ marginBottom: '16px' }}>
-                <p style={{ fontSize: '11px', color: '#444', textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 8px' }}>
-                  Sign-up domains
-                </p>
-                {domains.length === 0 ? (
-                  <div style={{ padding: '12px 16px', borderRadius: '8px', backgroundColor: '#2a1e0a', border: '1px solid #4a3410', color: '#fbbf24', fontSize: '13px' }}>
-                    <strong>No restrictions — anyone with any email address can sign up.</strong>
-                    <div style={{ color: '#a98a3f', marginTop: 4, fontSize: '12px' }}>
-                      Add a domain below to restrict sign-ups to your institution.
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ padding: '12px 16px', borderRadius: '8px', backgroundColor: '#0f2a16', border: '1px solid #1d4a2a', color: '#4ade80', fontSize: '13px' }}>
-                    Sign-ups are restricted to {domains.length} approved domain{domains.length === 1 ? '' : 's'}.
-                    <div style={{ color: '#3f8a5a', marginTop: 4, fontSize: '12px' }}>
-                      Invited users and accounts created by an admin bypass this list by design.
-                    </div>
-                  </div>
-                )}
-              </div>
+            <div className="page-panel active">
+              <h1 className="page-title">Domains</h1>
+              <p className="page-sub">Which email domains may create an account without an invitation.</p>
 
-              <form onSubmit={handleAddDomain} style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap' }}>
-                <input
-                  value={domainForm.domain}
-                  onChange={e => setDomainForm({ ...domainForm, domain: e.target.value })}
-                  placeholder="dau.ac.in"
-                  required
-                  style={{ flex: '1 1 200px', padding: '9px 12px', borderRadius: '8px', border: '1px solid #2a2a2a', background: '#0d0d0d', color: '#fff', fontSize: '13px' }}
-                />
-                <input
-                  value={domainForm.note}
-                  onChange={e => setDomainForm({ ...domainForm, note: e.target.value })}
-                  placeholder="Note (optional) — e.g. Students"
-                  style={{ flex: '1 1 200px', padding: '9px 12px', borderRadius: '8px', border: '1px solid #2a2a2a', background: '#0d0d0d', color: '#fff', fontSize: '13px' }}
-                />
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#888', fontSize: '12px', cursor: 'pointer' }}>
+              {domains.length === 0 ? (
+                <div className="panel warn">
+                  <strong>No restrictions — anyone with any email address can sign up.</strong>
+                  <p className="page-sub" style={{ margin: '0.4rem 0 0' }}>
+                    Add a domain below to restrict sign-ups to your institution.
+                  </p>
+                </div>
+              ) : (
+                <div className="panel ok">
+                  <strong>
+                    Sign-ups are restricted to {domains.length} approved domain{domains.length === 1 ? '' : 's'}.
+                  </strong>
+                  <p className="page-sub" style={{ margin: '0.4rem 0 0' }}>
+                    Invited users and accounts created by an admin bypass this list by design.
+                  </p>
+                </div>
+              )}
+
+              <form onSubmit={handleAddDomain} className="panel form-row">
+                <div className="field">
+                  <label>Domain</label>
+                  <input
+                    value={domainForm.domain}
+                    onChange={e => setDomainForm({ ...domainForm, domain: e.target.value })}
+                    placeholder="dau.ac.in"
+                    required
+                  />
+                </div>
+                <div className="field">
+                  <label>Note (optional)</label>
+                  <input
+                    value={domainForm.note}
+                    onChange={e => setDomainForm({ ...domainForm, note: e.target.value })}
+                    placeholder="e.g. Students"
+                  />
+                </div>
+                <label className="check">
                   <input
                     type="checkbox"
                     checked={domainForm.include_subdomains}
@@ -621,39 +580,36 @@ export default function AdminPage() {
                   />
                   Include subdomains
                 </label>
-                <button type="submit" disabled={domainBusy} style={{ padding: '9px 16px', borderRadius: '8px', border: '1px solid #2a2a2a', background: '#1a1a1a', color: '#fff', cursor: domainBusy ? 'default' : 'pointer', fontSize: '13px', opacity: domainBusy ? 0.6 : 1 }}>
+                <button type="submit" className="btn primary" disabled={domainBusy}>
                   {domainBusy ? 'Adding…' : 'Add domain'}
                 </button>
               </form>
 
-              {domainErr && (
-                <div style={{ padding: '10px 14px', marginBottom: '16px', borderRadius: '8px', backgroundColor: '#2a0f0f', border: '1px solid #4a1a1a', color: '#f87171', fontSize: '13px' }}>
-                  {domainErr}
-                </div>
-              )}
+              {domainErr && <div className="panel alert">{domainErr}</div>}
 
-              <AdminTable
-                headers={['Domain', 'Subdomains', 'Note', 'Actions']}
-                cols="1fr 120px 1fr 100px"
-                rows={domains}
-                emptyMsg="No domains — sign-up is open to everyone"
-                renderRow={d => (<>
-                  <span style={{ fontSize: '13px', color: '#fff' }}>{d.domain}</span>
-                  <span style={{ fontSize: '12px', color: d.include_subdomains ? '#4ade80' : '#555' }}>
-                    {d.include_subdomains ? 'Included' : 'Exact only'}
-                  </span>
-                  <span style={{ fontSize: '12px', color: '#888' }}>{d.note || '—'}</span>
-                  <button onClick={() => handleRemoveDomain(d.id, d.domain)} style={{ padding: '5px 12px', borderRadius: '6px', border: '1px solid #4a1a1a', background: 'transparent', color: '#f87171', cursor: 'pointer', fontSize: '12px' }}>
-                    Remove
-                  </button>
-                </>)}
-              />
+              <div className="panel">
+                <AdminTable
+                  headers={['Domain', 'Subdomains', 'Note', 'Actions']}
+                  rows={domains}
+                  emptyMsg="No domains — sign-up is open to everyone"
+                  renderRow={d => (<>
+                    <td>{d.domain}</td>
+                    <td className="dim">{d.include_subdomains ? 'Included' : 'Exact only'}</td>
+                    <td className="dim">{d.note || '—'}</td>
+                    <td>
+                      <button className="btn danger" onClick={() => handleRemoveDomain(d.id, d.domain)}>
+                        Remove
+                      </button>
+                    </td>
+                  </>)}
+                />
+              </div>
 
-              <p style={{ fontSize: '11px', color: '#444', marginTop: '12px', lineHeight: 1.6 }}>
+              <p className="page-sub">
                 This list governs <strong>self-service sign-up only</strong>. Removing a domain does not
                 disable existing accounts, and does not affect users added by invitation.
               </p>
-            </>
+            </div>
           )}
 
         </div>

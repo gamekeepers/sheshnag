@@ -6,7 +6,7 @@ top-level warnings.
 
 All tests use mocked HTTP transport consistent with the existing
 patterns in test_ollama.py.  Live verification against a running
-Ollama or vLLM server is pending — see docs/openai_compatibility.md.
+Ollama or vLLM server is pending — see docs/reference/openai-compatibility.md.
 """
 
 import pytest

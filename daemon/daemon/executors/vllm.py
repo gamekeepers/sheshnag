@@ -69,7 +69,7 @@ class VLLMExecutor(BaseExecutor):
 
     # Parameters that vLLM does NOT accept as top-level keys in
     # the OpenAI-compatible endpoint. Each is logged, never dropped
-    # silently (issue #39). See docs/openai_compatibility.md.
+    # silently (issue #39). See docs/reference/openai-compatibility.md.
     _UNSUPPORTED_TOP_LEVEL = {
         "top_k": ("vLLM requires top_k via extra_body, not as a "
                   "top-level parameter — doc-derived, needs live testing"),

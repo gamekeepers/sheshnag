@@ -11,6 +11,11 @@ jsonschema>=4.0.0
 # Config file parsing
 pyyaml>=6.0
 
+# Apple Silicon GPU memory reporting via Metal. macOS-only — pip skips this
+# entirely on Linux/Windows workers. Without it the daemon falls back to a
+# conservative fraction of total RAM (see hardware._apple_vram_gb).
+pyobjc-framework-Metal>=10.0 ; sys_platform == "darwin"
+
 # ── Dev/Test dependencies ────────────────────────────────────
 # Uncomment for development:
 # pytest>=8.0.0

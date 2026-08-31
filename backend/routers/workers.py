@@ -107,7 +107,7 @@ def register_worker(
         return [
             WorkerGpu(
                 gpu_index=g.index, vendor=g.vendor, name=g.name,
-                vram_gb=g.vram_gb, driver=g.driver, cuda=g.cuda,
+                vram_gb=g.vram_gb, driver=g.driver, cuda=g.cuda, rocm=g.rocm,
             )
             for g in req.gpus
         ]

@@ -220,7 +220,8 @@ class WorkerHeartbeatRequest(BaseModel):
     gpu_utilization: float = 0.0
     gpu_memory_used_gb: float = 0.0
     vram_total_gb: float = 0.0
-    vram_available_gb: float = 0.0
+    # None = unknown (unified memory has no machine-wide "in use" counter).
+    vram_available_gb: Optional[float] = None
     loaded_models: List[str] = []
     # Optional name → digest map for the loaded models (additive; older
     # daemons omit it and fall back to name matching).
@@ -280,7 +281,8 @@ class GpuInfo(BaseModel):
     name: str
     vram_gb: float
     driver: Optional[str] = None
-    cuda: Optional[str] = None
+    cuda: Optional[str] = None      # NVIDIA only
+    rocm: Optional[str] = None      # AMD only (spec §8.4 worker_gpus.rocm)
 
 
 class RuntimeInfo(BaseModel):
