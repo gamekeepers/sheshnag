@@ -301,7 +301,15 @@ This is the only part that needs Ollama running and a **catalogued** model.
   anything outside `docs/`. Relative paths cannot resolve outside `docs_dir`, so
   the site build fails on them.
 - **Run `mkdocs build --strict`** before opening a PR that touches `docs/`. CI
-  runs it too. It fails on broken links and anchors.
+  runs it too. It fails on broken links and anchors. To preview the site as
+  readers see it:
+
+  ```bash
+  python3 -m venv .venv-docs
+  .venv-docs/bin/pip install -r docs/requirements.txt
+  .venv-docs/bin/mkdocs serve          # http://127.0.0.1:8000
+  .venv-docs/bin/mkdocs build --strict # what CI runs
+  ```
 - The process rules — branching, staging, never pushing or merging on someone's
   behalf — are in
   [`CONTRIBUTING.md`](https://github.com/gamekeepers/sheshnag/blob/develop/CONTRIBUTING.md)
