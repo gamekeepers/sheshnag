@@ -118,9 +118,7 @@ issue tracker.
 
 ## Contributors
 
-Sheshnag is built largely by students, in the open, as coursework and independent
-projects — the scheduler, the resumability work and Forge each have someone's name
-on them. Land a commit on `develop` and you are on this wall.
+Sheshnag is built largely by volunteers, in the open. Land a commit on `develop` and you are on this wall.
 
 <a href="https://github.com/gamekeepers/sheshnag/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=gamekeepers/sheshnag" alt="Contributors to Sheshnag">
