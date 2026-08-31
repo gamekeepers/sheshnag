@@ -69,6 +69,25 @@ def _hosts(worker_models, runtime_model_id: str, catalog_digest) -> bool:
     return False
 
 
+def can_serve(entry, advertised_models, vram_total_gb) -> bool:
+    """Could a worker with these models and this VRAM run `entry`?
+
+    The single definition of "eligible", shared by the scheduler
+    (`find_best_batch`) and the pool-capacity endpoint, so the capacity
+    a user is shown can never claim a model the scheduler would refuse
+    to dispatch.
+
+    `vram_total_gb` is None until the worker's first heartbeat; as in the
+    scheduler, that skips the fit check rather than excluding the worker.
+    """
+    if entry is None:
+        return False
+    required = entry.vram_gb or 0
+    if vram_total_gb is not None and vram_total_gb < required:
+        return False
+    return _hosts(advertised_models, entry.runtime_model_id, entry.digest)
+
+
 class ProviderPicker:
     """
     Matches a polling worker to the best available batch.
@@ -95,13 +114,8 @@ class ProviderPicker:
             if entry is None:
                 continue  # unschedulable — should have failed validation
 
-            # VRAM fit (skip the check until we have a heartbeat)
-            required = entry.vram_gb or 0
-            if vram is not None and vram < required:
-                continue
-
-            if not _hosts(advertised, entry.runtime_model_id, entry.digest):
-                continue  # worker can't serve this artifact
+            if not can_serve(entry, advertised, vram):
+                continue  # can't fit the model, or doesn't host the artifact
 
             if _hosts(loaded, entry.runtime_model_id, entry.digest):
                 loaded_matches.append(batch)

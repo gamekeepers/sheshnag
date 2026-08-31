@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { docsUrl } from './components/DocsLink';
 
 const INK = '#16182d';
 const MUTED = '#5c5f73';
@@ -111,6 +112,9 @@ export default function Home() {
           {[['Platform', '#platform'], ['Developers', '#developers'], ['Providers', '#providers']].map(([label, href]) => (
             <a key={href} href={href} style={{ color: MUTED, textDecoration: 'none' }}>{label}</a>
           ))}
+          {/* Not an in-page anchor like its neighbours: the docs are a separate
+              static site this deployment serves at /docs/. */}
+          <a href={docsUrl()} target="_blank" rel="noreferrer" style={{ color: MUTED, textDecoration: 'none' }}>Docs</a>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
           {isLoggedIn ? (
@@ -211,9 +215,17 @@ export default function Home() {
       {/* ── Providers / values ── */}
       <section id="providers" style={{ maxWidth: 1080, margin: '0 auto', padding: '70px 24px 40px' }}>
         <SectionLabel>Providers</SectionLabel>
-        <h2 style={{ fontFamily: 'Georgia, serif', fontWeight: 400, fontSize: 'clamp(30px, 4vw, 44px)', textAlign: 'center', margin: '0 0 48px' }}>
+        <h2 style={{ fontFamily: 'Georgia, serif', fontWeight: 400, fontSize: 'clamp(30px, 4vw, 44px)', textAlign: 'center', margin: '0 0 18px' }}>
           Built for machines that come and go
         </h2>
+        {/* The provider portal is behind the login wall, so a visitor who wants
+            to know what they are agreeing to before signing up has nowhere else
+            to go. The guide is readable without an account. */}
+        <p style={{ textAlign: 'center', margin: '0 0 44px', fontSize: 15 }}>
+          <a href={docsUrl('provider/')} target="_blank" rel="noreferrer" style={{ color: '#4a4fa3', textDecoration: 'none' }}>
+            Read the provider guide &#8599;
+          </a>
+        </p>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 18 }}>
           {VALUES.map(v => (
             <div key={v.title} style={{ background: '#fff', border: `1px solid ${LINE}`, borderRadius: 18, padding: '26px 24px' }}>
@@ -246,6 +258,7 @@ export default function Home() {
             <a href="/login" style={{ color: MUTED, textDecoration: 'none' }}>Log in</a>
             <a href="/signup" style={{ color: MUTED, textDecoration: 'none' }}>Sign up</a>
             <a href="/provider" style={{ color: MUTED, textDecoration: 'none' }}>Provider portal</a>
+            <a href={docsUrl()} target="_blank" rel="noreferrer" style={{ color: MUTED, textDecoration: 'none' }}>Documentation</a>
           </div>
           <span style={{ fontSize: 13, color: 'rgba(22,24,45,0.4)' }}>
             A thousand heads, one platform · © {new Date().getFullYear()} Sheshnag, by Gamekeepers

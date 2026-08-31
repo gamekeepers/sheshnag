@@ -13,11 +13,11 @@
 # worker_id: "my-gpu-worker-01"
 
 # Control plane backend URL
-backend_url: "http://localhost:8000"
+backend_url: "https://sheshnag-api.dau.ac.in"
 
 # Local vLLM server URL (OpenAI-compatible API)
 vllm_url: "http://localhost:8100"
-
+ollama_url: "http://localhost:11434"
 # How often to poll for new jobs (seconds)
 poll_interval: 5
 
