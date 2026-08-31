@@ -1,88 +1,120 @@
-# Sheshnag — Distributed Batch AI Compute Platform
+<p align="center">
+  <img src="docs/assets/wordmark.svg" alt="Sheshnag" width="272">
+</p>
 
-Pools idle GPUs from researchers/labs and schedules asynchronous batch AI
-inference jobs on them. Users submit OpenAI-style JSONL batches through a
-dashboard/API; organizations host GPU workers by running a lightweight
-daemon; the control plane validates, schedules, tracks, and returns
+<h3 align="center">Turn your institution's scattered, idle GPUs into one shared AI batch platform.</h3>
+
+<p align="center">
+  <a href="LICENSE"><img alt="Licence: Apache 2.0" src="https://img.shields.io/badge/licence-Apache%202.0-blue.svg"></a>
+  <a href="https://github.com/gamekeepers/sheshnag/actions/workflows/docs.yml"><img alt="Docs build" src="https://github.com/gamekeepers/sheshnag/actions/workflows/docs.yml/badge.svg?branch=develop"></a>
+  <a href="https://sheshnag.io"><img alt="Documentation" src="https://img.shields.io/badge/docs-sheshnag.io-0F6E56"></a>
+  <img alt="Status: pilot" src="https://img.shields.io/badge/status-pilot-orange">
+</p>
+
+---
+
+Institutional GPUs are bought per-project and per-lab. They sit behind lab doors,
+idle most of the week, usable only by whoever owns the box — while the next
+researcher who needs a weekend of inference is told to wait for a budget cycle.
+
+Sheshnag is the sharing layer. It pools idle GPUs from researchers and labs and
+schedules asynchronous batch AI inference jobs on them. Users submit OpenAI-style
+JSONL batches through a dashboard or API; organizations host GPU workers by running
+a lightweight daemon; the control plane validates, schedules, tracks, and returns
 results.
 
 It is **software you host**, not a service you sign up for.
 
-## Start here
+<p align="center">
+  <img src="docs/assets/architecture.svg" alt="Users submit batches to the control plane and collect results; organizations own GPU workers that poll the control plane for jobs." width="680">
+</p>
 
-Pick whichever describes you. Each guide reads front to back, once.
+## Why Sheshnag?
+
+**Pool the hardware you already own.** A GPU machine joins with one command,
+about ten minutes, no repository clone and no `sudo`. The daemon *pulls* work, so
+it runs behind NAT and lab firewalls with no inbound ports. Machines may leave
+whenever their owner wants them back: a worker that stops heartbeating is
+presumed dead after 120 seconds, and its in-flight batch is automatically
+requeued on another one. Lending a GPU costs its owner nothing.
+
+**Your existing batch code mostly runs unchanged.** Sheshnag speaks the OpenAI
+batch shape — upload a JSONL of prompts, submit a batch, poll it, download
+results — so migrating is largely a matter of changing `base_url`. "Largely" is
+doing real work in that sentence: which sampling parameters each runtime honours,
+translates, ignores, or rejects is written down, per parameter, in the
+[OpenAI compatibility matrix](docs/reference/openai-compatibility.md). Read it
+before you promise anything to your users.
+
+**The institution stays in charge.** Every servable model is a pinned artifact —
+weights, quantization and runtime, matched to workers by digest — so nothing
+uncatalogued executes. Users, labs and courses are separate organizations with
+their own roles and revocable API keys, and token usage is attributed per
+organization and per model. Allocation policy stops being a paper document.
+
+## How it works
+
+1. A **user** uploads a JSONL batch. The control plane validates it against the
+   model catalogue and queues it.
+2. An **organization's workers** — any Linux GPU box running the daemon — poll for
+   jobs they can serve, advertising their GPUs, runtimes, models and VRAM headroom
+   on every heartbeat.
+3. A worker executes the batch on **Ollama or vLLM** and uploads results; the user
+   downloads them. If the worker disappears mid-job, the batch is requeued
+   (terminal failure only after three attempts).
+
+## Get started — pick your role
+
+Each guide reads front to back, once.
 
 | You want to… | Read | Roughly |
 |---|---|---|
-| **Submit jobs** to a deployment someone else runs | [docs/using-sheshnag.md](docs/using-sheshnag.md) | swap `base_url`, submit, poll, download |
-| **Lend a GPU** to a deployment | [docs/provider.md](docs/provider.md) | one command, 10 minutes, no clone, no sudo |
-| **Run Sheshnag** for your institution | [docs/self-host.md](docs/self-host.md) | an afternoon — Postgres, TLS, first provider |
-| **Change the code** | [docs/develop.md](docs/develop.md) | three services locally, tests green |
+| **Submit jobs** to a deployment someone else runs | [Run your prompts](docs/using-sheshnag.md) | swap `base_url`, submit, poll, download |
+| **Lend a GPU** to a deployment | [Lend your GPU](docs/provider.md) | one command, 10 minutes, no clone, no sudo |
+| **Run Sheshnag** for your institution | [Host your deployment](docs/self-host.md) | an afternoon — Postgres, TLS, first provider |
+| **Change the code** | [Work on Sheshnag](docs/develop.md) | three services locally, tests green |
 
-Reference material — every endpoint, every environment variable, the data model,
-the model catalogue — is under [`docs/reference/`](docs/reference/). The
-
-
-The docs are a MkDocs site; each deployment serves its own copy at `/docs/`. To
-read them locally, see [Documentation](#documentation) below.
+Evaluating Sheshnag for an institution and want a hand standing up a pilot?
+[Open an issue](https://github.com/gamekeepers/sheshnag/issues/new) — at this
+stage we would rather support a few deployments properly than watch many fail
+quietly.
 
 ## Components
 
 | Component | Path | Stack | Docs |
 |---|---|---|---|
-| Control plane (API) | [`backend/`](backend/) | FastAPI + Postgres | [docs/reference/api.md](docs/reference/api.md) |
-| Worker daemon | [`daemon/`](daemon/) | Python, Ollama/vLLM runtimes | [docs/reference/daemon.md](docs/reference/daemon.md) |
-| Dashboard (this app) | [`app/`](app/) | Next.js | below |
-| Spec & design docs | [`docs/`](docs/) | — | [docs/reference/](docs/reference/) |
+| Control plane (API) | [`backend/`](backend/) | FastAPI + Postgres | [API reference](docs/reference/api.md) |
+| Worker daemon | [`daemon/`](daemon/) | Python, Ollama/vLLM runtimes | [Daemon internals](docs/reference/daemon.md) |
+| Dashboard | [`app/`](app/) | Next.js | [Work on Sheshnag](docs/develop.md) |
+| Documentation site | [`docs/`](docs/) | MkDocs → [sheshnag.io](https://sheshnag.io) | [Reference](docs/reference/) |
 
-## Quick start
+## Status
 
-> The 60-second version, for someone who already knows the shape of it.
-> If anything below is unclear, use [docs/develop.md](docs/develop.md) instead —
-> it is the canonical local-setup guide and explains the database step, which
-> this skips.
+**Pilot.** Sheshnag is being deployed on institutional hardware and is in active
+development, so expect rough edges. Every reference page carries the date it was
+last checked against the code, and says so when that check is overdue — trust the
+code over the prose. Three subprojects are underway:
 
-**Backend** (port 8000):
+- **Scheduler** — VRAM- and model-affinity-aware scheduling across a heterogeneous pool.
+- **Resumability** — checkpointing, so an interrupted batch loses no completed work.
+- **Forge** — finetuning as a service: upload a dataset, get LoRA weights back.
 
-```bash
-cd backend && pip install -r requirements.txt
-python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-**Frontend** (this Next.js app, port 3000):
-
-```bash
-npm install
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000). Default admin:
-`admin@platform.com` / `admin` (forced password change on first login).
-
-**Worker daemon** (on a GPU machine, needs an org worker API key from the
-dashboard):
-
-```bash
-cd daemon && pip install -r requirements.txt
-python -m daemon.main --backend-url http://localhost:8000 --api-key gk-...
-```
-
-Or the guided installer: `scripts/install.sh` (rootless — no sudo needed; installs to `~/.gpu-daemon` with `systemctl --user` services).
+Open work lives in [issues](https://github.com/gamekeepers/sheshnag/issues).
 
 ## Documentation
 
 The docs are a [MkDocs](https://www.mkdocs.org/) site under [`docs/`](docs/),
-routed by audience. Build or preview it locally:
+routed by audience and published to [sheshnag.io](https://sheshnag.io); each
+deployment also serves its own copy at `/docs/`. To build or preview it locally,
+see [Work on Sheshnag](docs/develop.md#conventions) — and run
+`mkdocs build --strict` before opening a PR that touches `docs/`, which is what CI
+runs.
 
-```bash
-python3 -m venv .venv-docs
-.venv-docs/bin/pip install -r docs/requirements.txt
-.venv-docs/bin/mkdocs serve          # http://127.0.0.1:8000
-.venv-docs/bin/mkdocs build --strict # what CI runs
-```
+## Contributing
 
-`--strict` fails on a broken internal link, so run it before opening a PR that
-touches `docs/`. CI runs the same command on every such PR.
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) — the branching model, review rules
+and who merges. Security issues go through [SECURITY.md](SECURITY.md), not the
+issue tracker.
 
 ## Licence
 
