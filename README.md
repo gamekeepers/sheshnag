@@ -116,6 +116,14 @@ Start with [CONTRIBUTING.md](CONTRIBUTING.md) — the branching model, review ru
 and who merges. Security issues go through [SECURITY.md](SECURITY.md), not the
 issue tracker.
 
+## Contributors
+
+Sheshnag is built largely by volunteers, in the open. Land a commit on `develop` and you are on this wall.
+
+<a href="https://github.com/gamekeepers/sheshnag/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=gamekeepers/sheshnag" alt="Contributors to Sheshnag">
+</a>
+
 ## Licence
 
 Apache License 2.0 — see [`LICENSE`](LICENSE).
