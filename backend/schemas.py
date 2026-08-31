@@ -236,9 +236,6 @@ class ProgressReport(BaseModel):
     completed: int = 0
     failed: int = 0
     total: int = 0
-    prompt_tokens: Optional[int] = None
-    completion_tokens: Optional[int] = None
-    total_tokens: Optional[int] = None
 
 
 class ModelDownloadReport(BaseModel):

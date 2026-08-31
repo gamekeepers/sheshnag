@@ -364,6 +364,20 @@ def list_org_served_batches(
                     "completed": b.request_counts_completed or 0,
                     "failed": b.request_counts_failed or 0,
                 },
+                # Mirrors BatchSummary.usage: absent until ingestion has run.
+                "usage": (
+                    {
+                        "prompt_tokens": b.prompt_tokens,
+                        "completion_tokens": b.completion_tokens,
+                        "total_tokens": b.total_tokens,
+                    }
+                    if (
+                        b.prompt_tokens is not None
+                        or b.completion_tokens is not None
+                        or b.total_tokens is not None
+                    )
+                    else None
+                ),
                 "worker_id": a.worker_id,
                 # Live hostname when the worker still exists, else the name it
                 # had when it served the batch.

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from database import get_db
 from models import (
@@ -15,7 +15,7 @@ from auth import get_worker_context
 from provider_picker import picker, get_catalog_entry
 from sweeper import MAX_BATCH_ATTEMPTS, requeue_or_fail_batch
 from services.usage_ingest import ingest_usage_records
-import asyncio, shutil, os, logging
+import shutil, os, logging
 
 logger = logging.getLogger(__name__)
 
@@ -307,13 +307,10 @@ def report_progress(
     batch.request_counts_completed = req.completed
     batch.request_counts_failed = req.failed
 
-    # Live provisional token counts (estimated running sum; overwritten by authoritative recompute at upload)
-    if req.prompt_tokens is not None:
-        batch.prompt_tokens = req.prompt_tokens
-    if req.completion_tokens is not None:
-        batch.completion_tokens = req.completion_tokens
-    if req.total_tokens is not None:
-        batch.total_tokens = req.total_tokens
+    # Token rollups are deliberately not written here. The daemon has no sender
+    # for live per-prompt counts, and a progress report that arrives late (after
+    # upload has triggered ingestion) would overwrite authoritative totals with
+    # stale provisional ones. Usage is set once, by ingest_usage_records.
 
     db.commit()
 
@@ -346,6 +343,7 @@ def report_model_download(
 
 @router.post("/upload-results")
 def upload_results(
+    background_tasks: BackgroundTasks,
     job_id: str = Form(...),
     worker_id: str = Form(...),
     file: UploadFile = File(...),
@@ -390,8 +388,11 @@ def upload_results(
     db.commit()
     db.refresh(batch)
 
-    # Fire-and-forget: parse per-prompt usage from output JSONL and recompute authoritative rollups
-    asyncio.create_task(asyncio.to_thread(ingest_usage_records, batch.id, filepath))
+    # Parse per-prompt usage from the output JSONL and recompute authoritative
+    # rollups after the response is sent. This handler is sync, so FastAPI runs
+    # it in a worker thread where there is no event loop to schedule onto —
+    # BackgroundTasks is what defers work correctly from here.
+    background_tasks.add_task(ingest_usage_records, batch.id, filepath)
 
     return {
         "status":         "completed",

@@ -11,9 +11,11 @@ from routers import files, batches, workers, auth, users, organizations, pool, m
 from models import User, Organization, OrganizationMembership
 from auth import hash_password
 from catalog_seed import seed_model_catalog
+from migrations import ensure_schema
 from sweeper import run_sweeper
 
 Base.metadata.create_all(bind=get_engine())
+ensure_schema()
 seed_model_catalog()
 
 # Comma-separated origins, or "*" for all. Browsers reject a wildcard origin
