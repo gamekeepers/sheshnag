@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import confetti from 'canvas-confetti';
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { CopyableCode, TeachingEmptyState, TeachingStep } from '../components/Teaching';
 import { groupValidationErrors, preflightJsonl } from '../lib/validationHelp';
 import PortalSwitch from '../components/PortalSwitch';
@@ -14,9 +14,44 @@ import './dashboard.css';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
 
+// Both /v1/batches readers (the initial load and the 5s poll) mapped the
+// response independently, so a field added to one went silently missing from
+// the other. One mapper, both callers.
+function mapBatch(job, fileMap) {
+  return {
+    id: job.id,
+    filename: fileMap[job.input_file_id] || job.input_file_id || 'unknown.jsonl',
+    status: job.status,
+    error_details: job.error_details || null,
+    created_at: job.created_at,
+    total: job.request_counts_total || job.request_counts?.total || 0,
+    done: job.request_counts_completed || job.request_counts?.completed || 0,
+    failed: job.request_counts_failed || job.request_counts?.failed || 0,
+    output_file_id: job.output_file_id,
+    // Null until the backend has ingested the output JSONL. Left null rather
+    // than defaulted to zeroes: "not counted yet" and "counted, and it came to
+    // zero" must not render as the same number.
+    usage: job.usage || null,
+  };
+}
+
+const formatTokens = (n) => (typeof n === 'number' ? n.toLocaleString() : '—');
+
+const CHART = {
+  ok: '#4ADE80',
+  failed: '#F87171',
+  prompt: '#8B7BF5',
+  completion: '#C9722E',
+  surface: '#111115',
+  axis: '#5E5E5A',
+};
+
 export default function DashboardPage() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState('home');
+  // Scopes both Usage charts and its table — one control, one slice.
+  const [usageRange, setUsageRange] = useState(14);
+  const [showUsageTable, setShowUsageTable] = useState(false);
   const [isOrgDropdownOpen, setIsOrgDropdownOpen] = useState(false);
   const [token, setToken] = useState('');
   
@@ -267,17 +302,7 @@ export default function DashboardPage() {
         
         // Map with filename helper
         const fileMap = JSON.parse(localStorage.getItem('moonknight_file_map') || '{}');
-        const mapped = raw.map((job) => ({
-          id: job.id,
-          filename: fileMap[job.input_file_id] || job.input_file_id || 'unknown.jsonl',
-          status: job.status,
-          error_details: job.error_details || null,
-          created_at: job.created_at,
-          total: job.request_counts_total || job.request_counts?.total || 0,
-          done: job.request_counts_completed || job.request_counts?.completed || 0,
-          failed: job.request_counts_failed || job.request_counts?.failed || 0,
-          output_file_id: job.output_file_id
-        }));
+        const mapped = raw.map((job) => mapBatch(job, fileMap));
 
         setBatches(mapped);
       }
@@ -380,17 +405,7 @@ export default function DashboardPage() {
           const data = await res.json();
           const raw = data.data || [];
           const fileMap = JSON.parse(localStorage.getItem('moonknight_file_map') || '{}');
-          const mapped = raw.map((job) => ({
-            id: job.id,
-            filename: fileMap[job.input_file_id] || job.input_file_id || 'unknown.jsonl',
-            status: job.status,
-            error_details: job.error_details || null,
-            created_at: job.created_at,
-            total: job.request_counts_total || job.request_counts?.total || 0,
-            done: job.request_counts_completed || job.request_counts?.completed || 0,
-            failed: job.request_counts_failed || job.request_counts?.failed || 0,
-            output_file_id: job.output_file_id
-          }));
+          const mapped = raw.map((job) => mapBatch(job, fileMap));
 
           setBatches(mapped);
         }
@@ -931,16 +946,36 @@ export default function DashboardPage() {
     return titles[activeTab] || 'Dashboard';
   };
 
-  // Calculations for stats
-  const activeWorkersCount = workers.filter(w => w.status === 'online').length;
-  const idleWorkersCount = workers.filter(w => w.status === 'online' && w.activity === 'idle').length;
+  // ---- Fleet ------------------------------------------------------------
+  // idle is a SUBSET of online (status online AND activity idle), so listing it
+  // beside "online" as though the two were disjoint counts every idle worker
+  // twice. Derive busy instead, so busy + idle = online and the three states
+  // actually partition the fleet.
+  const onlineWorkers = workers.filter(w => w.status === 'online');
+  const activeWorkersCount = onlineWorkers.length;
+  const idleWorkersCount = onlineWorkers.filter(w => w.activity === 'idle').length;
+  const busyWorkersCount = activeWorkersCount - idleWorkersCount;
   const offlineWorkersCount = workers.filter(w => w.status === 'offline').length;
 
-  const totalRequestsToday = batches.reduce((acc, b) => acc + (b.total || 0), 0);
-  const totalFailedToday = batches.reduce((acc, b) => acc + (b.failed || 0), 0);
-  const successRate = totalRequestsToday > 0 
-    ? (((totalRequestsToday - totalFailedToday) / totalRequestsToday) * 100).toFixed(1) 
-    : '100.0';
+  // Demand against that fleet. Every other tile answers "what happened"; this is
+  // the only one that answers "can it keep up".
+  const pendingBatches = batches.filter(b => !['completed', 'failed'].includes(b.status));
+  const pendingRequests = pendingBatches.reduce(
+    (acc, b) => acc + Math.max((b.total || 0) - (b.done || 0) - (b.failed || 0), 0), 0,
+  );
+
+  // ---- Success rate -----------------------------------------------------
+  // Over FINISHED requests only. The old form divided by b.total, which counts
+  // every prompt that has not been attempted yet as a success — so submitting a
+  // 10k batch drove the rate towards 100% precisely because none of it had run.
+  // done and failed are disjoint (daemon/worker.py: failures = total - successes).
+  const succeededRequests = batches.reduce((acc, b) => acc + (b.done || 0), 0);
+  const failedRequests = batches.reduce((acc, b) => acc + (b.failed || 0), 0);
+  const finishedRequests = succeededRequests + failedRequests;
+  const successRate = finishedRequests > 0
+    ? ((succeededRequests / finishedRequests) * 100).toFixed(1)
+    : null;
+  const totalRequestsAllTime = batches.reduce((acc, b) => acc + (b.total || 0), 0);
 
   // Helper: format date as local YYYY-MM-DD (avoids UTC timezone mismatch)
   const toLocalDateStr = (date) => {
@@ -950,29 +985,107 @@ export default function DashboardPage() {
     return `${y}-${m}-${d}`;
   };
 
-  // Chart Data Calculation (using local dates consistently)
-  const chartData = [...Array(14)].map((_, i) => {
-    const d = new Date();
-    d.setDate(d.getDate() - (13 - i));
-    return {
-      date: toLocalDateStr(d),
-      displayDate: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-      requests: 0,
-      successful: 0,
-      failed: 0
-    };
-  });
+  // ---- Daily series -----------------------------------------------------
+  // `days` back from today, ending `offsetDays` ago. The offset exists so the
+  // same builder produces the previous window each delta is measured against.
+  const buildDailySeries = (days, offsetDays = 0) => {
+    const series = [...Array(days)].map((_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (days - 1 - i) - offsetDays);
+      return {
+        date: toLocalDateStr(d),
+        displayDate: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        requests: 0,
+        successful: 0,
+        failed: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        counted: 0,
+        countedRequests: 0,
+        awaitingCount: 0,
+      };
+    });
 
-  batches.forEach(b => {
-    if (!b.created_at) return;
-    const batchDate = toLocalDateStr(new Date(b.created_at * 1000));
-    const day = chartData.find(d => d.date === batchDate);
-    if (day) {
+    const byDate = new Map(series.map(day => [day.date, day]));
+    batches.forEach(b => {
+      if (!b.created_at) return;
+      const day = byDate.get(toLocalDateStr(new Date(b.created_at * 1000)));
+      if (!day) return;
       day.requests += (b.total || 0);
       day.successful += (b.done || 0);
       day.failed += (b.failed || 0);
-    }
-  });
+      if (b.usage) {
+        day.promptTokens += b.usage.prompt_tokens || 0;
+        day.completionTokens += b.usage.completion_tokens || 0;
+        day.totalTokens += b.usage.total_tokens || 0;
+        day.counted += 1;
+        // Only the requests whose tokens are actually in the numerator, so a
+        // day that mixes counted and uncounted batches does not understate
+        // tokens-per-request.
+        day.countedRequests += (b.done || 0) + (b.failed || 0);
+      } else if (b.status === 'completed') {
+        // Only completed batches are *missing* a count. A running batch has no
+        // usage yet by definition, and flagging those would mark every active
+        // day as incomplete.
+        day.awaitingCount += 1;
+      }
+    });
+    return series;
+  };
+
+  const sumSeries = (series, key) => series.reduce((acc, d) => acc + d[key], 0);
+
+  // A window whose leading days are all empty renders as a run of zero-height
+  // bars that reads "the platform is broken" rather than "you started on
+  // Tuesday". Trim the empty head only — the window still ends today.
+  const trimLeadingEmpty = (series) => {
+    const first = series.findIndex(d => d.requests > 0 || d.totalTokens > 0);
+    return first <= 0 ? series : series.slice(first);
+  };
+
+  // Percentage change against the preceding window of equal length. Returns
+  // null when there is no baseline to compare against — "▲ ∞%" is noise.
+  const windowDelta = (current, previous) => {
+    if (previous === 0) return null;
+    const pct = ((current - previous) / previous) * 100;
+    if (Math.abs(pct) < 0.5) return { label: 'no change', tone: 'flat' };
+    return {
+      label: `${pct > 0 ? '\u25B2' : '\u25BC'} ${Math.abs(pct).toFixed(0)}% vs previous ${previous.toLocaleString()}`,
+      tone: pct > 0 ? 'up' : 'down',
+    };
+  };
+
+  const HOME_WINDOW = 14;
+  const homeSeries = buildDailySeries(HOME_WINDOW);
+  const homePrevSeries = buildDailySeries(HOME_WINDOW, HOME_WINDOW);
+  const homeRequests = sumSeries(homeSeries, 'requests');
+  const homeTokens = sumSeries(homeSeries, 'totalTokens');
+  const homeRequestsDelta = windowDelta(homeRequests, sumSeries(homePrevSeries, 'requests'));
+  const homeTokensDelta = windowDelta(homeTokens, sumSeries(homePrevSeries, 'totalTokens'));
+  const homeCountedRequests = sumSeries(homeSeries, 'countedRequests');
+  const homeTokensPerRequest = homeCountedRequests > 0
+    ? Math.round(homeTokens / homeCountedRequests)
+    : null;
+
+  const usageSeries = buildDailySeries(usageRange);
+  const usagePrevSeries = buildDailySeries(usageRange, usageRange);
+  const usageRequests = sumSeries(usageSeries, 'requests');
+  const usageFailed = sumSeries(usageSeries, 'failed');
+  const usageSucceeded = sumSeries(usageSeries, 'successful');
+  const usageTokens = sumSeries(usageSeries, 'totalTokens');
+  const usageTokensDelta = windowDelta(usageTokens, sumSeries(usagePrevSeries, 'totalTokens'));
+  const usageFinished = usageSucceeded + usageFailed;
+  const usageFailureRate = usageFinished > 0
+    ? ((usageFailed / usageFinished) * 100).toFixed(1)
+    : null;
+  const usageCountedRequests = sumSeries(usageSeries, 'countedRequests');
+  const usageTokensPerRequest = usageCountedRequests > 0
+    ? Math.round(usageTokens / usageCountedRequests)
+    : null;
+  const usageAwaiting = sumSeries(usageSeries, 'awaitingCount');
+  const usageChartData = trimLeadingEmpty(usageSeries);
+  const homeChartData = trimLeadingEmpty(homeSeries);
 
   return (
     <div className="app-layout">
@@ -1119,64 +1232,109 @@ export default function DashboardPage() {
             <h1 className="page-title">Home</h1>
             <p className="page-sub">Usage and recent activity.</p>
 
-            <div className="grid-3">
+            <div className="grid-4">
               <div className="panel stat-card">
-                <div className="stat-label">Active Workers</div>
+                <div className="stat-label">Workers</div>
                 <div className="stat-value">
                   {activeWorkersCount} <span className="unit">online</span>
                 </div>
                 <div className="stat-sub">
-                  {idleWorkersCount} idle · {offlineWorkersCount} offline
+                  {busyWorkersCount} busy · {idleWorkersCount} idle · {offlineWorkersCount} offline
                 </div>
               </div>
+
               <div className="panel stat-card">
-                <div className="stat-label">Requests Processed</div>
-                <div className="stat-value">{totalRequestsToday.toLocaleString()}</div>
-                <div className="stat-sub">from all batch completions</div>
-              </div>
-              <div className="panel stat-card">
-                <div className="stat-label">Success Rate</div>
+                <div className="stat-label">Queued</div>
                 <div className="stat-value">
-                  {successRate}<span className="unit">%</span>
+                  {pendingBatches.length} <span className="unit">batch{pendingBatches.length === 1 ? '' : 'es'}</span>
                 </div>
                 <div className="stat-sub">
-                  {totalFailedToday} failed of {totalRequestsToday}
+                  {pendingRequests > 0
+                    ? `${pendingRequests.toLocaleString()} requests waiting on ${activeWorkersCount} worker${activeWorkersCount === 1 ? '' : 's'}`
+                    : activeWorkersCount > 0 ? 'nothing waiting' : 'nothing waiting · no workers online'}
+                </div>
+              </div>
+
+              <div className="panel stat-card">
+                <div className="stat-label">Requests · {HOME_WINDOW}d</div>
+                <div className="stat-value">{homeRequests.toLocaleString()}</div>
+                <div className="stat-sub">
+                  {homeRequestsDelta ? homeRequestsDelta.label : `${totalRequestsAllTime.toLocaleString()} all time`}
+                </div>
+              </div>
+
+              <div className="panel stat-card">
+                <div className="stat-label">Tokens · {HOME_WINDOW}d</div>
+                <div className="stat-value">{formatTokens(homeTokens)}</div>
+                <div className="stat-sub">
+                  {homeTokensPerRequest !== null
+                    ? `${homeTokensPerRequest.toLocaleString()} per request`
+                    : 'no counted batches yet'}
+                  {homeTokensDelta && ` · ${homeTokensDelta.label}`}
                 </div>
               </div>
             </div>
 
-            <div className="section-title">Requests processed, last 14 days</div>
-            <div className="panel chart-wrap" style={{ height: '200px', padding: '1rem' }}>
+            <div className="grid-2" style={{ marginBottom: '1.5rem' }}>
+              <div className="panel stat-card">
+                <div className="stat-label">Success rate</div>
+                <div className="stat-value">
+                  {successRate === null ? '—' : <>{successRate}<span className="unit">%</span></>}
+                </div>
+                {/* Over finished requests. A batch still running is not evidence
+                    of success, so it is not in the denominator. */}
+                <div className="stat-sub">
+                  {finishedRequests > 0
+                    ? `${failedRequests.toLocaleString()} failed of ${finishedRequests.toLocaleString()} finished`
+                    : 'nothing has finished yet'}
+                </div>
+              </div>
+              <div className="panel stat-card">
+                <div className="stat-label">All time</div>
+                <div className="stat-value">{totalRequestsAllTime.toLocaleString()}</div>
+                <div className="stat-sub">requests submitted across {batches.length} batch{batches.length === 1 ? '' : 'es'}</div>
+              </div>
+            </div>
+
+            <div className="section-title">Requests per day, last {HOME_WINDOW} days</div>
+            <div className="panel chart-wrap" style={{ height: '240px', padding: '1rem 1rem 0.5rem' }}>
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData}>
-                  <XAxis 
-                    dataKey="displayDate" 
-                    stroke="#888" 
-                    fontSize={12} 
+                {/* Stacked, not a single "requests" line: the split is the point.
+                    A line of totals hides a failure spike completely. */}
+                <BarChart data={homeChartData} barCategoryGap="28%">
+                  <XAxis
+                    dataKey="displayDate"
+                    stroke={CHART.axis}
+                    fontSize={12}
                     tickLine={false}
                     axisLine={false}
+                    minTickGap={24}
                   />
-                  <YAxis 
-                    stroke="#888" 
-                    fontSize={12} 
+                  <YAxis
+                    stroke={CHART.axis}
+                    fontSize={12}
                     tickLine={false}
                     axisLine={false}
+                    width={44}
                     tickFormatter={(value) => value >= 1000 ? `${(value / 1000).toFixed(1)}k` : value}
                   />
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: '#111116', border: '1px solid #333', borderRadius: '8px' }}
-                    itemStyle={{ color: '#C9C4FF' }}
+                  <Tooltip
+                    cursor={{ fill: 'rgba(255,255,255,0.04)' }}
+                    contentStyle={{ backgroundColor: CHART.surface, border: '1px solid var(--border)', borderRadius: '8px' }}
+                    labelStyle={{ color: 'var(--fg)' }}
                   />
-                  <Line 
-                    type="monotone" 
-                    dataKey="requests" 
-                    stroke="#C9C4FF" 
-                    strokeWidth={3}
-                    dot={{ r: 4, fill: '#111116', stroke: '#C9C4FF', strokeWidth: 2 }}
-                    activeDot={{ r: 6, fill: '#C9C4FF' }}
-                  />
-                </LineChart>
+                  {/* stroke in the surface colour is the 2px gap between stacked
+                      segments — mandatory secondary encoding for this pair. */}
+                  <Bar dataKey="failed" name="Failed" stackId="r" fill={CHART.failed}
+                       stroke={CHART.surface} strokeWidth={2} />
+                  <Bar dataKey="successful" name="Successful" stackId="r" fill={CHART.ok}
+                       stroke={CHART.surface} strokeWidth={2} radius={[4, 4, 0, 0]} />
+                </BarChart>
               </ResponsiveContainer>
+            </div>
+            <div className="chart-legend">
+              <span className="lg"><span className="sw" style={{ background: CHART.ok }} /> Successful</span>
+              <span className="lg"><span className="sw" style={{ background: CHART.failed }} /> Failed</span>
             </div>
 
             <div className="section-title">Recent Batches</div>
@@ -1188,6 +1346,7 @@ export default function DashboardPage() {
                       <th>Batch ID</th>
                       <th>Status</th>
                       <th>Progress</th>
+                      <th>Tokens</th>
                       <th>File</th>
                     </tr>
                   </thead>
@@ -1204,13 +1363,14 @@ export default function DashboardPage() {
                         <td className="dim">
                           {batch.done.toLocaleString()} / {batch.total.toLocaleString()} · {batch.failed} failed
                         </td>
+                        <td className="dim">{formatTokens(batch.usage?.total_tokens)}</td>
                         <td className="dim">{batch.filename}</td>
                       </tr>
                     ))}
                     {batches.length === 0 && (
                       /* A9 — "no data" is a dead end; name the next move instead. */
                       <tr>
-                        <td colSpan={4} className="empty-hint">
+                        <td colSpan={5} className="empty-hint">
                           Nothing here until a batch runs. The chart above stays flat until then —{' '}
                           <button className="teach-link" onClick={() => setActiveTab('batches')}>
                             submit your first batch
@@ -1226,48 +1386,202 @@ export default function DashboardPage() {
 
           {/* ============ USAGE PAGE ============ */}
           <div className={`page-panel ${activeTab === 'usage' ? 'active' : ''}`}>
-            <h1 className="page-title">Usage Details</h1>
-            <p className="page-sub">Daily breakdown of request usage across all batches.</p>
+            <div className="page-actions">
+              <div>
+                <h1 className="page-title">Usage Details</h1>
+                <p className="page-sub">Requests and token usage per day.</p>
+              </div>
+              {/* One control, above everything it scopes — both charts, the
+                  tiles and the table all read the same slice. */}
+              <div className="range-switch">
+                {[7, 14, 30].map(days => (
+                  <button
+                    key={days}
+                    className={`range-btn ${usageRange === days ? 'active' : ''}`}
+                    onClick={() => setUsageRange(days)}
+                  >
+                    {days}d
+                  </button>
+                ))}
+              </div>
+            </div>
 
-            {/* A9 — chartData always spans 14 days, so with no batches this table
-                renders fourteen rows of zeroes. That reads as "the platform is
-                broken" rather than "you haven't started". Say which it is. */}
             {batches.length === 0 ? (
               <TeachingEmptyState title="No usage yet">
                 <p className="teach-body" style={{ marginTop: '0.9rem', marginBottom: 0 }}>
-                  This table counts requests across your batches, one row per day for the last
-                  fourteen. Every row would read zero right now — usage appears here once a batch
-                  has run, so start by{' '}
+                  This page charts requests and tokens per day. Everything would read zero right
+                  now — usage appears once a batch has run, so start by{' '}
                   <button className="teach-link" onClick={() => setActiveTab('batches')}>
                     submitting your first batch
                   </button>.
                 </p>
               </TeachingEmptyState>
             ) : (
-              <div className="panel" style={{ padding: '0.5rem' }}>
-                <div className="table-container">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Date</th>
-                        <th>Total Requests</th>
-                        <th>Successful</th>
-                        <th>Failed</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {chartData.slice().reverse().map((day, idx) => (
-                        <tr key={idx}>
-                          <td className="mono">{day.displayDate}</td>
-                          <td>{day.requests.toLocaleString()}</td>
-                          <td style={{ color: '#00D287' }}>{day.successful.toLocaleString()}</td>
-                          <td style={{ color: '#F85149' }}>{day.failed.toLocaleString()}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+              <>
+                <div className="grid-3">
+                  <div className="panel stat-card">
+                    <div className="stat-label">Tokens · {usageRange}d</div>
+                    <div className="stat-value">{formatTokens(usageTokens)}</div>
+                    <div className="stat-sub">
+                      {usageTokensDelta ? usageTokensDelta.label : 'no earlier window to compare'}
+                    </div>
+                  </div>
+                  <div className="panel stat-card">
+                    {/* The one number here you cannot read off the charts: it is
+                        how prompt bloat or a model change shows up. */}
+                    <div className="stat-label">Tokens per request</div>
+                    <div className="stat-value">
+                      {usageTokensPerRequest === null ? '—' : usageTokensPerRequest.toLocaleString()}
+                    </div>
+                    <div className="stat-sub">
+                      {usageTokensPerRequest === null
+                        ? 'no counted batches in this window'
+                        : `over ${usageCountedRequests.toLocaleString()} counted request${usageCountedRequests === 1 ? '' : 's'}`}
+                    </div>
+                  </div>
+                  <div className="panel stat-card">
+                    <div className="stat-label">Failure rate · {usageRange}d</div>
+                    <div className="stat-value">
+                      {usageFailureRate === null ? '—' : <>{usageFailureRate}<span className="unit">%</span></>}
+                    </div>
+                    <div className="stat-sub">
+                      {usageFinished > 0
+                        ? `${usageFailed.toLocaleString()} failed of ${usageFinished.toLocaleString()} finished`
+                        : 'nothing finished in this window'}
+                    </div>
+                  </div>
                 </div>
-              </div>
+
+                <div className="section-title">Requests per day</div>
+                <div className="panel chart-wrap" style={{ height: '240px', padding: '1rem 1rem 0.5rem' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={usageChartData} barCategoryGap="28%">
+                      <XAxis dataKey="displayDate" stroke={CHART.axis} fontSize={12} tickLine={false} axisLine={false} minTickGap={24} />
+                      <YAxis
+                        stroke={CHART.axis}
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                        width={44}
+                        tickFormatter={(value) => value >= 1000 ? `${(value / 1000).toFixed(1)}k` : value}
+                      />
+                      <Tooltip
+                        cursor={{ fill: 'rgba(255,255,255,0.04)' }}
+                        contentStyle={{ backgroundColor: CHART.surface, border: '1px solid var(--border)', borderRadius: '8px' }}
+                        labelStyle={{ color: 'var(--fg)' }}
+                      />
+                      <Bar dataKey="failed" name="Failed" stackId="r" fill={CHART.failed}
+                           stroke={CHART.surface} strokeWidth={2} />
+                      <Bar dataKey="successful" name="Successful" stackId="r" fill={CHART.ok}
+                           stroke={CHART.surface} strokeWidth={2} radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="chart-legend">
+                  <span className="lg"><span className="sw" style={{ background: CHART.ok }} /> Successful</span>
+                  <span className="lg"><span className="sw" style={{ background: CHART.failed }} /> Failed</span>
+                </div>
+
+                {/* Its own chart, never a second axis on the one above: requests
+                    and tokens differ by ~3 orders of magnitude, and sharing a
+                    plot would invent a correlation that is not in the data. */}
+                <div className="section-title">Tokens per day</div>
+                <div className="panel chart-wrap" style={{ height: '240px', padding: '1rem 1rem 0.5rem' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={usageChartData} barCategoryGap="28%">
+                      <XAxis dataKey="displayDate" stroke={CHART.axis} fontSize={12} tickLine={false} axisLine={false} minTickGap={24} />
+                      <YAxis
+                        stroke={CHART.axis}
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                        width={44}
+                        tickFormatter={(value) => value >= 1000 ? `${(value / 1000).toFixed(1)}k` : value}
+                      />
+                      <Tooltip
+                        cursor={{ fill: 'rgba(255,255,255,0.04)' }}
+                        contentStyle={{ backgroundColor: CHART.surface, border: '1px solid var(--border)', borderRadius: '8px' }}
+                        labelStyle={{ color: 'var(--fg)' }}
+                      />
+                      <Bar dataKey="promptTokens" name="Prompt" stackId="t" fill={CHART.prompt}
+                           stroke={CHART.surface} strokeWidth={2} />
+                      <Bar dataKey="completionTokens" name="Completion" stackId="t" fill={CHART.completion}
+                           stroke={CHART.surface} strokeWidth={2} radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="chart-legend">
+                  <span className="lg"><span className="sw" style={{ background: CHART.prompt }} /> Prompt</span>
+                  <span className="lg"><span className="sw" style={{ background: CHART.completion }} /> Completion</span>
+                  {usageAwaiting > 0 && (
+                    <span className="lg" style={{ color: 'var(--dimmer)' }}>
+                      {usageAwaiting} completed batch{usageAwaiting === 1 ? '' : 'es'} in this window not counted yet
+                    </span>
+                  )}
+                </div>
+
+                {/* The table is the charts' accessible twin — every value is
+                    readable without colour — so it stays, just not first. */}
+                <button
+                  className="btn"
+                  style={{ marginTop: '1.5rem' }}
+                  onClick={() => setShowUsageTable(v => !v)}
+                >
+                  {showUsageTable ? 'Hide' : 'Show'} daily table ({usageChartData.length} day{usageChartData.length === 1 ? '' : 's'})
+                </button>
+
+                {showUsageTable && (
+                  <div className="panel" style={{ padding: '0.5rem', marginTop: '0.8rem' }}>
+                    <div className="table-container">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Date</th>
+                            <th>Total Requests</th>
+                            <th>Successful</th>
+                            <th>Failed</th>
+                            <th>Prompt Tokens</th>
+                            <th>Completion Tokens</th>
+                            <th>Total Tokens</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {usageChartData.slice().reverse().map((day, idx) => (
+                            <tr key={idx}>
+                              <td className="mono">{day.displayDate}</td>
+                              <td>{day.requests.toLocaleString()}</td>
+                              <td style={{ color: CHART.ok }}>{day.successful.toLocaleString()}</td>
+                              <td style={{ color: CHART.failed }}>{day.failed.toLocaleString()}</td>
+                              {day.counted === 0 ? (
+                                /* No batch that day has been counted yet, so three
+                                   zeroes would read as "this day cost nothing"
+                                   rather than "nothing has been counted". */
+                                <td className="dim" colSpan={3}>
+                                  {day.awaitingCount > 0 ? 'not counted yet' : '—'}
+                                </td>
+                              ) : (
+                                <>
+                                  <td>{formatTokens(day.promptTokens)}</td>
+                                  <td>{formatTokens(day.completionTokens)}</td>
+                                  <td>
+                                    {formatTokens(day.totalTokens)}
+                                    {day.awaitingCount > 0 && (
+                                      <span
+                                        className="dim"
+                                        title={`${day.awaitingCount} completed batch${day.awaitingCount === 1 ? '' : 'es'} on this day ${day.awaitingCount === 1 ? 'has' : 'have'} no token count yet — this total is partial.`}
+                                      > +</span>
+                                    )}
+                                  </td>
+                                </>
+                              )}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
 
@@ -1634,6 +1948,21 @@ export default function DashboardPage() {
                     <div className="progress-meta">
                       <span>{batch.done.toLocaleString()} / {batch.total.toLocaleString()} completed</span>
                       <span>{batch.failed} failed</span>
+                    </div>
+                    {/* Counts come from the output file, so they land a moment
+                        after the batch completes rather than with it. Say which
+                        state this is instead of showing a zero either way. */}
+                    <div className="progress-meta">
+                      {batch.usage ? (
+                        <>
+                          <span>{formatTokens(batch.usage.prompt_tokens)} prompt · {formatTokens(batch.usage.completion_tokens)} completion</span>
+                          <span>{formatTokens(batch.usage.total_tokens)} tokens</span>
+                        </>
+                      ) : (
+                        <span>
+                          {batch.status === 'completed' ? 'Token usage not counted yet' : 'Token usage available once the batch completes'}
+                        </span>
+                      )}
                     </div>
                     {batch.status === 'failed' && batch.error_details && (() => {
                       /* the validator sends a code and a field per error and

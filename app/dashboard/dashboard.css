@@ -745,6 +745,31 @@ td.mono {
 }
 
 /* ===================== CHART ===================== */
+/* One range control per page, sitting above everything it scopes. */
+.range-switch {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg-panel);
+}
+.range-btn {
+  background: transparent;
+  border: 0;
+  color: var(--dim);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.75rem;
+  padding: 0.45rem 0.85rem;
+  cursor: pointer;
+}
+.range-btn:hover {
+  color: var(--fg);
+  background: var(--bg-panel-hover);
+}
+.range-btn.active {
+  color: var(--bg);
+  background: var(--accent);
+}
 .chart-wrap {
   margin-top: 0.5rem;
 }
