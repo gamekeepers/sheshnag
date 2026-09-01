@@ -5,6 +5,7 @@ tables that already exist, so a deployed database that predates the token
 rollup columns would fail every Batch SELECT without these migrations.
 """
 
+import pytest
 from sqlalchemy import inspect, text
 
 from migrations import MIGRATIONS, ensure_schema
@@ -52,3 +53,23 @@ def test_every_migration_targets_a_real_model_column(_engine):
         with _engine.connect() as conn:
             cols = {c["name"] for c in inspect(conn).get_columns(m.table)}
         assert m.column in cols, f"{m.name} did not produce {m.table}.{m.column}"
+
+
+def test_failed_migration_raises_instead_of_booting_broken(_engine, monkeypatch):
+    """A swallowed failure boots a process that 500s on every Batch read.
+
+    Startup must fail loudly instead — that is the failure an orchestrator can
+    see and act on.
+    """
+    import migrations as migrations_module
+    from sqlalchemy import Integer
+
+    broken = migrations_module._Migration(
+        "batches.broken", "batches", "not a valid column name", Integer()
+    )
+    monkeypatch.setattr(migrations_module, "MIGRATIONS", [broken])
+
+    with pytest.raises(Exception):
+        migrations_module.ensure_schema(_engine)
+
+    assert "not a valid column name" not in _batch_columns(_engine)

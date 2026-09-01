@@ -460,3 +460,27 @@ def test_failed_prompt_with_response_is_not_counted(db_session, test_user):
     assert batch.prompt_tokens == 4
     assert batch.completion_tokens == 6
     assert batch.total_tokens == 10
+
+
+def test_duplicate_custom_id_in_one_chunk_does_not_discard_the_file(db_session, test_user):
+    """Two rows with the same custom_id must not cost the chunk around them.
+
+    Postgres rejects an ON CONFLICT DO UPDATE whose VALUES hit the same
+    conflict target twice, and that error would roll back every record
+    buffered with it.
+    """
+    batch = _create_test_batch(db_session, test_user)
+    dup = {"custom_id": "good-1", "error": None,
+           "response": {"usage": {"prompt_tokens": 40, "completion_tokens": 60,
+                                  "total_tokens": 100}}}
+    _ingest_lines(batch.id, [_GOOD, dup, {**_GOOD, "custom_id": "good-2"}])
+
+    rows = db_session.query(UsageRecord).filter(UsageRecord.batch_id == batch.id).all()
+    assert {r.custom_id for r in rows} == {"good-1", "good-2"}
+
+    # Last write wins, matching what the upsert does across two statements.
+    by_id = {r.custom_id: r for r in rows}
+    assert by_id["good-1"].total_tokens == 100
+
+    db_session.refresh(batch)
+    assert batch.total_tokens == 110

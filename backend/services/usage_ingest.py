@@ -112,6 +112,14 @@ def _upsert_chunk(db, chunk: List[Dict[str, Any]]) -> None:
     else:
         from sqlalchemy.dialects.sqlite import insert as dialect_insert
 
+    # A statement whose VALUES hit the same conflict target twice is rejected
+    # outright ("ON CONFLICT DO UPDATE command cannot affect row a second
+    # time"), which would cost the whole chunk over one duplicated custom_id in
+    # worker output. Collapse duplicates here — last write wins, exactly what
+    # the upsert below would do across two statements. Duplicates that straddle
+    # a chunk boundary need no handling: they land in separate statements.
+    chunk = list({row["custom_id"]: row for row in chunk}.values())
+
     stmt = dialect_insert(UsageRecord).values(chunk)
     stmt = stmt.on_conflict_do_update(
         index_elements=["batch_id", "custom_id"],
