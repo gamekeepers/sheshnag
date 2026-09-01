@@ -62,8 +62,14 @@ function mapBatch(b) {
     provider: b.metadata?.provider || '—',
     started:  b.created_at ? new Date(b.created_at * 1000).toLocaleString('en-IN') : '—',
     filename: fileMap[b.input_file_id] || b.input_file_id || '—',
+    // Null until the backend has ingested the batch's output JSONL. Left null
+    // rather than defaulted to zeroes so "not counted yet" and "counted, and it
+    // came to zero" do not render as the same number.
+    usage:    b.usage || null,
   };
 }
+
+const formatTokens = (n) => (typeof n === 'number' ? n.toLocaleString() : '—');
 
 /* Generic table shell.
    Used to be a CSS-grid of divs with a `cols` prop and its own borders — a
@@ -417,13 +423,14 @@ export default function AdminPage() {
               <div className="section-title">Recent jobs</div>
               <div className="panel">
                 <AdminTable
-                  headers={['Job ID', 'User', 'Prompts', 'Status', 'Started']}
+                  headers={['Job ID', 'User', 'Prompts', 'Tokens', 'Status', 'Started']}
                   rows={jobs.slice(0, 8)}
                   emptyMsg={isLoading ? 'Loading…' : 'No jobs yet'}
                   renderRow={job => (<>
                     <td className="mono">{job.id}</td>
                     <td className="dim">{job.user}</td>
                     <td>{Number(job.prompts).toLocaleString()}</td>
+                    <td className="dim">{formatTokens(job.usage?.total_tokens)}</td>
                     <td><StatusPill status={job.status} /></td>
                     <td className="dim">{job.started}</td>
                   </>)}
@@ -455,13 +462,16 @@ export default function AdminPage() {
 
               <div className="panel">
                 <AdminTable
-                  headers={['Job ID', 'User', 'Prompts', 'Status', 'Provider', 'Started']}
+                  headers={['Job ID', 'User', 'Prompts', 'Prompt tk', 'Completion tk', 'Total tk', 'Status', 'Provider', 'Started']}
                   rows={filteredJobs}
                   emptyMsg={isLoading ? 'Loading…' : 'No jobs found'}
                   renderRow={job => (<>
                     <td className="mono">{job.id}</td>
                     <td className="dim">{job.user}</td>
                     <td>{Number(job.prompts).toLocaleString()}</td>
+                    <td className="dim">{formatTokens(job.usage?.prompt_tokens)}</td>
+                    <td className="dim">{formatTokens(job.usage?.completion_tokens)}</td>
+                    <td>{formatTokens(job.usage?.total_tokens)}</td>
                     <td><StatusPill status={job.status} /></td>
                     <td className="dim">{job.provider}</td>
                     <td className="dim">{job.started}</td>
