@@ -262,6 +262,16 @@ def poll_job(
     validate_transition(batch.status, "in_progress")
     batch.status = "in_progress"
 
+    # A batch at "validated" should own no assignment, but one survives a
+    # requeue that failed to clean up, or a status reset done by hand.
+    # batch_id is the primary key, so a blind insert raises IntegrityError —
+    # and because the picker always returns the OLDEST match, that same row
+    # is chosen on every poll: one stale assignment 500s /workers/poll
+    # forever and no batch in the queue is ever dispatched again.
+    db.query(BatchAssignment).filter(
+        BatchAssignment.batch_id == batch.id,
+    ).delete(synchronize_session=False)
+
     assignment = BatchAssignment(
         batch_id=batch.id,
         worker_id=req.worker_id,
