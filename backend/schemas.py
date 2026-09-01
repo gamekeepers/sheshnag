@@ -43,6 +43,28 @@ class RequestCounts(BaseModel):
     failed: int = 0
 
 
+class UsageStats(BaseModel):
+    """Additive extension to OpenAI Batch object for token accounting (spec §16)."""
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+
+
+class UsageRecordOut(BaseModel):
+    """Per-prompt usage record for GET /v1/batches/{id}/usage."""
+    id: str
+    batch_id: str
+    custom_id: str
+    model: Optional[str] = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    created_at: int
+
+    class Config:
+        from_attributes = True
+
+
 class BatchOut(BaseModel):
     id: str
     object: str = "batch"
@@ -59,9 +81,15 @@ class BatchOut(BaseModel):
     requested_at: Optional[int] = None
     completed_at: Optional[int] = None
     request_counts: RequestCounts = RequestCounts()
+    usage: Optional[UsageStats] = None
 
     @classmethod
     def from_batch(cls, batch):
+        has_usage = (
+            getattr(batch, "prompt_tokens", None) is not None
+            or getattr(batch, "completion_tokens", None) is not None
+            or getattr(batch, "total_tokens", None) is not None
+        )
         return cls(
             id=batch.id,
             endpoint=batch.endpoint,
@@ -81,6 +109,15 @@ class BatchOut(BaseModel):
                 completed=batch.request_counts_completed or 0,
                 failed=batch.request_counts_failed or 0,
             ),
+            usage=(
+                UsageStats(
+                    prompt_tokens=batch.prompt_tokens,
+                    completion_tokens=batch.completion_tokens,
+                    total_tokens=batch.total_tokens,
+                )
+                if has_usage
+                else None
+            ),
         )
 
 
@@ -94,9 +131,15 @@ class BatchSummary(BaseModel):
     created_at: int
     completed_at: Optional[int] = None
     request_counts: RequestCounts = RequestCounts()
+    usage: Optional[UsageStats] = None
 
     @classmethod
     def from_batch(cls, batch):
+        has_usage = (
+            getattr(batch, "prompt_tokens", None) is not None
+            or getattr(batch, "completion_tokens", None) is not None
+            or getattr(batch, "total_tokens", None) is not None
+        )
         return cls(
             id=batch.id,
             endpoint=batch.endpoint,
@@ -108,6 +151,15 @@ class BatchSummary(BaseModel):
                 total=batch.request_counts_total or 0,
                 completed=batch.request_counts_completed or 0,
                 failed=batch.request_counts_failed or 0,
+            ),
+            usage=(
+                UsageStats(
+                    prompt_tokens=batch.prompt_tokens,
+                    completion_tokens=batch.completion_tokens,
+                    total_tokens=batch.total_tokens,
+                )
+                if has_usage
+                else None
             ),
         )
 
