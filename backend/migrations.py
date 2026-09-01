@@ -10,10 +10,10 @@ SQLite (the two dialects in the deployment matrix).
 import logging
 
 from sqlalchemy import inspect, text
-from sqlalchemy import Integer
+from sqlalchemy import Integer, String
 
 from database import get_engine
-from models import Batch, UsageRecord  # noqa: F401 — ensure models are registered
+from models import Base, Batch, BatchAssignment, UsageRecord  # noqa: F401 — ensure models are registered
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,15 @@ MIGRATIONS = [
     _Migration("batches.prompt_tokens", "batches", "prompt_tokens", Integer()),
     _Migration("batches.completion_tokens", "batches", "completion_tokens", Integer()),
     _Migration("batches.total_tokens", "batches", "total_tokens", Integer()),
+    # Added with the provider-record snapshot on BatchAssignment. Modelled
+    # NOT NULL, but added nullable here: existing rows predate the columns and
+    # have nothing to backfill from. Without these, every /workers/poll INSERT
+    # raises UndefinedColumn on a database created before they landed — the
+    # whole queue stops, because poll is the only path out of "validated".
+    _Migration("batch_assignments.org_id",
+               "batch_assignments", "org_id", String()),
+    _Migration("batch_assignments.worker_hostname",
+               "batch_assignments", "worker_hostname", String()),
 ]
 
 
@@ -77,3 +86,64 @@ def ensure_schema(engine=None):
         except Exception:
             logger.exception("Schema migration %s failed", m.name)
             raise
+
+    verify_schema(engine)
+
+
+class SchemaDriftError(RuntimeError):
+    """The live database is missing something the models declare."""
+
+
+def schema_drift(engine=None):
+    """Columns and tables the models declare but the database does not have.
+
+    Returns (missing_tables, missing_columns) as sorted lists of names.
+    Columns the database has but the models no longer declare are ignored:
+    that direction is normal during a rollback and breaks nothing.
+    """
+    engine = engine or get_engine()
+    insp = inspect(engine)
+    live_tables = set(insp.get_table_names())
+
+    missing_tables, missing_columns = [], []
+    for name, table in Base.metadata.tables.items():
+        if name not in live_tables:
+            missing_tables.append(name)
+            continue
+        live = {c["name"] for c in insp.get_columns(name)}
+        missing_columns.extend(
+            f"{name}.{col.name}" for col in table.columns if col.name not in live
+        )
+    return sorted(missing_tables), sorted(missing_columns)
+
+
+def verify_schema(engine=None):
+    """Fail the boot if the database is missing anything the models declare.
+
+    MIGRATIONS is maintained by hand, so a model column shipped without an
+    entry here is invisible in development — `create_all()` builds it into
+    every fresh database — and missing only where the table predates the
+    change, which in practice means production alone. The failure then
+    surfaces as a 500 from whichever endpoint touches the column first, with
+    nothing naming the real cause. `batch_assignments.org_id` /
+    `.worker_hostname` stalled every batch in the queue that way.
+
+    Raising here converts that into a deploy that refuses to start and says
+    exactly which column is missing.
+    """
+    missing_tables, missing_columns = schema_drift(engine)
+    if not missing_tables and not missing_columns:
+        return
+
+    detail = []
+    if missing_tables:
+        detail.append(f"tables: {', '.join(missing_tables)}")
+    if missing_columns:
+        detail.append(f"columns: {', '.join(missing_columns)}")
+    message = (
+        "Database schema is behind the models — " + "; ".join(detail) + ". "
+        "Add a _Migration entry in backend/migrations.py for each missing "
+        "column (tables come from Base.metadata.create_all)."
+    )
+    logger.error(message)
+    raise SchemaDriftError(message)
