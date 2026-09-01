@@ -1111,3 +1111,278 @@ select option {
   align-items: center;
   justify-content: center;
 }
+
+/* ===================== BATCHES — MASTER / DETAIL ===================== */
+/* A list of ids was not worth half a screen per card, and the fields that
+   answer "where is this batch and why" — endpoint, the four lifecycle
+   timestamps, both files — never fit on one. One rail carrying every batch,
+   one pane carrying all of the selected one. */
+.batch-layout {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+@media (max-width: 1000px) {
+  .batch-layout {
+    grid-template-columns: 1fr;
+  }
+  /* Stacked, the rail must not push the detail off the first screen. */
+  .batch-rail {
+    position: static;
+    max-height: 240px;
+  }
+}
+
+.batch-rail {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  backdrop-filter: blur(20px);
+  overflow-y: auto;
+  /* Scrolls on its own, so a long history never slides the detail pane away. */
+  position: sticky;
+  top: 1rem;
+  max-height: calc(100vh - 12rem);
+}
+
+.batch-rail-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  padding: 0.8rem 1rem;
+  cursor: pointer;
+  color: var(--fg);
+  font-family: 'Inter', sans-serif;
+  transition: background 0.12s ease;
+}
+.batch-rail-item:last-child {
+  border-bottom: 0;
+}
+.batch-rail-item:hover {
+  background: var(--bg-panel-hover);
+}
+.batch-rail-item.selected {
+  background: rgba(201, 196, 255, 0.09);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.batch-rail-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.batch-rail-id {
+  font-size: 0.73rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.batch-rail-time {
+  font-size: 0.69rem;
+  color: var(--dimmer);
+  white-space: nowrap;
+}
+/* Completed rows carry no badge at all — a finished list should read quiet, so
+   the ones still in flight are the only colour on the rail. */
+.batch-rail-item .badge {
+  margin-top: 0.5rem;
+}
+
+.batch-detail {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  backdrop-filter: blur(20px);
+  padding: 1.5rem 1.75rem 1.75rem;
+  min-width: 0;
+}
+.batch-eyebrow {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dimmer);
+}
+h2.batch-detail-id {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #fff;
+  margin: 0.35rem 0 1.3rem;
+  overflow-wrap: anywhere;
+}
+
+/* Label/value rows as a grid rather than a table, so a value that grows tall —
+   an error report, a progress bar — keeps its label on the first line. */
+.batch-facts {
+  margin: 0;
+}
+.batch-fact {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 1rem;
+  padding: 0.5rem 0;
+  align-items: start;
+}
+@media (max-width: 700px) {
+  .batch-fact {
+    grid-template-columns: 1fr;
+    gap: 0.2rem;
+  }
+}
+.batch-fact dt {
+  font-size: 0.82rem;
+  color: var(--dim);
+}
+.batch-fact dd {
+  margin: 0;
+  min-width: 0;
+  font-size: 0.85rem;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.batch-fact dd.mono {
+  font-size: 0.8rem;
+}
+.batch-fact-note {
+  display: block;
+  font-size: 0.76rem;
+  color: var(--dim);
+  margin-top: 0.3rem;
+  line-height: 1.5;
+}
+.batch-fact-empty {
+  color: var(--dimmer);
+}
+
+.batch-section-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #fff;
+  margin: 1.5rem 0 0.6rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--border-soft);
+}
+
+.batch-file-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.8rem;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+.batch-file-link:hover {
+  text-decoration: underline;
+}
+
+/* ── Batch timeline ── */
+.batch-timeline-date {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dimmer);
+  margin: 0.5rem 0 0.1rem;
+}
+.batch-timeline-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 84px 12px minmax(0, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+}
+/* The connector, drawn per row so consecutive rows join up, then trimmed to the
+   pip on the first and last — otherwise the line overshoots at both ends. */
+.batch-timeline-row::before {
+  content: '';
+  position: absolute;
+  left: calc(84px + 0.75rem + 5.5px);
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+.batch-timeline-row.first::before {
+  top: 50%;
+}
+.batch-timeline-row.last::before {
+  bottom: 50%;
+}
+.batch-timeline-clock {
+  font-size: 0.74rem;
+  color: var(--dim);
+  text-align: right;
+}
+.batch-timeline-pip {
+  position: relative;
+  z-index: 1;
+  justify-self: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+.batch-timeline-pip.bad {
+  background: var(--danger);
+}
+/* Hollow: this step has not happened yet. */
+.batch-timeline-pip.open {
+  background: var(--bg);
+  border: 1px solid var(--dim);
+}
+.batch-timeline-label {
+  font-size: 0.85rem;
+}
+.batch-timeline-row.pending .batch-timeline-label,
+.batch-timeline-row.pending .batch-timeline-clock {
+  color: var(--dim);
+}
+
+/* ── Validation error report ── */
+.batch-error {
+  padding: 0.7rem 0.85rem;
+  border-radius: 8px;
+  background: rgba(248, 81, 73, 0.08);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+}
+.batch-error-head {
+  color: #F85149;
+  font-size: 0.75rem;
+  font-weight: 600;
+  margin-bottom: 0.45rem;
+}
+.batch-error-group {
+  margin-bottom: 0.55rem;
+}
+.batch-error-code {
+  color: #F85149;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.batch-error-line {
+  color: #F85149;
+  font-size: 0.72rem;
+  opacity: 0.85;
+  overflow-wrap: anywhere;
+}
+.batch-error-fix {
+  color: var(--dim);
+  font-size: 0.72rem;
+  margin-top: 0.2rem;
+  line-height: 1.5;
+}
+
+.batch-detail-foot {
+  margin-top: 1.5rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--border-soft);
+}
