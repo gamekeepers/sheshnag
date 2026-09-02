@@ -272,6 +272,69 @@ async def test_execute_strict_mode_schema_violation():
 
 
 @pytest.mark.asyncio
+async def test_execute_empty_response_choices():
+    executor = OllamaExecutor()
+    executor.version = "0.5.1"
+
+    prompt = PromptRequest(
+        custom_id="req-empty-choices",
+        body={
+            "model": "llama3:8b",
+            "messages": [{"role": "user", "content": "hello"}],
+            "response_format": {"type": "json_object"}
+        }
+    )
+
+    # Response with no choices / empty message
+    mock_response = create_mock_response(
+        200,
+        {
+            "done": True,
+            "model": "llama3:8b",
+        }
+    )
+
+    with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = mock_response
+        res = await executor.execute(prompt)
+        assert not res.is_success
+        assert res.error.startswith("EMPTY_RESPONSE:")
+        assert "Response contains no choices" in res.error
+        assert res.response is not None
+
+
+@pytest.mark.asyncio
+async def test_execute_empty_response_choices_non_structured():
+    executor = OllamaExecutor()
+    executor.version = "0.5.1"
+
+    prompt = PromptRequest(
+        custom_id="req-empty-choices-plain",
+        body={
+            "model": "llama3:8b",
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+    )
+
+    # Response with no choices / empty message
+    mock_response = create_mock_response(
+        200,
+        {
+            "done": True,
+            "model": "llama3:8b",
+        }
+    )
+
+    with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = mock_response
+        res = await executor.execute(prompt)
+        assert not res.is_success
+        assert res.error.startswith("EMPTY_RESPONSE:")
+        assert "Response contains no choices" in res.error
+        assert res.response is not None
+
+
+@pytest.mark.asyncio
 async def test_health_check_success():
     executor = OllamaExecutor()
     
