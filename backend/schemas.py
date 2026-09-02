@@ -79,12 +79,18 @@ class BatchOut(BaseModel):
     created_at: int
     expires_at: Optional[int] = None
     requested_at: Optional[int] = None
+    # When a worker actually picked the job up. The Batch row has no column for
+    # it — the moment is recorded on BatchAssignment.assigned_at — so callers
+    # that want the full lifecycle pass it in. None means "not dispatched yet",
+    # which is the difference between a batch that is queued and one that is
+    # running, and the two look identical without it.
+    in_progress_at: Optional[int] = None
     completed_at: Optional[int] = None
     request_counts: RequestCounts = RequestCounts()
     usage: Optional[UsageStats] = None
 
     @classmethod
-    def from_batch(cls, batch):
+    def from_batch(cls, batch, in_progress_at: Optional[int] = None):
         has_usage = (
             getattr(batch, "prompt_tokens", None) is not None
             or getattr(batch, "completion_tokens", None) is not None
@@ -103,6 +109,7 @@ class BatchOut(BaseModel):
             created_at=batch.created_at,
             expires_at=batch.expires_at,
             requested_at=batch.requested_at,
+            in_progress_at=in_progress_at,
             completed_at=batch.completed_at,
             request_counts=RequestCounts(
                 total=batch.request_counts_total or 0,

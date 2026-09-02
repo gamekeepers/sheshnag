@@ -21,9 +21,19 @@ function mapBatch(job, fileMap) {
   return {
     id: job.id,
     filename: fileMap[job.input_file_id] || job.input_file_id || 'unknown.jsonl',
+    input_file_id: job.input_file_id,
     status: job.status,
     error_details: job.error_details || null,
+    endpoint: job.endpoint,
+    model: job.model || null,
+    completion_window: job.completion_window,
     created_at: job.created_at,
+    // The lifecycle, in the order it happens: accepted -> validated and queued
+    // -> taken by a worker -> finished. Any of the last three can be null, and
+    // which one is missing is what tells you where the batch actually is.
+    requested_at: job.requested_at || null,
+    in_progress_at: job.in_progress_at || null,
+    completed_at: job.completed_at || null,
     total: job.request_counts_total || job.request_counts?.total || 0,
     done: job.request_counts_completed || job.request_counts?.completed || 0,
     failed: job.request_counts_failed || job.request_counts?.failed || 0,
@@ -36,6 +46,140 @@ function mapBatch(job, fileMap) {
 }
 
 const formatTokens = (n) => (typeof n === 'number' ? n.toLocaleString() : '—');
+
+// ── Batch detail formatting ─────────────────────────────────────────────────
+// Every timestamp on the API is unix seconds.
+const asDate = (t) => (t ? new Date(t * 1000) : null);
+
+const fmtStamp = (t) => asDate(t)?.toLocaleString(undefined, {
+  month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
+}) || '—';
+
+const fmtListStamp = (t) => asDate(t)?.toLocaleString(undefined, {
+  month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
+}) || '';
+
+const fmtClock = (t) => asDate(t)?.toLocaleTimeString(undefined, { hour12: false }) || '';
+
+const fmtDay = (t) => asDate(t)?.toLocaleDateString(undefined, {
+  weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+}) || '';
+
+// Spelled out rather than 00:01:51 — these run from seconds to hours, and a
+// clock format is ambiguous at both ends of that range.
+function fmtDuration(seconds) {
+  if (seconds == null || seconds < 0) return '—';
+  const s = Math.round(seconds);
+  if (s < 60) return `${s} second${s === 1 ? '' : 's'}`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const rest = s % 60;
+  const parts = [];
+  if (h) parts.push(`${h} hour${h === 1 ? '' : 's'}`);
+  if (m) parts.push(`${m} minute${m === 1 ? '' : 's'}`);
+  // Seconds stop mattering once we are counting hours.
+  if (rest && !h) parts.push(`${rest} second${rest === 1 ? '' : 's'}`);
+  return parts.join(', ');
+}
+
+// What the batch is waiting on, for a status that is not terminal. Naming the
+// blocker matters most at "validated": the batch is queued and healthy-looking,
+// and the only thing that moves it is a worker polling for it.
+const PENDING_NOTE = {
+  validating: 'Checking the input file line by line.',
+  validated: 'Queued. The next worker that polls and can serve this model takes it.',
+  in_progress: 'A worker is running the requests.',
+};
+
+// The lifecycle, built from the timestamps that exist. Events that never
+// happened are simply absent, so a batch stuck in the queue shows two rows and
+// stops — which is the honest picture of where it got to.
+function batchTimeline(batch) {
+  const events = [];
+  if (batch.created_at) events.push({ at: batch.created_at, label: 'Batch created' });
+  if (batch.requested_at) events.push({ at: batch.requested_at, label: 'Validated — queued for a worker' });
+  if (batch.in_progress_at) events.push({ at: batch.in_progress_at, label: 'Picked up by a worker' });
+  if (batch.completed_at) {
+    // A batch that never reached "validated" failed the file check, not the run.
+    const inValidation = batch.status === 'failed' && !batch.requested_at;
+    events.push({
+      at: batch.completed_at,
+      bad: batch.status === 'failed',
+      label: inValidation ? 'Validation failed'
+        : batch.status === 'failed' ? 'Batch failed' : 'Batch completed',
+    });
+  }
+  return events.sort((a, b) => a.at - b.at);
+}
+
+function groupByDay(events) {
+  const days = [];
+  events.forEach((e) => {
+    const day = fmtDay(e.at);
+    const last = days[days.length - 1];
+    if (last && last.day === day) last.events.push(e);
+    else days.push({ day, events: [e] });
+  });
+  return days;
+}
+
+// The validator sends a code and a field per error and persists both; rendering
+// the message alone told the reader what broke but never what to do about it.
+function BatchErrorReport({ details }) {
+  let groups = [];
+  let total = 0;
+  let shown = 0;
+  let fallback = null;
+  try {
+    const parsed = JSON.parse(details);
+    if (Array.isArray(parsed?.data)) {
+      groups = groupValidationErrors(parsed.data);
+      shown = parsed.data.length;
+      total = parsed.total_errors || parsed.data.length;
+    } else if (parsed?.error) {
+      fallback = parsed.error;
+      total = 1;
+    }
+  } catch {
+    fallback = details;
+    total = 1;
+  }
+
+  return (
+    <div className="batch-error">
+      <div className="batch-error-head">
+        Validation failed — {total} error{total === 1 ? '' : 's'}
+        {groups.length > 1 && <> across {groups.length} problems</>}
+      </div>
+
+      {fallback && <div className="mono batch-error-line">{fallback}</div>}
+
+      {groups.map((g) => (
+        <div key={g.key} className="batch-error-group">
+          <div className="mono batch-error-code">
+            {g.code}
+            {g.field && <> · {g.field}</>}
+            {' · '}
+            {g.count} line{g.count === 1 ? '' : 's'}
+            {g.lines.length > 0 && <> (first: {g.lines.join(', ')})</>}
+          </div>
+          <div className="mono batch-error-line">{g.sample}</div>
+          {g.fix && <div className="batch-error-fix">{g.fix}</div>}
+        </div>
+      ))}
+
+      {/* The validator stores at most MAX_STORED_ERRORS but reports the true
+          total, so on a badly broken file the header outruns the rows beneath
+          it. Say so, rather than leaving the reader to check the sum. */}
+      {shown > 0 && total > shown && (
+        <div className="batch-error-fix">
+          Listing the first {shown} of {total} errors — the rest were not recorded.
+          Fix these and re-upload to see whether any remain.
+        </div>
+      )}
+    </div>
+  );
+}
 
 const CHART = {
   ok: '#4ADE80',
@@ -66,6 +210,10 @@ export default function DashboardPage() {
   const [workers, setWorkers] = useState([]);
   const [uploadedFiles, setUploadedFiles] = useState([]);
   const [batches, setBatches] = useState([]);
+  // Which batch the detail pane is showing. Falls back to the newest rather
+  // than being seeded by an effect, so it survives the list reloading under it
+  // and a deleted batch does not leave an empty pane.
+  const [selectedBatchId, setSelectedBatchId] = useState(null);
 
   // Loading states
   const [loadingProfile, setLoadingProfile] = useState(true);
@@ -959,6 +1107,25 @@ export default function DashboardPage() {
 
   // Demand against that fleet. Every other tile answers "what happened"; this is
   // the only one that answers "can it keep up".
+  const selectedBatch = batches.find(b => b.id === selectedBatchId) || batches[0] || null;
+
+  // Flattened rather than nested per day, so the connecting line can be trimmed
+  // at the true first and last event — the day headings are interleaved with
+  // the rows, which puts CSS :first-of-type on a heading instead of an event.
+  const timelineRows = [];
+  if (selectedBatch) {
+    groupByDay(batchTimeline(selectedBatch)).forEach(g => {
+      timelineRows.push({ kind: 'day', key: `day-${g.day}`, day: g.day });
+      g.events.forEach(e => timelineRows.push({ kind: 'event', key: `${e.at}-${e.label}`, event: e }));
+    });
+    if (PENDING_NOTE[selectedBatch.status]) {
+      timelineRows.push({ kind: 'pending', key: 'pending' });
+    }
+  }
+  const eventRows = timelineRows.reduce((acc, r, i) => (r.kind === 'day' ? acc : [...acc, i]), []);
+  const firstEventRow = eventRows[0];
+  const lastEventRow = eventRows[eventRows.length - 1];
+
   const pendingBatches = batches.filter(b => !['completed', 'failed'].includes(b.status));
   const pendingRequests = pendingBatches.reduce(
     (acc, b) => acc + Math.max((b.total || 0) - (b.done || 0) - (b.failed || 0), 0), 0,
@@ -1930,166 +2097,247 @@ export default function DashboardPage() {
               </button>
             </div>
 
-            <div className="grid-2">
-              {batches.map(batch => {
-                const percent = batch.total > 0 ? Math.round((batch.done / batch.total) * 100) : 0;
-                return (
-                  <div className="panel" key={batch.id}>
-                    <div style={{ display: 'flex', justifySelf: 'stretch', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.7rem' }}>
-                      <span className="mono" style={{ fontSize: '0.8rem', color: 'var(--dim)' }}>{batch.id}</span>
-                      <span className={`badge ${batch.status}`}>
-                        <span className="pip"></span>
-                        {batch.status}
-                      </span>
-                    </div>
-                    <div className="progress">
-                      <span style={{ width: `${percent}%`, background: batch.status === 'failed' ? 'var(--danger)' : 'var(--accent)' }}></span>
-                    </div>
-                    <div className="progress-meta">
-                      <span>{batch.done.toLocaleString()} / {batch.total.toLocaleString()} completed</span>
-                      <span>{batch.failed} failed</span>
-                    </div>
-                    {/* Counts come from the output file, so they land a moment
-                        after the batch completes rather than with it. Say which
-                        state this is instead of showing a zero either way. */}
-                    <div className="progress-meta">
-                      {batch.usage ? (
-                        <>
-                          <span>{formatTokens(batch.usage.prompt_tokens)} prompt · {formatTokens(batch.usage.completion_tokens)} completion</span>
-                          <span>{formatTokens(batch.usage.total_tokens)} tokens</span>
-                        </>
-                      ) : (
-                        <span>
-                          {batch.status === 'completed' ? 'Token usage not counted yet' : 'Token usage available once the batch completes'}
+            {batches.length === 0 ? (
+              /* A1 — the empty state is the only place a first-time user is
+                 guaranteed to look, so it carries the whole path to a result. */
+              <TeachingEmptyState title="Submit your first batch">
+                <TeachingStep n={1}>
+                  Build a <span className="mono">.jsonl</span> file — one request per line.
+                  <CopyableCode
+                    code={sampleJsonl}
+                    style={{ marginTop: '0.5rem' }}
+                    copyLabel={modelsLoaded ? 'Copy' : 'Loading catalogue…'}
+                    disabled={!modelsLoaded}
+                    actions={
+                      <button
+                        className="btn"
+                        disabled={!modelsLoaded}
+                        style={{
+                          padding: '2px 10px',
+                          fontSize: '0.72rem',
+                          opacity: modelsLoaded ? undefined : 0.45,
+                          cursor: modelsLoaded ? undefined : 'not-allowed',
+                        }}
+                        onClick={handleDownloadSample}
+                      >
+                        Download sample
+                      </button>
+                    }
+                  />
+                </TeachingStep>
+
+                <TeachingStep n={2}>
+                  Upload it on the{' '}
+                  <button className="teach-link" onClick={() => setActiveTab('files')}>Files tab</button>, or from
+                  code. The file is stored first and handed back an id; the batch references that
+                  id rather than carrying the bytes.
+                  <CopyableCode code={buildSubmitSnippet(sampleModelId)} style={{ marginTop: '0.5rem' }} />
+                </TeachingStep>
+
+                <TeachingStep n={3}>
+                  Or click <strong>New Batch</strong> above and pick the uploaded file.
+                  Either way the job is <em>accepted first and validated after</em> — a malformed
+                  file is taken, then fails a moment later, and the reason appears here.
+                </TeachingStep>
+              </TeachingEmptyState>
+            ) : (
+              <div className="batch-layout">
+                {/* Master. Every batch is one row: id, when it arrived, and a
+                    badge only when the status is worth interrupting for —
+                    a completed list should read as quiet. */}
+                <div className="batch-rail">
+                  {batches.map(b => (
+                    <button
+                      key={b.id}
+                      className={`batch-rail-item ${selectedBatch?.id === b.id ? 'selected' : ''}`}
+                      onClick={() => setSelectedBatchId(b.id)}
+                    >
+                      <div className="batch-rail-top">
+                        <span className="mono batch-rail-id">{b.id}</span>
+                        <span className="batch-rail-time">{fmtListStamp(b.created_at)}</span>
+                      </div>
+                      {b.status !== 'completed' && (
+                        <span className={`badge ${b.status}`}>
+                          <span className="pip"></span>
+                          {b.status}
                         </span>
                       )}
+                    </button>
+                  ))}
+                </div>
+
+                {selectedBatch && (
+                  <div className="batch-detail">
+                    <div className="batch-detail-head">
+                      <div className="batch-eyebrow">Batch</div>
+                      <h2 className="mono batch-detail-id">{selectedBatch.id}</h2>
                     </div>
-                    {batch.status === 'failed' && batch.error_details && (() => {
-                      /* the validator sends a code and a field per error and
-                         persists both; this used to render the message alone, so
-                         the reader learned what broke but never what to do. */
-                      let groups = [];
-                      let total = 0;
-                      let shown = 0;
-                      let fallback = null;
-                      try {
-                        const parsed = JSON.parse(batch.error_details);
-                        if (Array.isArray(parsed?.data)) {
-                          groups = groupValidationErrors(parsed.data);
-                          shown = parsed.data.length;
-                          total = parsed.total_errors || parsed.data.length;
-                        } else if (parsed?.error) {
-                          fallback = parsed.error;
-                          total = 1;
-                        }
-                      } catch {
-                        fallback = batch.error_details;
-                        total = 1;
-                      }
-                      return (
-                        <div style={{ marginTop: '0.8rem', padding: '0.7rem 0.85rem', borderRadius: '8px', background: 'rgba(248,81,73,0.08)', border: '1px solid rgba(248,81,73,0.3)' }}>
-                          <div style={{ color: '#F85149', fontSize: '0.75rem', fontWeight: 600, marginBottom: '0.45rem' }}>
-                            Validation failed — {total} error{total === 1 ? '' : 's'}
-                            {groups.length > 1 && <> across {groups.length} problems</>}
-                          </div>
 
-                          {fallback && (
-                            <div className="mono" style={{ color: '#F85149', fontSize: '0.72rem', opacity: 0.9, overflowWrap: 'anywhere' }}>{fallback}</div>
+                    <dl className="batch-facts">
+                      <div className="batch-fact">
+                        <dt>Status</dt>
+                        <dd>
+                          <span className={`badge ${selectedBatch.status}`}>
+                            <span className="pip"></span>
+                            {selectedBatch.status}
+                          </span>
+                          {PENDING_NOTE[selectedBatch.status] && (
+                            <div className="batch-fact-note">{PENDING_NOTE[selectedBatch.status]}</div>
                           )}
+                        </dd>
+                      </div>
 
-                          {groups.map(g => (
-                            <div key={g.key} style={{ marginBottom: '0.55rem' }}>
-                              <div className="mono" style={{ color: '#F85149', fontSize: '0.72rem', fontWeight: 600 }}>
-                                {g.code}
-                                {g.field && <> · {g.field}</>}
-                                {' · '}
-                                {g.count} line{g.count === 1 ? '' : 's'}
-                                {g.lines.length > 0 && <> (first: {g.lines.join(', ')})</>}
-                              </div>
-                              <div className="mono" style={{ color: '#F85149', fontSize: '0.72rem', opacity: 0.85, overflowWrap: 'anywhere' }}>
-                                {g.sample}
-                              </div>
-                              {g.fix && (
-                                <div style={{ color: 'var(--dim)', fontSize: '0.72rem', marginTop: '0.2rem', lineHeight: 1.5 }}>
-                                  {g.fix}
-                                </div>
-                              )}
-                            </div>
-                          ))}
+                      <div className="batch-fact">
+                        <dt>Created at</dt>
+                        <dd>{fmtStamp(selectedBatch.created_at)}</dd>
+                      </div>
 
-                          {/* The validator stores at most MAX_STORED_ERRORS but
-                              reports the true total, so on a badly broken file
-                              the header outruns the rows beneath it. Say so,
-                              rather than leaving the reader to check the sum. */}
-                          {shown > 0 && total > shown && (
-                            <div style={{ color: 'var(--dim)', fontSize: '0.72rem', lineHeight: 1.5 }}>
-                              Listing the first {shown} of {total} errors — the rest were not recorded.
-                              Fix these and re-upload to see whether any remain.
-                            </div>
-                          )}
+                      <div className="batch-fact">
+                        <dt>Endpoint</dt>
+                        <dd className="mono">{selectedBatch.endpoint || '—'}</dd>
+                      </div>
+
+                      {selectedBatch.model && (
+                        <div className="batch-fact">
+                          <dt>Model</dt>
+                          <dd className="mono">{selectedBatch.model}</dd>
                         </div>
-                      );
-                    })()}
-                    <div style={{ marginTop: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <button
-                        className="btn primary"
-                        disabled={batch.status !== 'completed'}
-                        onClick={() => handleDownloadFile(batch.output_file_id, `${batch.id}_output.jsonl`)}
-                      >
-                        Download Output
-                      </button>
-                      <span style={{ fontSize: '0.75rem', color: 'var(--dimmer)' }}>
-                        File: {batch.filename}
-                      </span>
+                      )}
+
+                      <div className="batch-fact">
+                        <dt>Completion window</dt>
+                        <dd>{selectedBatch.completion_window || '—'}</dd>
+                      </div>
+
+                      {/* End to end, from acceptance — which folds in queue
+                          time. The timeline below splits it out. */}
+                      {selectedBatch.completed_at && (
+                        <div className="batch-fact">
+                          <dt>{selectedBatch.status === 'failed' ? 'Failed after' : 'Completion time'}</dt>
+                          <dd>{fmtDuration(selectedBatch.completed_at - selectedBatch.created_at)}</dd>
+                        </div>
+                      )}
+
+                      <div className="batch-fact">
+                        <dt>Request counts</dt>
+                        <dd>
+                          {selectedBatch.done.toLocaleString()} completed,{' '}
+                          {selectedBatch.failed.toLocaleString()} failed of{' '}
+                          {selectedBatch.total.toLocaleString()} total requests
+                          {selectedBatch.status === 'in_progress' && selectedBatch.total > 0 && (
+                            <div className="progress" style={{ marginTop: '0.5rem' }}>
+                              <span style={{ width: `${Math.round((selectedBatch.done / selectedBatch.total) * 100)}%` }}></span>
+                            </div>
+                          )}
+                        </dd>
+                      </div>
+
+                      {/* Counts come from the output file, so they land a moment
+                          after the batch completes rather than with it. Say which
+                          state this is instead of showing a zero either way. */}
+                      <div className="batch-fact">
+                        <dt>Token usage</dt>
+                        <dd>
+                          {selectedBatch.usage ? (
+                            <>
+                              {formatTokens(selectedBatch.usage.total_tokens)} total
+                              <span className="batch-fact-note">
+                                {formatTokens(selectedBatch.usage.prompt_tokens)} prompt ·{' '}
+                                {formatTokens(selectedBatch.usage.completion_tokens)} completion
+                              </span>
+                            </>
+                          ) : (
+                            <span className="batch-fact-empty">
+                              {selectedBatch.status === 'completed' ? 'Not counted yet'
+                                : selectedBatch.status === 'failed' ? 'None — no requests ran'
+                                : 'Available once the batch completes'}
+                            </span>
+                          )}
+                        </dd>
+                      </div>
+                    </dl>
+
+                    <div className="batch-section-label">Files</div>
+                    <dl className="batch-facts">
+                      <div className="batch-fact">
+                        <dt>Input</dt>
+                        <dd>
+                          <button
+                            className="batch-file-link"
+                            onClick={() => handleDownloadFile(selectedBatch.input_file_id, selectedBatch.filename)}
+                          >
+                            {selectedBatch.filename}
+                          </button>
+                        </dd>
+                      </div>
+                      <div className="batch-fact">
+                        <dt>Output</dt>
+                        <dd>
+                          {selectedBatch.output_file_id ? (
+                            <button
+                              className="batch-file-link"
+                              onClick={() => handleDownloadFile(selectedBatch.output_file_id, `${selectedBatch.id}_output.jsonl`)}
+                            >
+                              {selectedBatch.id}_output.jsonl
+                            </button>
+                          ) : (
+                            <span className="batch-fact-empty">
+                              {selectedBatch.status === 'failed' ? 'None — the batch never ran' : 'Written when the batch completes'}
+                            </span>
+                          )}
+                        </dd>
+                      </div>
+                      {selectedBatch.error_details && (
+                        <div className="batch-fact">
+                          <dt>Error</dt>
+                          <dd><BatchErrorReport details={selectedBatch.error_details} /></dd>
+                        </div>
+                      )}
+                    </dl>
+
+                    <div className="batch-section-label">Timeline</div>
+                    <div className="batch-timeline">
+                      {timelineRows.map((row, i) => {
+                        if (row.kind === 'day') {
+                          return <div className="batch-timeline-date" key={row.key}>{row.day}</div>;
+                        }
+                        const edge = `${i === firstEventRow ? ' first' : ''}${i === lastEventRow ? ' last' : ''}`;
+                        /* An unfinished batch ends on an open-ended row. Without
+                           it the timeline just stops, and a queue that has
+                           stalled looks the same as one that finished. */
+                        if (row.kind === 'pending') {
+                          return (
+                            <div className={`batch-timeline-row pending${edge}`} key={row.key}>
+                              <span className="mono batch-timeline-clock">now</span>
+                              <span className="batch-timeline-pip open"></span>
+                              <span className="batch-timeline-label">{PENDING_NOTE[selectedBatch.status]}</span>
+                            </div>
+                          );
+                        }
+                        return (
+                          <div className={`batch-timeline-row${edge}`} key={row.key}>
+                            <span className="mono batch-timeline-clock">{fmtClock(row.event.at)}</span>
+                            <span className={`batch-timeline-pip ${row.event.bad ? 'bad' : ''}`}></span>
+                            <span className="batch-timeline-label">{row.event.label}</span>
+                          </div>
+                        );
+                      })}
                     </div>
-                  </div>
-                );
-              })}
-              {batches.length === 0 && (
-                /* A1 — the empty state is the only place a first-time user is
-                   guaranteed to look, so it carries the whole path to a result. */
-                <TeachingEmptyState title="Submit your first batch" style={{ gridColumn: 'span 2' }}>
-                  <TeachingStep n={1}>
-                    Build a <span className="mono">.jsonl</span> file — one request per line.
-                    <CopyableCode
-                      code={sampleJsonl}
-                      style={{ marginTop: '0.5rem' }}
-                      copyLabel={modelsLoaded ? 'Copy' : 'Loading catalogue…'}
-                      disabled={!modelsLoaded}
-                      actions={
+
+                    {selectedBatch.output_file_id && (
+                      <div className="batch-detail-foot">
                         <button
-                          className="btn"
-                          disabled={!modelsLoaded}
-                          style={{
-                            padding: '2px 10px',
-                            fontSize: '0.72rem',
-                            opacity: modelsLoaded ? undefined : 0.45,
-                            cursor: modelsLoaded ? undefined : 'not-allowed',
-                          }}
-                          onClick={handleDownloadSample}
+                          className="btn primary"
+                          onClick={() => handleDownloadFile(selectedBatch.output_file_id, `${selectedBatch.id}_output.jsonl`)}
                         >
-                          Download sample
+                          Download output
                         </button>
-                      }
-                    />
-                  </TeachingStep>
-
-                  <TeachingStep n={2}>
-                    Upload it on the{' '}
-                    <button className="teach-link" onClick={() => setActiveTab('files')}>Files tab</button>, or from
-                    code. The file is stored first and handed back an id; the batch references that
-                    id rather than carrying the bytes.
-                    <CopyableCode code={buildSubmitSnippet(sampleModelId)} style={{ marginTop: '0.5rem' }} />
-                  </TeachingStep>
-
-                  <TeachingStep n={3}>
-                    Or click <strong>New Batch</strong> above and pick the uploaded file.
-                    Either way the job is <em>accepted first and validated after</em> — a malformed
-                    file is taken, then fails a moment later, and the reason appears on its card here.
-                  </TeachingStep>
-                </TeachingEmptyState>
-              )}
-            </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* ============ SETTINGS PAGE ============ */}
