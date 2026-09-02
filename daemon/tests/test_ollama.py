@@ -7,9 +7,9 @@ from daemon.executors.ollama import OllamaExecutor, parse_version
 from daemon.models import PromptRequest, CompletionResult
 
 # Helper to create responses with mock request bound to prevent raise_for_status issues
-def create_mock_response(status_code: int, json_data: dict) -> httpx.Response:
+def create_mock_response(status_code: int, json_data: dict, headers: dict = None) -> httpx.Response:
     req = httpx.Request("POST", "http://localhost:11434/api/chat")
-    return httpx.Response(status_code=status_code, json=json_data, request=req)
+    return httpx.Response(status_code=status_code, json=json_data, headers=headers, request=req)
 
 # Test parse_version helper
 def test_parse_version():
@@ -472,3 +472,76 @@ async def test_embeddings_path_skips_version_probe():
             res = await executor.execute(prompt)
     assert res.is_success
     hc.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_health_check_non_ollama_server_header_warning(caplog):
+    """Warning is logged when Server header indicates a non-Ollama application server."""
+    executor = OllamaExecutor()
+    version_resp = create_mock_response(
+        200, {"version": "0.1.0"}, headers={"server": "Python/3.12 aiohttp/3.13.5"}
+    )
+    tags_resp = create_mock_response(200, {"models": []})
+
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [version_resp, tags_resp]
+        with caplog.at_level("INFO"):
+            healthy = await executor.health_check()
+
+    assert healthy is True
+    assert "Ollama server header: Python/3.12 aiohttp/3.13.5" in caplog.text
+    assert "Detected non-Ollama server" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_health_check_ollama_no_server_header_normal(caplog):
+    """Standard Ollama without Server header completes health check without warning."""
+    executor = OllamaExecutor()
+    version_resp = create_mock_response(200, {"version": "0.5.1"})
+    tags_resp = create_mock_response(200, {"models": []})
+
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [version_resp, tags_resp]
+        with caplog.at_level("INFO"):
+            healthy = await executor.health_check()
+
+    assert healthy is True
+    assert "Detected non-Ollama server" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_health_check_reverse_proxy_server_header_normal(caplog):
+    """Ollama behind reverse proxy (e.g. nginx or caddy) completes without false-positive warning."""
+    executor = OllamaExecutor()
+    version_resp = create_mock_response(
+        200, {"version": "0.5.1"}, headers={"server": "nginx/1.24.0 (Ubuntu)"}
+    )
+    tags_resp = create_mock_response(200, {"models": []})
+
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [version_resp, tags_resp]
+        with caplog.at_level("INFO"):
+            healthy = await executor.health_check()
+
+    assert healthy is True
+    assert "Ollama server header: nginx/1.24.0 (Ubuntu)" in caplog.text
+    assert "Detected non-Ollama server" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_health_check_non_200_server_header_logged(caplog):
+    """When a squatter server on port 11434 returns 404/502 on /api/version, Server header is still logged."""
+    executor = OllamaExecutor()
+    version_resp = create_mock_response(
+        404, {"error": "not found"}, headers={"server": "uvicorn"}
+    )
+
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [version_resp]
+        with caplog.at_level("INFO"):
+            healthy = await executor.health_check()
+
+    assert healthy is False
+    assert "Ollama server header: uvicorn" in caplog.text
+    assert "Detected non-Ollama server" in caplog.text
+
