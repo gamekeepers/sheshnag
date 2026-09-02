@@ -2,12 +2,47 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import PortalSwitch from '../components/PortalSwitch';
 import DocsLink, { DocsAnchor } from '../components/DocsLink';
 import SheshnagLogo from '../components/SheshnagLogo';
+import { buildStackedSeries, trimLeadingEmpty } from '../lib/usageSeries';
 import '../dashboard/dashboard.css';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+
+const CHART = { surface: '#111115', axis: '#5E5E5A' };
+
+// Enough hues to stack a small fleet. Above SERIES_MAX the stack is unreadable
+// and we fall back to one merged bar, so the palette never has to wrap.
+const SERIES_COLORS = ['#8B7BF5', '#4ADE80', '#C9722E', '#38BDF8', '#F472B6', '#FBBF24'];
+const SERIES_MAX = SERIES_COLORS.length;
+
+const compactTokens = (n) => {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return `${n}`;
+};
+
+// `counted_jobs` is how many of a bucket's jobs had their rollup ingested.
+// Zero of them means *not counted*, which is a different claim from "produced
+// no tokens" — a fleet that predates §16 would otherwise read as idle. A
+// partially counted bucket gets a "+" so the number is not mistaken for the
+// whole truth, matching how the user dashboard marks a partial day.
+function tokenCell(bucket) {
+  if (!bucket || !bucket.counted_jobs) {
+    return <span className="dim" title="No token counts recorded for these jobs">—</span>;
+  }
+  const missing = (bucket.jobs || 0) - bucket.counted_jobs;
+  return (
+    <>
+      {(bucket.total_tokens || 0).toLocaleString()}
+      {missing > 0 && (
+        <span className="dim" title={`${missing} job${missing === 1 ? '' : 's'} not counted`}> +</span>
+      )}
+    </>
+  );
+}
 
 function heartbeatAge(ts) {
   if (!ts) return 'never';
@@ -38,6 +73,14 @@ export default function ProviderPage() {
 
   const [workers, setWorkers] = useState([]);
   const [served, setServed] = useState([]);
+  // The Contribution tab windows its own copy of the served jobs. Kept separate
+  // from `served` because the Jobs tab wants the full recent history, and
+  // narrowing that to the chart's window would silently shorten its table.
+  const [contribJobs, setContribJobs] = useState([]);
+  const [contribTruncated, setContribTruncated] = useState(false);
+  const [contribRange, setContribRange] = useState(7);
+  const [contribWorker, setContribWorker] = useState('');
+  const [contribModel, setContribModel] = useState('');
   const [stats, setStats] = useState(null);
   const [orgKeys, setOrgKeys] = useState([]);
   const [orgMembers, setOrgMembers] = useState([]);
@@ -123,10 +166,29 @@ export default function ProviderPage() {
   const loadStats = useCallback(async () => {
     if (!selectedOrg) return;
     try {
-      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/stats?days=7`, { headers: getHeaders() });
+      const res = await fetch(`${BACKEND}/v1/orgs/${selectedOrg.id}/stats?days=${contribRange}`, { headers: getHeaders() });
       if (res.ok) setStats(await res.json());
     } catch (e) { console.error('Failed to load stats:', e); }
-  }, [selectedOrg, getHeaders]);
+  }, [selectedOrg, contribRange, getHeaders]);
+
+  // Bounded by time, not row count. Newest-first with a bare limit drops the
+  // *oldest* rows, so a busy org's chart would lose its early days and render
+  // them as zero — a shorter window wearing a longer label.
+  const loadContribJobs = useCallback(async () => {
+    if (!selectedOrg) return;
+    const since = Math.floor(Date.now() / 1000) - contribRange * 86400;
+    try {
+      const res = await fetch(
+        `${BACKEND}/v1/orgs/${selectedOrg.id}/batches?since=${since}&limit=500`,
+        { headers: getHeaders() },
+      );
+      if (res.ok) {
+        const body = await res.json();
+        setContribJobs(body.data || []);
+        setContribTruncated(Boolean(body.truncated));
+      }
+    } catch (e) { console.error('Failed to load contribution jobs:', e); }
+  }, [selectedOrg, contribRange, getHeaders]);
 
   const loadKeys = useCallback(async () => {
     if (!selectedOrg) return;
@@ -170,13 +232,13 @@ export default function ProviderPage() {
     } else if (activeTab === 'models') {
       loadWorkers();
     } else if (activeTab === 'contribution') {
-      loadStats();
+      loadWorkers(); loadStats(); loadContribJobs();
     } else if (activeTab === 'keys') {
       loadKeys();
     } else if (activeTab === 'organization') {
       loadMembers();
     }
-  }, [activeTab, selectedOrg, loadWorkers, loadServed, loadStats, loadMembers, loadKeys]);
+  }, [activeTab, selectedOrg, loadWorkers, loadServed, loadStats, loadContribJobs, loadMembers, loadKeys]);
 
   // Heartbeat freshness matters — refresh the fleet while watching it.
   useEffect(() => {
@@ -358,6 +420,38 @@ export default function ProviderPage() {
     (!jobsWorkerFilter || j.worker_id === jobsWorkerFilter) &&
     (!jobsStatusFilter || j.status === jobsStatusFilter)
   );
+
+  // ── Contribution chart ────────────────────────────────────────────────────
+  // Two independent filters, so the pair can answer "what did watchtower
+  // produce on gemma3:27b" — a single combined selector cannot.
+  const contribFiltered = contribJobs.filter(j =>
+    (!contribWorker || j.worker_id === contribWorker) &&
+    (!contribModel || j.model === contribModel)
+  );
+
+  // Stack by whichever dimension is still open, so "all workers" shows the mix
+  // rather than one merged bar: a worker going dark on the 3rd is then visible
+  // without touching a dropdown, and the dropdown becomes a drill-down.
+  const stackByModel = Boolean(contribWorker);
+  const contribRows = contribFiltered.map(j => ({
+    // The provider's timeline is when its hardware picked the job up, not when
+    // the customer submitted it — those can be different days.
+    at: j.assigned_at,
+    total: j.request_counts?.total || 0,
+    done: j.request_counts?.completed || 0,
+    failed: j.request_counts?.failed || 0,
+    usage: j.usage,
+    status: j.status,
+    key: (stackByModel ? j.model : j.worker_hostname) || 'unknown',
+  }));
+
+  const { keys: seriesKeys, data: contribSeries } =
+    buildStackedSeries(contribRows, contribRange, r => r.key);
+  const contribChart = trimLeadingEmpty(contribSeries);
+  const stacked = seriesKeys.length > 1 && seriesKeys.length <= SERIES_MAX;
+  const contribTokens = contribSeries.reduce((acc, d) => acc + d.totalTokens, 0);
+  const contribAwaiting = contribSeries.reduce((acc, d) => acc + d.awaitingCount, 0);
+  const contribModels = [...new Set(contribJobs.map(j => j.model).filter(Boolean))].sort();
 
   const hostedModels = (() => {
     const map = {};
@@ -628,7 +722,7 @@ export default function ProviderPage() {
             <div className="panel" style={{ padding: '0.5rem' }}>
               <div className="table-container">
                 <table>
-                  <thead><tr><th>Batch</th><th>Model</th><th>Status</th><th>Requests</th><th>Worker</th><th>Assigned</th></tr></thead>
+                  <thead><tr><th>Batch</th><th>Model</th><th>Status</th><th>Requests</th><th>Tokens</th><th>Worker</th><th>Assigned</th></tr></thead>
                   <tbody>
                     {filteredJobs.map(j => (
                       <tr key={`${j.id}-${j.assigned_at}`}>
@@ -636,11 +730,15 @@ export default function ProviderPage() {
                         <td>{j.model || '—'}</td>
                         <td>{badgeFor(j.status)}</td>
                         <td className="dim">{j.request_counts.completed.toLocaleString()} / {j.request_counts.total.toLocaleString()} · {j.request_counts.failed} failed</td>
+                        {/* null until the output file is ingested — an em dash
+                            rather than 0, so "not counted yet" and "counted,
+                            and it came to zero" never read the same. */}
+                        <td className="dim">{j.usage ? (j.usage.total_tokens || 0).toLocaleString() : '—'}</td>
                         <td className="dim">{j.worker_hostname}</td>
                         <td className="dim">{j.assigned_at ? new Date(j.assigned_at * 1000).toLocaleString() : '—'}</td>
                       </tr>
                     ))}
-                    {filteredJobs.length === 0 && <tr><td colSpan={6} className="empty-hint">No served jobs match.</td></tr>}
+                    {filteredJobs.length === 0 && <tr><td colSpan={7} className="empty-hint">No served jobs match.</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -681,13 +779,46 @@ export default function ProviderPage() {
           {selectedOrg && (
           <div className={`page-panel ${activeTab === 'contribution' ? 'active' : ''}`}>
             <h1 className="page-title">Contribution</h1>
-            <p className="page-sub">Work served by {selectedOrg.name} in the last {stats ? stats.window_days : 7} days. Token metering arrives with billing.</p>
+            <p className="page-sub">
+              Work served by {selectedOrg.name}. Tokens are the meaningful figure for contributed
+              hardware — request sizes vary by orders of magnitude, so a request count says little
+              about what a GPU actually did.
+            </p>
 
-            <div className="grid-3">
+            {/* One control, scoping the cards, the chart and both tables. */}
+            <div className="range-switch" style={{ marginBottom: '1.25rem' }}>
+              {[7, 14, 30].map(d => (
+                <button
+                  key={d}
+                  className={`range-btn ${contribRange === d ? 'active' : ''}`}
+                  onClick={() => setContribRange(d)}
+                >
+                  {d}d
+                </button>
+              ))}
+            </div>
+
+            <div className="grid-4">
               <div className="panel stat-card">
                 <div className="stat-label">Jobs served</div>
                 <div className="stat-value">{stats ? stats.totals.jobs : '—'}</div>
                 <div className="stat-sub">{stats ? `${stats.totals.completed} completed · ${stats.totals.failed} failed` : ''}</div>
+              </div>
+              <div className="panel stat-card">
+                <div className="stat-label">Tokens produced</div>
+                {/* An em dash, not a zero: before any rollup has landed the
+                    fleet has not been measured, which is not the same as
+                    having produced nothing. */}
+                <div className="stat-value">
+                  {stats && stats.totals.counted_jobs > 0
+                    ? stats.totals.total_tokens.toLocaleString()
+                    : '—'}
+                </div>
+                <div className="stat-sub">
+                  {stats && stats.totals.counted_jobs > 0
+                    ? `${stats.totals.prompt_tokens.toLocaleString()} prompt · ${stats.totals.completion_tokens.toLocaleString()} completion`
+                    : 'no counted jobs in this window'}
+                </div>
               </div>
               <div className="panel stat-card">
                 <div className="stat-label">Requests completed</div>
@@ -701,20 +832,106 @@ export default function ProviderPage() {
               </div>
             </div>
 
+            <div className="section-title">Tokens per day</div>
+            <div style={{ display: 'flex', gap: '0.6rem', marginBottom: '0.8rem', flexWrap: 'wrap' }}>
+              <select value={contribWorker} onChange={e => setContribWorker(e.target.value)}>
+                <option value="">All workers</option>
+                {workers.map(w => <option key={w.id} value={w.id}>{w.hostname}</option>)}
+              </select>
+              <select value={contribModel} onChange={e => setContribModel(e.target.value)}>
+                <option value="">All models</option>
+                {contribModels.map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+              <span className="stat-sub" style={{ alignSelf: 'center' }}>
+                {stacked && `split by ${stackByModel ? 'model' : 'worker'}`}
+              </span>
+            </div>
+
+            {/* The cap is bounded by time, not rows, so this should not fire —
+                but if it ever does the chart is short and must say so rather
+                than draw its missing days as zero. */}
+            {contribTruncated && (
+              <div className="panel warn" style={{ padding: '0.7rem 0.9rem', marginBottom: '0.8rem', fontSize: '0.8rem' }}>
+                More jobs were served in this window than could be loaded — the earliest days are
+                incomplete. Narrow the window to see an accurate chart.
+              </div>
+            )}
+
+            <div className="panel chart-wrap" style={{ height: '260px', padding: '1rem 1rem 0.5rem' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={contribChart} barCategoryGap="28%">
+                  <XAxis
+                    dataKey="displayDate"
+                    stroke={CHART.axis}
+                    fontSize={12}
+                    tickLine={false}
+                    axisLine={false}
+                    minTickGap={24}
+                  />
+                  <YAxis
+                    stroke={CHART.axis}
+                    fontSize={12}
+                    tickLine={false}
+                    axisLine={false}
+                    width={52}
+                    tickFormatter={compactTokens}
+                  />
+                  <Tooltip
+                    cursor={{ fill: 'rgba(255,255,255,0.04)' }}
+                    contentStyle={{ backgroundColor: CHART.surface, border: '1px solid var(--border)', borderRadius: '8px' }}
+                    labelStyle={{ color: 'var(--fg)' }}
+                    formatter={(v, name) => [v.toLocaleString(), name]}
+                  />
+                  {/* Above SERIES_MAX the stack is unreadable, so it collapses
+                      to one bar and the dropdowns carry the breakdown instead.
+                      The stroke is the gap between stacked segments. */}
+                  {stacked
+                    ? seriesKeys.map((k, i) => (
+                        <Bar
+                          key={k}
+                          dataKey={`tok:${k}`}
+                          name={k}
+                          stackId="t"
+                          fill={SERIES_COLORS[i]}
+                          stroke={CHART.surface}
+                          strokeWidth={2}
+                        />
+                      ))
+                    : <Bar dataKey="totalTokens" name="Tokens" fill={SERIES_COLORS[0]} radius={[4, 4, 0, 0]} />}
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            {stacked && (
+              <div className="chart-legend">
+                {seriesKeys.map((k, i) => (
+                  <span className="lg" key={k}>
+                    <span className="sw" style={{ background: SERIES_COLORS[i] }} /> {k}
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="stat-sub" style={{ marginTop: '0.5rem' }}>
+              {contribTokens > 0
+                ? `${contribTokens.toLocaleString()} tokens in view`
+                : 'No token counts in this window yet.'}
+              {contribAwaiting > 0 && ` · ${contribAwaiting} completed job${contribAwaiting === 1 ? '' : 's'} not counted`}
+            </div>
+
             <div className="section-title">By model</div>
             <div className="panel" style={{ padding: '0.5rem' }}>
               <div className="table-container">
                 <table>
-                  <thead><tr><th>Model</th><th>Jobs</th><th>Requests completed</th></tr></thead>
+                  <thead><tr><th>Model</th><th>Jobs</th><th>Requests completed</th><th>Tokens</th></tr></thead>
                   <tbody>
                     {(stats?.by_model || []).map(m => (
                       <tr key={m.model}>
                         <td className="mono">{m.model}</td>
                         <td>{m.jobs}</td>
                         <td className="dim">{m.requests_completed.toLocaleString()}</td>
+                        <td className="dim">{tokenCell(m)}</td>
                       </tr>
                     ))}
-                    {(!stats || stats.by_model.length === 0) && <tr><td colSpan={3} className="empty-hint">Nothing served in this window.</td></tr>}
+                    {(!stats || stats.by_model.length === 0) && <tr><td colSpan={4} className="empty-hint">Nothing served in this window.</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -724,16 +941,17 @@ export default function ProviderPage() {
             <div className="panel" style={{ padding: '0.5rem' }}>
               <div className="table-container">
                 <table>
-                  <thead><tr><th>Worker</th><th>Jobs</th><th>Requests completed</th></tr></thead>
+                  <thead><tr><th>Worker</th><th>Jobs</th><th>Requests completed</th><th>Tokens</th></tr></thead>
                   <tbody>
                     {(stats?.by_worker || []).map(w => (
                       <tr key={w.worker_id}>
                         <td className="mono">{w.hostname}</td>
                         <td>{w.jobs}</td>
                         <td className="dim">{w.requests_completed.toLocaleString()}</td>
+                        <td className="dim">{tokenCell(w)}</td>
                       </tr>
                     ))}
-                    {(!stats || stats.by_worker.length === 0) && <tr><td colSpan={3} className="empty-hint">Nothing served in this window.</td></tr>}
+                    {(!stats || stats.by_worker.length === 0) && <tr><td colSpan={4} className="empty-hint">Nothing served in this window.</td></tr>}
                   </tbody>
                 </table>
               </div>
