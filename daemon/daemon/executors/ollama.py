@@ -54,6 +54,7 @@ class OllamaExecutor(BaseExecutor):
         self._timeout = timeout
         self._client: Optional[httpx.AsyncClient] = None
         self.version: Optional[str] = None
+        self._version_checked: bool = False
         
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -91,8 +92,9 @@ class OllamaExecutor(BaseExecutor):
                     error=f"EMBEDDING_FAILED: {e}"
                 )
 
-        # Lazy check version if not set (chat path only — gates structured outputs)
-        if self.version is None:
+        # Lazy check version if not yet probed (chat path only — gates structured outputs)
+        if not self._version_checked:
+            self._version_checked = True
             await self.health_check()
 
         response_format = prompt.body.get("response_format")
@@ -127,7 +129,12 @@ class OllamaExecutor(BaseExecutor):
                 # Extract message content
                 choices = openai_response.get("choices", [])
                 if not choices:
-                    raise ValueError("Response contains no choices")
+                    logger.warning(f"Ollama response contains no choices for {prompt.custom_id}")
+                    return CompletionResult(
+                        custom_id=prompt.custom_id,
+                        response=openai_response,
+                        error="EMPTY_RESPONSE: Response contains no choices"
+                    )
                 content = choices[0].get("message", {}).get("content", "")
                 
                 # Parse JSON (for both loose and strict modes)
@@ -169,11 +176,22 @@ class OllamaExecutor(BaseExecutor):
     
     async def health_check(self) -> bool:
         """Check Ollama is running via GET /api/version and GET /api/tags."""
+        self._version_checked = True
         client = self._get_client()
         try:
             # Query version and cache it
             version_response = await client.get("/api/version", timeout=5.0)
             version_response.raise_for_status()
+
+            server_header = version_response.headers.get("server", "")
+            if server_header:
+                logger.info(f"Ollama server header: {server_header}")
+                if "ollama" not in server_header.lower():
+                    logger.warning(
+                        f"Detected non-Ollama server on {self._base_url} (Server: {server_header}). "
+                        "Inference may fail even though metadata endpoints respond."
+                    )
+
             self.version = version_response.json().get("version")
             if not self.version:
                 logger.warning("Retrieved empty version from Ollama")
@@ -339,12 +357,15 @@ class OllamaExecutor(BaseExecutor):
         
     def _translate_response(self, ollama_response: dict) -> dict:
         """Ollama response -> OpenAI-compatible response format."""
-        return {
-            "choices": [{
+        choices = []
+        if "message" in ollama_response and ollama_response["message"]:
+            choices.append({
                 "index": 0,
                 "message": ollama_response.get("message", {}),
                 "finish_reason": "stop" if ollama_response.get("done") else "length",
-            }],
+            })
+        return {
+            "choices": choices,
             "model": ollama_response.get("model", ""),
             "usage": {
                 "prompt_tokens": ollama_response.get("prompt_eval_count", 0),

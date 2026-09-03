@@ -341,6 +341,43 @@ class TestStreamRejection:
         assert results[0].is_success
         executor.execute.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_worker_progress_reporting_throttled_and_completes(self):
+        """Worker progress reporting is throttled over time and guarantees final report."""
+        from daemon.worker import Worker
+        from daemon.config import DaemonConfig
+        from daemon.client import BackendClient
+
+        config = DaemonConfig(worker_id="test-worker", progress_interval_seconds=60.0)
+        client = AsyncMock(spec=BackendClient)
+        executor = AsyncMock(spec=OllamaExecutor)
+        executor.execute.return_value = CompletionResult(
+            custom_id="req-ok",
+            response={"choices": [{"message": {"content": "hi"}}]},
+        )
+
+        worker = Worker(config=config, client=client, executor=executor)
+        worker._running = True
+
+        job = Job(job_id="test-job", model="m")
+        prompts = [
+            PromptRequest(custom_id=f"req-{i}", body={"model": "m", "messages": []})
+            for i in range(50)
+        ]
+
+        results = await worker._run_prompts(prompts, job)
+        assert len(results) == 50
+        # With 60s throttle, 50 fast prompts trigger only 2 reports: first prompt (elapsed > 60 since epoch 0) and final prompt (idx == total)
+        assert client.report_progress.call_count == 2
+
+        # Final call must carry full counts
+        client.report_progress.assert_called_with(
+            job_id="test-job",
+            completed=50,
+            failed=0,
+            total=50,
+        )
+
 
 # ════════════════════════════════════════════════════════════════
 #  vLLM warn-and-drop

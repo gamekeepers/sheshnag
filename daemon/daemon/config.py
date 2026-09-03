@@ -57,11 +57,12 @@ _ENV_MAP: Dict[str, str] = {
     "runtime": "DAEMON_RUNTIME",
     "inference_timeout": "DAEMON_INFERENCE_TIMEOUT",
     "heartbeat_interval": "DAEMON_HEARTBEAT_INTERVAL",
+    "progress_interval_seconds": "DAEMON_PROGRESS_INTERVAL_SECONDS",
 }
 
 # Fields that need type coercion from string env vars
 _INT_FIELDS = frozenset({"poll_interval", "heartbeat_interval"})
-_FLOAT_FIELDS = frozenset({"vram_gb", "inference_timeout"})
+_FLOAT_FIELDS = frozenset({"vram_gb", "inference_timeout", "progress_interval_seconds"})
 
 
 def _read_env() -> Dict[str, Any]:
@@ -145,6 +146,9 @@ class DaemonConfig(BaseModel):
 
     # ── Heartbeats & Progress ────────────────────────────────────
     heartbeat_interval: int = Field(default=30, gt=0)
+    progress_interval_seconds: float = Field(
+        default=5.0, gt=0, description="Minimum seconds between progress reporting roundtrips"
+    )
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> DaemonConfig:
