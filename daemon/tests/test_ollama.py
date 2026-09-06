@@ -272,18 +272,21 @@ async def test_execute_strict_mode_schema_violation():
 
 
 @pytest.mark.asyncio
-async def test_health_check_success():
+async def test_health_check_success(caplog):
     executor = OllamaExecutor()
-    
+
     version_res = create_mock_response(200, {"version": "0.5.1"})
     tags_res = create_mock_response(200, {"models": []})
-    
+
     with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
         mock_get.side_effect = [version_res, tags_res]
-        
-        healthy = await executor.health_check()
+
+        with caplog.at_level("INFO"):
+            healthy = await executor.health_check()
         assert healthy is True
         assert executor.version == "0.5.1"
+        # Real Ollama sends no Server header: the issue #80 warning must not fire
+        assert "Detected non-Ollama" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -476,7 +479,8 @@ async def test_embeddings_path_skips_version_probe():
 
 @pytest.mark.asyncio
 async def test_health_check_non_ollama_server_header_warning(caplog):
-    """Warning is logged when Server header indicates a non-Ollama application server."""
+    """Regression for issue #80: an aiohttp app squatting on :11434 passed health
+    checks silently. Warn when the Server header names a known app server."""
     executor = OllamaExecutor()
     version_resp = create_mock_response(
         200, {"version": "0.1.0"}, headers={"server": "Python/3.12 aiohttp/3.13.5"}
@@ -489,15 +493,40 @@ async def test_health_check_non_ollama_server_header_warning(caplog):
             healthy = await executor.health_check()
 
     assert healthy is True
-    assert "Ollama server header: Python/3.12 aiohttp/3.13.5" in caplog.text
-    assert "Detected non-Ollama server" in caplog.text
+    assert "Server header from http://localhost:11434: Python/3.12 aiohttp/3.13.5" in caplog.text
+    assert "Detected non-Ollama application server" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_health_check_ollama_no_server_header_normal(caplog):
-    """Standard Ollama without Server header completes health check without warning."""
+async def test_health_check_server_header_warning_logged_once(caplog):
+    """Issue #80 follow-up: health_check() runs per startup retry and per prompt
+    while version is unset, so the header INFO+WARNING pair must be latched."""
     executor = OllamaExecutor()
-    version_resp = create_mock_response(200, {"version": "0.5.1"})
+    responses = [
+        create_mock_response(
+            200, {"version": "0.1.0"}, headers={"server": "Python/3.12 aiohttp/3.13.5"}
+        ),
+        create_mock_response(200, {"models": []}),
+    ] * 2
+
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = responses
+        with caplog.at_level("INFO"):
+            await executor.health_check()
+            await executor.health_check()
+
+    assert caplog.text.count("Detected non-Ollama application server") == 1
+    assert caplog.text.count("Server header from") == 1
+
+
+@pytest.mark.asyncio
+async def test_health_check_app_server_with_proxy_like_name_warns(caplog):
+    """Issue #80 hardening: Apache-Coyote (Tomcat's connector) is an app server,
+    not a proxy — the old proxy allowlist's 'apache' substring wrongly absolved it."""
+    executor = OllamaExecutor()
+    version_resp = create_mock_response(
+        200, {"version": "0.1.0"}, headers={"server": "Apache-Coyote/1.1"}
+    )
     tags_resp = create_mock_response(200, {"models": []})
 
     with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
@@ -506,12 +535,13 @@ async def test_health_check_ollama_no_server_header_normal(caplog):
             healthy = await executor.health_check()
 
     assert healthy is True
-    assert "Detected non-Ollama server" not in caplog.text
+    assert "Detected non-Ollama application server" in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_health_check_reverse_proxy_server_header_normal(caplog):
-    """Ollama behind reverse proxy (e.g. nginx or caddy) completes without false-positive warning."""
+    """Ollama behind a front-end (nginx, openresty, an ALB, …) completes without a
+    false-positive warning: unknown Server values are not treated as squatters."""
     executor = OllamaExecutor()
     version_resp = create_mock_response(
         200, {"version": "0.5.1"}, headers={"server": "nginx/1.24.0 (Ubuntu)"}
@@ -524,13 +554,14 @@ async def test_health_check_reverse_proxy_server_header_normal(caplog):
             healthy = await executor.health_check()
 
     assert healthy is True
-    assert "Ollama server header: nginx/1.24.0 (Ubuntu)" in caplog.text
-    assert "Detected non-Ollama server" not in caplog.text
+    assert "Server header from http://localhost:11434: nginx/1.24.0 (Ubuntu)" in caplog.text
+    assert "Detected non-Ollama" not in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_health_check_non_200_server_header_logged(caplog):
-    """When a squatter server on port 11434 returns 404/502 on /api/version, Server header is still logged."""
+    """Issue #80: a squatter returning 404/502 on /api/version must still get its
+    Server header logged (before raise_for_status), with a status-aware message."""
     executor = OllamaExecutor()
     version_resp = create_mock_response(
         404, {"error": "not found"}, headers={"server": "uvicorn"}
@@ -542,6 +573,9 @@ async def test_health_check_non_200_server_header_logged(caplog):
             healthy = await executor.health_check()
 
     assert healthy is False
-    assert "Ollama server header: uvicorn" in caplog.text
-    assert "Detected non-Ollama server" in caplog.text
+    assert "Server header from http://localhost:11434: uvicorn" in caplog.text
+    assert "Detected non-Ollama application server" in caplog.text
+    # On an error status the warning must not claim metadata endpoints responded
+    assert "/api/version returned HTTP 404." in caplog.text
+    assert "metadata endpoints respond" not in caplog.text
 

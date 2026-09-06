@@ -10,6 +10,15 @@ from daemon.models import CompletionResult, PromptRequest
 
 logger = logging.getLogger(__name__)
 
+# App-server signatures that mean something other than Ollama is answering on
+# this port. Ollama itself sends no Server header, and a reverse proxy in front
+# of a working Ollama is fine — so we only warn on servers that host
+# applications directly. See issue #80 (aiohttp app squatting on :11434).
+NON_OLLAMA_SERVER_SIGNATURES = (
+    "aiohttp", "uvicorn", "gunicorn", "werkzeug", "python/",
+    "kestrel", "jetty", "tomcat", "coyote", "express",
+)
+
 def parse_version(version_str: Optional[str]) -> tuple[int, ...]:
     """Semantic version parser that handles pre-releases and v prefix."""
     if not version_str:
@@ -54,6 +63,7 @@ class OllamaExecutor(BaseExecutor):
         self._timeout = timeout
         self._client: Optional[httpx.AsyncClient] = None
         self.version: Optional[str] = None
+        self._server_header_warned = False
         
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -176,16 +186,21 @@ class OllamaExecutor(BaseExecutor):
             version_response = await client.get("/api/version", timeout=5.0)
 
             server_header = version_response.headers.get("server", "")
-            if server_header:
-                logger.info(f"Ollama server header: {server_header}")
-                is_known_proxy = any(
-                    proxy in server_header.lower()
-                    for proxy in ("nginx", "caddy", "apache", "cloudflare", "envoy", "traefik", "kong", "haproxy")
-                )
-                if "ollama" not in server_header.lower() and not is_known_proxy:
-                    logger.warning(
-                        f"Detected non-Ollama server on {self._base_url} (Server: {server_header}). "
+            if server_header and not self._server_header_warned:
+                # Latched: health_check() runs per startup retry and per prompt
+                # while version is unset, so log the header diagnosis only once.
+                self._server_header_warned = True
+                logger.info(f"Server header from {self._base_url}: {server_header}")
+                header_lc = server_header.lower()
+                if any(sig in header_lc for sig in NON_OLLAMA_SERVER_SIGNATURES):
+                    hint = (
                         "Inference may fail even though metadata endpoints respond."
+                        if version_response.is_success
+                        else f"/api/version returned HTTP {version_response.status_code}."
+                    )
+                    logger.warning(
+                        f"Detected non-Ollama application server on {self._base_url} "
+                        f"(Server: {server_header}). {hint}"
                     )
 
             version_response.raise_for_status()
