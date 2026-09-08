@@ -8,7 +8,7 @@ but change it deliberately rather than working around it.
 
 ## The one rule
 
-**Nothing reaches `main` except a pull request that someone other than its
+**Nothing reaches `develop` except a pull request that someone other than its
 author has approved and merged.**
 
 Everything below is detail. If you remember one line, remember that one.
@@ -21,15 +21,20 @@ Everything below is detail. If you remember one line, remember that one.
    The issue is where scope gets agreed; the PR is where code gets reviewed.
    Disagreements about *what* to build belong on the issue, not in review.
 
-2. **Branch.** Never commit on `main`.
+2. **Branch off `develop`.** `develop` is the trunk and the GitHub default
+   branch — every PR targets it. Never commit on it directly.
 
    ```bash
-   git checkout main && git pull
-   git checkout -b task/<short-slug>          # task/ollama-structured-outputs
+   git fetch origin
+   git checkout -b task/<short-slug> origin/develop   # task/ollama-structured-outputs
    ```
 
    Prefix by intent: `task/` for issue work, `fix/` for bug fixes,
    `docs/` for documentation-only changes.
+
+   **Cut every branch from `develop`, not from your previous branch** — even
+   when the new work feels related to something still in review. See
+   [Stacked branches](#stacked-branches).
 
 3. **Commit to the branch.** Stage the files you changed — `git add <paths>`,
    never `git add -A`. Write a message that says what changed and why; the
@@ -39,7 +44,7 @@ Everything below is detail. If you remember one line, remember that one.
    touched (see [Testing](#testing)). "It worked on my machine" without a
    command you can name is not verification.
 
-5. **Open the PR** against `main` and fill in the template. Link the issue
+5. **Open the PR** against `develop` and fill in the template. Link the issue
    with `Closes #NN`.
 
 6. **Someone else reviews and merges.** Not you. See below.
@@ -61,11 +66,55 @@ open or how sure you are about it.
 
 **Never do any of these:**
 
-- `git push` to `main`
+- `git push` to `develop` or `main`
 - `git push --force` / `--force-with-lease` to any shared branch
 - Merge your own PR
 - Merge a PR with unresolved review comments
 - Rewrite history on a branch someone else has pulled
+
+**One exception, for maintainers only.** A maintainer may force-push to a
+*contributor's fork branch* to repair a conflicted PR, where the PR has "allow
+edits from maintainers" enabled. Pin `--force-with-lease` to the SHA you
+actually reviewed, and say on the PR that the author must `git reset --hard`
+before touching the branch again. The shared branches in this repository
+(`develop`, `main`) have no exception.
+
+---
+
+## Stacked branches
+
+A *stack* is a branch cut from another unmerged branch instead of from
+`develop`. Every PR above the bottom of the stack then carries its
+predecessors' commits.
+
+**Default to not stacking.** Two changes that touch different files are
+independent even when they came out of the same afternoon — and independent
+work reviews, merges and reverts far more cleanly on its own. One issue, one
+branch off `develop`, one PR.
+
+Stack only when the new work genuinely does not stand up without the unmerged
+change beneath it. When you do:
+
+- **Say so in the PR body** — *"depends on #84"* — so nobody merges the stack
+  out of order.
+- **Merge strictly bottom-up**, and **rebase everything above after each
+  merge.**
+- **Rebase onto the new base — never merge the base back in.** This is the
+  trap. If the branch below was revised during review, merging `develop` into
+  the branch above leaves *both* versions in the tree: git reports a clean
+  merge, and you get duplicated code and same-named functions that silently
+  shadow each other while the suite stays green.
+
+```bash
+git fetch origin
+git rebase --onto origin/develop <last-commit-already-merged> <your-branch>
+```
+
+Not hypothetical: [#87](https://github.com/gamekeepers/sheshnag/pull/87) was
+the top of a four-PR stack, and the branch below it merged in a revised form.
+When a stack has drifted this far, cherry-picking your own commits onto a
+fresh branch off `develop` is usually faster than fighting the rebase, and
+always easier to read afterwards.
 
 ---
 
@@ -113,9 +162,9 @@ They follow the same rules, plus a few of their own, in
 [`AGENTS.md`](AGENTS.md).
 
 **If you are running an agent, you are accountable for what it does.** An
-agent that pushes to `main` or merges a PR is your push and your merge. Read
-its plan before approving actions, and never leave it in a mode where it can
-run `git push` or `gh pr merge` unattended.
+agent that pushes to a shared branch or merges a PR is your push and your
+merge. Read its plan before approving actions, and never leave it in a mode
+where it can run `git push` or `gh pr merge` unattended.
 
 `.claude/settings.json` denies those commands for Claude Code specifically.
 That is a seatbelt, not a wall — it does not bind other tools, and it does not
