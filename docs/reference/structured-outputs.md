@@ -90,5 +90,10 @@ In strict mode, you supply a target JSON Schema. The daemon translates this and 
 If a worker is unable to honor the JSON request constraint, the job row is failed and the specific error code/message is reported in `CompletionResult.error`:
 
 * **`JSON_PARSE_ERROR`**: The response was not valid parseable JSON.
+* **`OLLAMA_UNREACHABLE`**: The worker could not reach the Ollama engine to determine its
+  version, so it cannot know whether structured outputs are supported. A failed version
+  probe is cached for 60 seconds rather than repeated per prompt, so a batch submitted
+  against a down engine fails fast; once the engine is reachable again the next prompt
+  after that window succeeds without restarting the daemon.
 * **`SCHEMA_VIOLATION`**: The response was valid JSON but violated the defined JSON Schema.
 * **`VERSION_MISMATCH`**: The assigned worker's Ollama engine is version < 0.5.0, which does not support schema-constrained formatting.
