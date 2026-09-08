@@ -399,6 +399,54 @@ def test_worker_progress_never_goes_backwards(db_session, test_user, _engine):
         app.dependency_overrides.clear()
 
 
+def test_requeue_resets_progress_counters(db_session, test_user, _engine):
+    """A requeued batch must not inherit the last attempt's high-water mark.
+
+    /workers/progress only moves counters forward, so a stale 8/10 left on the
+    batch would pin the re-run's display until upload corrected it.
+    """
+    from sweeper import requeue_or_fail_batch
+
+    key_val = "gk-test-worker-key-requeue01"
+    org, worker, batch = _worker_fixture(
+        db_session, test_user, key_val, "Requeue Org", "worker-requeue-1"
+    )
+
+    batch.request_counts_completed = 8
+    batch.request_counts_failed = 1
+    db_session.commit()
+
+    status = requeue_or_fail_batch(db_session, batch, error="worker went silent")
+    db_session.commit()
+    db_session.refresh(batch)
+
+    assert status == "validated"
+    assert batch.request_counts_completed == 0, "stale progress survived requeue"
+    assert batch.request_counts_failed == 0, "stale failures survived requeue"
+    assert batch.request_counts_total == 10, "total must not be reset"
+
+
+def test_requeue_past_max_attempts_still_marks_all_failed(db_session, test_user, _engine):
+    """Resetting counters on requeue must not disturb the give-up path."""
+    from sweeper import requeue_or_fail_batch, MAX_BATCH_ATTEMPTS
+
+    key_val = "gk-test-worker-key-requeue02"
+    org, worker, batch = _worker_fixture(
+        db_session, test_user, key_val, "Requeue Max Org", "worker-requeue-2"
+    )
+
+    batch.attempts = MAX_BATCH_ATTEMPTS - 1
+    batch.request_counts_completed = 4
+    db_session.commit()
+
+    status = requeue_or_fail_batch(db_session, batch, error="dead again")
+    db_session.commit()
+    db_session.refresh(batch)
+
+    assert status == "failed"
+    assert batch.request_counts_failed == batch.request_counts_total == 10
+
+
 def test_upload_results_endpoint_ingests_usage(db_session, test_user, _engine):
     """End-to-end through POST /workers/upload-results.
 

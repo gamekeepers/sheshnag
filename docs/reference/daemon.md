@@ -119,9 +119,11 @@ The pool is fixed for the life of the job — the daemon does not yet measure th
 runtime's real capacity and size itself to it.
 
 Embedding rows go through the same pool. Where the runtime can serve several in
-one request — Ollama's `/api/embed` takes up to 64 inputs — a chunk is one unit
-of work; where it cannot, each row is scheduled individually and gets the pool's
-concurrency rather than running serially after the chat prompts.
+one request, a chunk of them is one unit of work; where it cannot, each row is
+scheduled individually and gets the pool's concurrency rather than running
+serially after the chat prompts. How many rows go in a chunk is the executor's
+`embedding_chunk_size` — 64 on Ollama, whose `/api/embed` accepts a list of
+inputs, and 1 (no coalescing) by default.
 
 The guarantee the pool keeps is that **every input row produces exactly one
 output row, in input order.** Prompts finish out of order and the output file is

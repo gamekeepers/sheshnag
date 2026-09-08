@@ -11,6 +11,20 @@ from daemon.models import CompletionResult, PromptRequest
 
 logger = logging.getLogger(__name__)
 
+
+def _split_tokens(total: int, parts: int, index: int) -> int:
+    """Share a coalesced chunk's token count across its rows, losing none.
+
+    Ollama bills one number for the whole /api/embed call, but each row is
+    reported separately. Plain floor division drops up to parts-1 tokens per
+    chunk, which makes every batch rollup systematically low. The remainder
+    goes to the first rows instead, so the parts always sum back to total.
+    """
+    if parts <= 0:
+        return 0
+    base, remainder = divmod(int(total), parts)
+    return base + (1 if index < remainder else 0)
+
 # App-server signatures that mean something other than Ollama is answering on
 # this port. Ollama itself sends no Server header, and a reverse proxy in front
 # of a working Ollama is fine — so we only warn on servers that host
@@ -285,8 +299,12 @@ class OllamaExecutor(BaseExecutor):
                             "data": [data_item],
                             "model": openai_response.get("model", model),
                             "usage": {
-                                "prompt_tokens": usage.get("prompt_tokens", 0) // len(chunk),
-                                "total_tokens": usage.get("total_tokens", 0) // len(chunk),
+                                "prompt_tokens": _split_tokens(
+                                    usage.get("prompt_tokens", 0), len(chunk), j
+                                ),
+                                "total_tokens": _split_tokens(
+                                    usage.get("total_tokens", 0), len(chunk), j
+                                ),
                             },
                         }
                         results_by_id[p.custom_id] = CompletionResult(

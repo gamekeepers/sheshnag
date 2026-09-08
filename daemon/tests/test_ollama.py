@@ -854,3 +854,35 @@ async def test_list_valued_input_is_not_coalesced():
     # And the vectors must belong to the right rows.
     assert results[0].response["data"][0]["embedding"] == [5.0]   # "first"
     assert results[2].response["data"][0]["embedding"] == [5.0]   # "third"
+
+
+@pytest.mark.asyncio
+async def test_coalesced_usage_sums_back_to_the_chunk_total():
+    """Splitting a chunk's tokens must not lose any to floor division."""
+    seen = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        rows = _json.loads(request.content)["input"]
+        seen["n"] = len(rows)
+        return httpx.Response(200, json={
+            "model": "nomic-embed-text",
+            "embeddings": [[1.0] for _ in rows],
+            # 1000 over 7 rows is 142 each by floor division — 6 tokens lost.
+            "prompt_eval_count": 1000,
+        })
+
+    executor = OllamaExecutor()
+    executor._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://localhost:11434",
+    )
+
+    prompts = [_embed_prompt(f"e-{i}", f"text {i}") for i in range(7)]
+    results = await executor.batch_execute(prompts)
+
+    assert seen["n"] == 7, "rows should have coalesced into one call"
+    per_row = [r.response["usage"]["prompt_tokens"] for r in results]
+    assert sum(per_row) == 1000, f"{sum(per_row)} != 1000 — tokens were dropped"
+    # And spread evenly: no row carries more than one extra.
+    assert max(per_row) - min(per_row) <= 1
