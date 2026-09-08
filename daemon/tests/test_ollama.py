@@ -3,7 +3,11 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import jsonschema
 
-from daemon.executors.ollama import OllamaExecutor, parse_version
+from daemon.executors.ollama import (
+    OllamaExecutor,
+    parse_version,
+    VERSION_PROBE_RETRY_SECONDS,
+)
 from daemon.models import PromptRequest, CompletionResult
 
 # Helper to create responses with mock request bound to prevent raise_for_status issues
@@ -322,6 +326,125 @@ async def test_execute_version_unreachable():
         res = await executor.execute(prompt)
         assert not res.is_success
         assert "OLLAMA_UNREACHABLE" in res.error
+
+
+# ── Version probe caching (issue #83) ────────────────────────────────────────
+#
+# These drive the real health_check() against a mocked transport rather than
+# patching health_check out, so the probe bookkeeping inside it is covered too.
+# The clock is faked: the retry window is wall-clock, and a test that sleeps
+# through 60s of it is not a test anyone will keep running.
+
+def _probe_counting_executor(server_up):
+    """An executor whose /api/version answers according to `server_up['up']`.
+
+    Returns (executor, counts) where counts["version"] is the number of real
+    probes that reached the transport.
+    """
+    counts = {"version": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/version":
+            counts["version"] += 1
+        if not server_up["up"]:
+            raise httpx.ConnectError("connection refused")
+        if request.url.path == "/api/version":
+            return httpx.Response(200, json={"version": "0.6.0"})
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": []})
+        return httpx.Response(200, json={
+            "message": {"role": "assistant", "content": '{"ok": true}'},
+            "model": "llama3:8b",
+            "done": True,
+        })
+
+    executor = OllamaExecutor()
+    executor._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://localhost:11434",
+    )
+    return executor, counts
+
+
+def _json_prompt(custom_id):
+    return PromptRequest(
+        custom_id=custom_id,
+        body={
+            "model": "llama3:8b",
+            "messages": [{"role": "user", "content": "hello"}],
+            "response_format": {"type": "json_object"},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_version_probe_not_repeated_for_every_prompt():
+    """Issue #83: a down server used to cost a 5s probe on every prompt, so a
+    10k-row batch spent ~14 hours failing. Within the retry window the failed
+    probe is cached and prompts fail immediately."""
+    server = {"up": False}
+    executor, counts = _probe_counting_executor(server)
+
+    # Clock frozen: nothing can trip the retry window.
+    with patch("daemon.executors.ollama.time.monotonic", return_value=1000.0):
+        for n in range(5):
+            res = await executor.execute(_json_prompt(f"req-{n}"))
+            assert not res.is_success
+            assert "OLLAMA_UNREACHABLE" in res.error
+
+    assert counts["version"] == 1, "one probe for five prompts, not five"
+    await executor._client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_failed_version_probe_is_retried_after_the_window():
+    """The negative cache must not be permanent. The daemon is allowed to start
+    before Ollama is up (Worker._wait_for_executor retries for 60s and then
+    proceeds anyway), so a latched failure would leave structured outputs dead
+    for the life of the process while plain chat kept working."""
+    server = {"up": False}
+    executor, counts = _probe_counting_executor(server)
+
+    now = [1000.0]
+    with patch("daemon.executors.ollama.time.monotonic", side_effect=lambda: now[0]):
+        # Startup pre-flight against a server that is down.
+        assert await executor.health_check() is False
+        assert executor.version is None
+        assert counts["version"] == 1
+
+        # Still inside the window: cached, no new probe, still failing.
+        now[0] += VERSION_PROBE_RETRY_SECONDS - 1
+        assert not (await executor.execute(_json_prompt("during"))).is_success
+        assert counts["version"] == 1
+
+        # Ollama comes up; the window elapses.
+        server["up"] = True
+        now[0] += 2
+        res = await executor.execute(_json_prompt("after"))
+
+    assert counts["version"] == 2, "the probe must be retried once the window passes"
+    assert res.is_success, "structured outputs must work again once Ollama is back"
+    assert executor.version == "0.6.0"
+    await executor._client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_successful_version_probe_is_cached_permanently():
+    """A known version never needs re-probing — the retry window applies only to
+    failures, so a healthy server still pays exactly one probe per process."""
+    server = {"up": True}
+    executor, counts = _probe_counting_executor(server)
+
+    now = [1000.0]
+    with patch("daemon.executors.ollama.time.monotonic", side_effect=lambda: now[0]):
+        assert (await executor.execute(_json_prompt("first"))).is_success
+        assert counts["version"] == 1
+        # Far beyond the retry window.
+        now[0] += VERSION_PROBE_RETRY_SECONDS * 100
+        assert (await executor.execute(_json_prompt("much-later"))).is_success
+
+    assert counts["version"] == 1
+    await executor._client.aclose()
 
 
 def test_translate_embeddings_request():

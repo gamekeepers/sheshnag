@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from typing import Optional, List, Callable, Awaitable
 
 import httpx
@@ -18,6 +19,14 @@ NON_OLLAMA_SERVER_SIGNATURES = (
     "aiohttp", "uvicorn", "gunicorn", "werkzeug", "python/",
     "kestrel", "jetty", "tomcat", "coyote", "express",
 )
+
+# How long a *failed* version probe is cached before it is retried. Issue #83
+# is about not paying a 5s connect timeout on every prompt of a 10k batch, so
+# the failure has to be cached — but not for the life of the process. The
+# daemon is explicitly allowed to start before Ollama is up (see
+# Worker._wait_for_executor), and structured outputs have to start working
+# once it does. One probe per minute is ~0.08% of the pre-fix cost.
+VERSION_PROBE_RETRY_SECONDS = 60.0
 
 def parse_version(version_str: Optional[str]) -> tuple[int, ...]:
     """Semantic version parser that handles pre-releases and v prefix."""
@@ -64,6 +73,7 @@ class OllamaExecutor(BaseExecutor):
         self._client: Optional[httpx.AsyncClient] = None
         self.version: Optional[str] = None
         self._server_header_warned = False
+        self._version_probed_at: Optional[float] = None
         
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -101,8 +111,10 @@ class OllamaExecutor(BaseExecutor):
                     error=f"EMBEDDING_FAILED: {e}"
                 )
 
-        # Lazy check version if not set (chat path only — gates structured outputs)
-        if self.version is None:
+        # Lazy version probe (chat path only — gates structured outputs).
+        # A successful probe is cached for the process; a failed one is cached
+        # only for VERSION_PROBE_RETRY_SECONDS so a recovering server heals.
+        if self._should_probe_version():
             await self.health_check()
 
         response_format = prompt.body.get("response_format")
@@ -113,7 +125,11 @@ class OllamaExecutor(BaseExecutor):
                 logger.error("Ollama version undetermined. Server might be unreachable.")
                 return CompletionResult(
                     custom_id=prompt.custom_id,
-                    error="OLLAMA_UNREACHABLE: could not determine Ollama version — server may be down"
+                    error=(
+                        "OLLAMA_UNREACHABLE: could not determine Ollama version — "
+                        "server may be down. The failed probe is cached; it retries "
+                        f"every {VERSION_PROBE_RETRY_SECONDS:.0f}s."
+                    )
                 )
             v_tuple = parse_version(self.version)
             if v_tuple < (0, 5, 0):
@@ -177,8 +193,23 @@ class OllamaExecutor(BaseExecutor):
                 error=str(e)
             )
     
+    def _should_probe_version(self) -> bool:
+        """Whether to probe /api/version before serving this prompt.
+
+        A known version is cached for the life of the executor. An unknown one
+        is re-probed at most once per VERSION_PROBE_RETRY_SECONDS, so a server
+        that was down at startup stops blocking structured outputs when it
+        comes back.
+        """
+        if self.version is not None:
+            return False
+        if self._version_probed_at is None:
+            return True
+        return (time.monotonic() - self._version_probed_at) >= VERSION_PROBE_RETRY_SECONDS
+
     async def health_check(self) -> bool:
         """Check Ollama is running via GET /api/version and GET /api/tags."""
+        self._version_probed_at = time.monotonic()
         client = self._get_client()
         try:
             # Query version and cache it
