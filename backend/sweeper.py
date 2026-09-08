@@ -45,6 +45,12 @@ def requeue_or_fail_batch(db, batch, error: str | None = None) -> str:
         return "failed"
 
     batch.status = "validated"
+    # A fresh attempt starts from zero. /workers/progress only moves these
+    # counters forward (they arrive out of order from a pool of workers), so
+    # leaving the previous attempt's high-water mark here would pin the batch
+    # at, say, 800/1000 for the whole re-run until upload corrects it.
+    batch.request_counts_completed = 0
+    batch.request_counts_failed = 0
     return "validated"
 
 

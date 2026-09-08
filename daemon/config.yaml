@@ -67,3 +67,20 @@ log_level: "INFO"
 # is an HTTP round trip and a backend DB write, so a long batch on a busy
 # deployment is worth turning down. Completion is always reported regardless.
 # progress_interval_seconds: 5.0
+
+# Prompts executed concurrently per job
+# max_concurrent_prompts: 8
+
+# ─────────────────────────────────────────────────────────────
+# Ollama server tuning (set as env vars on the Ollama host)
+# ─────────────────────────────────────────────────────────────
+# These are NOT daemon config — they must be set on the machine
+# running the Ollama server (or in its systemd unit / Docker env).
+#
+# OLLAMA_NUM_PARALLEL=8        # Slots per model — enables batched decode
+# OLLAMA_KEEP_ALIVE=-1         # Never evict loaded models (infinite)
+# OLLAMA_FLASH_ATTENTION=1     # Shrink KV cache footprint
+# OLLAMA_KV_CACHE_TYPE=q8_0    # Further KV cache compression
+#
+# Keep max_concurrent_prompts well below OLLAMA_MAX_QUEUE (default 512)
+# to avoid 503 overload errors.

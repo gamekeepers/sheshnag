@@ -65,6 +65,11 @@ class BaseExecutor(ABC):
         """
         ...
 
+    #: How many embedding rows this runtime can serve in one request.
+    #: 1 means no coalescing — the worker pool then runs them like any other
+    #: prompt. Ollama overrides this; see OllamaExecutor.
+    embedding_chunk_size: int = 1
+
     async def batch_execute(
         self, prompts: List[PromptRequest]
     ) -> List[CompletionResult]:

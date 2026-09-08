@@ -765,3 +765,124 @@ async def test_health_check_non_200_server_header_logged(caplog):
     assert "/api/version returned HTTP 404." in caplog.text
     assert "metadata endpoints respond" not in caplog.text
 
+
+
+# ── Coalesced embeddings (issue #55) ─────────────────────────────
+
+def _embed_prompt(custom_id, value):
+    return PromptRequest(
+        custom_id=custom_id,
+        method="POST",
+        url="/v1/embeddings",
+        body={"model": "nomic-embed-text", "input": value},
+    )
+
+
+def _embed_recording_executor():
+    """Executor whose /api/embed records every body it is sent."""
+    bodies = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        body = _json.loads(request.content)
+        bodies.append(body)
+        sent = body["input"]
+        rows = sent if isinstance(sent, list) else [sent]
+        # One vector per element Ollama sees — the flattening behaviour that
+        # makes nested lists dangerous.
+        flat = []
+        for r in rows:
+            flat.extend(r if isinstance(r, list) else [r])
+        return httpx.Response(
+            200,
+            json={
+                "model": "nomic-embed-text",
+                "embeddings": [[float(len(str(x)))] for x in flat],
+                "prompt_eval_count": 3,
+            },
+        )
+
+    executor = OllamaExecutor()
+    executor._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://localhost:11434",
+    )
+    return executor, bodies
+
+
+@pytest.mark.asyncio
+async def test_string_embeddings_are_coalesced_into_one_call():
+    executor, bodies = _embed_recording_executor()
+    prompts = [_embed_prompt(f"e-{i}", f"text {i}") for i in range(5)]
+
+    results = await executor.batch_execute(prompts)
+
+    assert len(bodies) == 1, "string inputs should coalesce into a single call"
+    assert bodies[0]["input"] == [f"text {i}" for i in range(5)]
+    assert [r.custom_id for r in results] == [f"e-{i}" for i in range(5)]
+    assert all(r.is_success for r in results)
+
+
+@pytest.mark.asyncio
+async def test_list_valued_input_is_not_coalesced():
+    """A list-valued input must not be nested inside a coalesced chunk.
+
+    It is a valid OpenAI shape and nothing upstream rejects it. Nesting it
+    desynchronises the data[j] -> chunk[j] fan-out, so later custom_ids
+    silently receive somebody else's vector.
+    """
+    executor, bodies = _embed_recording_executor()
+    prompts = [
+        _embed_prompt("e-0", "first"),
+        _embed_prompt("e-1", ["a", "b"]),   # list-valued
+        _embed_prompt("e-2", "third"),
+    ]
+
+    results = await executor.batch_execute(prompts)
+
+    # No request body may contain a nested list.
+    for body in bodies:
+        sent = body["input"]
+        if isinstance(sent, list):
+            assert not any(isinstance(x, list) for x in sent), (
+                f"list-valued input was coalesced into a chunk: {sent}"
+            )
+
+    assert [r.custom_id for r in results] == ["e-0", "e-1", "e-2"]
+    assert all(r.is_success for r in results), [r.error for r in results]
+
+    # And the vectors must belong to the right rows.
+    assert results[0].response["data"][0]["embedding"] == [5.0]   # "first"
+    assert results[2].response["data"][0]["embedding"] == [5.0]   # "third"
+
+
+@pytest.mark.asyncio
+async def test_coalesced_usage_sums_back_to_the_chunk_total():
+    """Splitting a chunk's tokens must not lose any to floor division."""
+    seen = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        rows = _json.loads(request.content)["input"]
+        seen["n"] = len(rows)
+        return httpx.Response(200, json={
+            "model": "nomic-embed-text",
+            "embeddings": [[1.0] for _ in rows],
+            # 1000 over 7 rows is 142 each by floor division — 6 tokens lost.
+            "prompt_eval_count": 1000,
+        })
+
+    executor = OllamaExecutor()
+    executor._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://localhost:11434",
+    )
+
+    prompts = [_embed_prompt(f"e-{i}", f"text {i}") for i in range(7)]
+    results = await executor.batch_execute(prompts)
+
+    assert seen["n"] == 7, "rows should have coalesced into one call"
+    per_row = [r.response["usage"]["prompt_tokens"] for r in results]
+    assert sum(per_row) == 1000, f"{sum(per_row)} != 1000 — tokens were dropped"
+    # And spread evenly: no row carries more than one extra.
+    assert max(per_row) - min(per_row) <= 1
