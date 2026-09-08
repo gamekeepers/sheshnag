@@ -92,7 +92,7 @@ daemon/
 | `/workers/{worker_id}/heartbeat` | POST | Liveness + `activity` (idle/busy/downloading_model) + VRAM/loaded-model stats |
 | `/workers/poll` | POST | Poll for available batches |
 | `/v1/files/{id}/content` | GET | Download input JSONL (path from poll response) |
-| `/workers/progress` | POST | Live prompt counts every 10 prompts |
+| `/workers/progress` | POST | Live prompt counts, time-throttled (default 5s) plus a guaranteed final report |
 | `/workers/model-progress` | POST | Model download progress (Ollama pulls) |
 | `/workers/upload-results` | POST | Upload output JSONL + `worker_id` + real completed/failed counts |
 | `/workers/report-failure` | POST | Report failure — backend requeues (max 3 attempts) |

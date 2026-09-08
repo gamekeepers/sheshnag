@@ -62,3 +62,8 @@ log_level: "INFO"
 
 # Inference timeout per prompt, any runtime (seconds)
 # inference_timeout: 300.0
+
+# Minimum seconds between progress reports to the control plane. Each report
+# is an HTTP round trip and a backend DB write, so a long batch on a busy
+# deployment is worth turning down. Completion is always reported regardless.
+# progress_interval_seconds: 5.0
