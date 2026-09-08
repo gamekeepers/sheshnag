@@ -87,8 +87,13 @@ In strict mode, you supply a target JSON Schema. The daemon translates this and 
 
 ## 3. Error Handling
 
-If a worker is unable to honor the JSON request constraint, the job row is failed and the specific error code/message is reported in `CompletionResult.error`:
+If a worker is unable to honor the JSON request constraint, the job row is failed and the specific error code/message is reported in `CompletionResult.error`. `EMPTY_RESPONSE` is the exception — it is raised for any chat prompt, structured or not:
 
+* **`EMPTY_RESPONSE`**: The Ollama engine returned no choices or an empty response body.
+  Unlike the codes below, this one is **not specific to structured outputs** — it is
+  checked for every chat prompt, so a plain completion whose Ollama reply carries no
+  `message` fails with this code rather than silently succeeding with an empty
+  `choices` array.
 * **`JSON_PARSE_ERROR`**: The response was not valid parseable JSON.
 * **`OLLAMA_UNREACHABLE`**: The worker could not reach the Ollama engine to determine its
   version, so it cannot know whether structured outputs are supported. A failed version
