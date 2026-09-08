@@ -176,7 +176,7 @@ whose. Per-worker rows stay on the superadmin `GET /v1/admin/workers`.
 | `POST` | `/workers/register` | Register/re-register; backend assigns `worker_id` |
 | `POST` | `/workers/{worker_id}/heartbeat` | Unified heartbeat: liveness + activity + dynamic capabilities |
 | `POST` | `/workers/poll` | Claim the best-matching validated batch |
-| `POST` | `/workers/progress` | Live prompt counts (every N prompts) |
+| `POST` | `/workers/progress` | Live prompt counts (time-throttled — see `DAEMON_PROGRESS_INTERVAL_SECONDS`) |
 | `POST` | `/workers/model-progress` | Model download progress (logged; liveness) |
 | `POST` | `/workers/upload-results` | Upload output JSONL + real completed/failed counts |
 | `POST` | `/workers/report-failure` | Report failure → batch is **requeued** (up to 3 attempts) |

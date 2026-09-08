@@ -9,6 +9,7 @@ patterns in test_ollama.py.  Live verification against a running
 Ollama or vLLM server is pending — see docs/reference/openai-compatibility.md.
 """
 
+import itertools
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 import logging
@@ -341,7 +342,6 @@ class TestStreamRejection:
         assert results[0].is_success
         executor.execute.assert_called_once()
 
-
 # ════════════════════════════════════════════════════════════════
 #  vLLM warn-and-drop
 # ════════════════════════════════════════════════════════════════
@@ -473,6 +473,91 @@ class TestWorkerProgressAccounting:
     through to the shared `else: failed += 1`, so a job reported
     more failures than it had prompts.
     """
+
+    @pytest.mark.asyncio
+    async def test_progress_reports_are_time_throttled(self):
+        """Issue #82: reporting every 10 prompts put ~1,000 HTTP round trips and
+        DB writes behind a 10k-row batch. Reporting is now time-throttled.
+
+        The clock is faked rather than real: `time.monotonic()` is seconds since
+        boot, so a test that leans on the real one passes on a long-lived
+        machine and fails on a freshly booted CI host.
+        """
+        from daemon.worker import Worker
+        from daemon.config import DaemonConfig
+        from daemon.client import BackendClient
+
+        config = DaemonConfig(worker_id="test-worker", progress_interval_seconds=10.0)
+        client = AsyncMock(spec=BackendClient)
+        executor = AsyncMock(spec=OllamaExecutor)
+        executor.execute.return_value = CompletionResult(
+            custom_id="req-ok",
+            response={"choices": [{"message": {"content": "hi"}}]},
+        )
+
+        worker = Worker(config=config, client=client, executor=executor)
+        worker._running = True
+
+        job = Job(job_id="test-job", model="m")
+        prompts = [
+            PromptRequest(custom_id=f"req-{i}", body={"model": "m", "messages": []})
+            for i in range(50)
+        ]
+
+        # One prompt per simulated second, starting at an arbitrary origin.
+        ticks = itertools.count(start=100.0, step=1.0)
+        with patch("daemon.worker.time.monotonic", side_effect=lambda: next(ticks)):
+            results = await worker._run_prompts(prompts, job)
+
+        assert len(results) == 50
+        # 50 prompts over 50s at a 10s interval: prompt 1, then every 10s,
+        # then the guaranteed final report — 6 calls, not 50.
+        assert client.report_progress.call_count == 6
+        client.report_progress.assert_called_with(
+            job_id="test-job",
+            completed=50,
+            failed=0,
+            total=50,
+        )
+
+    @pytest.mark.asyncio
+    async def test_final_progress_report_always_sent(self):
+        """The completion report must not be swallowed by the throttle, or a
+        finished batch sits at 97% forever."""
+        from daemon.worker import Worker
+        from daemon.config import DaemonConfig
+        from daemon.client import BackendClient
+
+        # An interval far longer than the run: only the guaranteed reports fire.
+        config = DaemonConfig(worker_id="test-worker", progress_interval_seconds=3600.0)
+        client = AsyncMock(spec=BackendClient)
+        executor = AsyncMock(spec=OllamaExecutor)
+        executor.execute.return_value = CompletionResult(
+            custom_id="req-ok",
+            response={"choices": [{"message": {"content": "hi"}}]},
+        )
+
+        worker = Worker(config=config, client=client, executor=executor)
+        worker._running = True
+
+        job = Job(job_id="test-job", model="m")
+        prompts = [
+            PromptRequest(custom_id=f"req-{i}", body={"model": "m", "messages": []})
+            for i in range(50)
+        ]
+
+        # Clock frozen: nothing can trip the interval.
+        with patch("daemon.worker.time.monotonic", return_value=0.0):
+            results = await worker._run_prompts(prompts, job)
+
+        assert len(results) == 50
+        assert client.report_progress.call_count == 1
+        client.report_progress.assert_called_once_with(
+            job_id="test-job",
+            completed=50,
+            failed=0,
+            total=50,
+        )
 
     @pytest.mark.asyncio
     async def test_rejected_prompts_counted_once(self):

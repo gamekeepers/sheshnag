@@ -27,6 +27,7 @@ import asyncio
 import json
 import random
 import signal
+import time
 from pathlib import Path
 from typing import List
 
@@ -343,6 +344,7 @@ class Worker:
         total = len(prompts)
         completed = 0
         failed = 0
+        last_progress_report = 0.0
 
         for idx, prompt in enumerate(prompts, start=1):
             if not self._running:
@@ -401,14 +403,16 @@ class Worker:
                 }
             )
             
-            # Report progress to platform every 10 prompts or on completion
-            if idx % 10 == 0 or idx == total:
+            # Report progress to platform (time-throttled or on completion)
+            now = time.monotonic()
+            if idx == total or (now - last_progress_report) >= self._config.progress_interval_seconds:
                 await self._client.report_progress(
                     job_id=job.job_id,
                     completed=completed,
                     failed=failed,
                     total=total,
                 )
+                last_progress_report = now
 
         return results
 

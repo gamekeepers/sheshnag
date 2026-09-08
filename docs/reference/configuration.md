@@ -54,6 +54,7 @@ Configured via a three-layer system: CLI > env (`DAEMON_*` prefix) > YAML file >
 | `DAEMON_VLLM_URL` | `http://localhost:8100` | vLLM server URL |
 | `DAEMON_POLL_INTERVAL` | 5 | Seconds between job polls |
 | `DAEMON_HEARTBEAT_INTERVAL` | 30 | Seconds between heartbeats |
+| `DAEMON_PROGRESS_INTERVAL_SECONDS` | 5.0 | Minimum seconds between progress reports. Completion is always reported regardless |
 | `DAEMON_INFERENCE_TIMEOUT` | 300.0 | Per-prompt inference timeout (seconds) |
 | `DAEMON_LOG_LEVEL` | `INFO` | Log level: DEBUG / INFO / WARNING / ERROR |
 | `DAEMON_WORK_DIR` | `~/.gpu-daemon/jobs` | Job artifacts directory |
