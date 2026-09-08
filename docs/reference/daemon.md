@@ -118,16 +118,28 @@ comes from.
 The pool is fixed for the life of the job — the daemon does not yet measure the
 runtime's real capacity and size itself to it.
 
-Two consequences worth knowing:
+Embedding rows go through the same pool. Where the runtime can serve several in
+one request — Ollama's `/api/embed` takes up to 64 inputs — a chunk is one unit
+of work; where it cannot, each row is scheduled individually and gets the pool's
+concurrency rather than running serially after the chat prompts.
 
-- **Results are keyed by `custom_id`, not append order.** Prompts finish out of
-  order; the output file is still written in input order.
-- **Duplicate `custom_id`s are rejected** before execution starts. The backend's
-  validator already rejects them at upload, so this only fires on a bypass.
+The guarantee the pool keeps is that **every input row produces exactly one
+output row, in input order.** Prompts finish out of order and the output file is
+still written in order, and no single row can fail the job:
 
-Embedding rows are handled separately: on Ollama they are coalesced into
-`/api/embed` calls of up to 64 inputs, which removes one HTTP round trip per
-row.
+| Situation | Result |
+|---|---|
+| Prompt fails in the runtime | That row carries the runtime's error |
+| Unexpected exception mid-execution | Only that unit's rows fail, with `INTERNAL_ERROR` |
+| `stream: true` on any endpoint | That row fails with `UNSUPPORTED_PARAMETER` |
+| Repeated `custom_id` | The second and later rows fail with `DUPLICATE_CUSTOM_ID` |
+| Shutdown signal | Prompts in flight finish; the rest are simply absent |
+
+Rejections are all decided in one pass before execution starts, so an input
+cannot get different treatment depending on which runtime it lands on. A
+repeated `custom_id` is already rejected by the backend's validator at upload,
+so that row only appears on a bypass — it fails the row rather than the job,
+which is what the pre-pool sequential loop did.
 
 ## Configuration
 

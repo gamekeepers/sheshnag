@@ -156,13 +156,78 @@ async def test_results_return_in_input_order(mock_job):
 
 
 @pytest.mark.asyncio
-async def test_duplicate_custom_id_rejected(mock_job):
-    worker = _worker(MockExecutor(), MockClient(), max_concurrent_prompts=1)
-    prompts = make_prompts(2)
-    prompts[1].custom_id = prompts[0].custom_id
+async def test_duplicate_custom_id_fails_only_that_row(mock_job):
+    """A duplicate id must not abort the job — the pre-PR loop never did."""
+    worker = _worker(MockExecutor(), MockClient(), max_concurrent_prompts=4)
+    prompts = make_prompts(3)
+    prompts[2].custom_id = prompts[0].custom_id  # row 2 duplicates row 0
 
-    with pytest.raises(ValueError, match="Duplicate custom_id"):
-        await worker._run_prompts(prompts, mock_job)
+    results = await worker._run_prompts(prompts, mock_job)
+
+    assert len(results) == 3, "every input row must still produce an output row"
+    assert results[0].is_success
+    assert results[1].is_success
+    assert not results[2].is_success
+    assert results[2].error.startswith("DUPLICATE_CUSTOM_ID:")
+
+
+@pytest.mark.asyncio
+async def test_stream_rejected_for_embeddings_too(mock_job):
+    """stream=true is decided at the partition, so no path can miss it."""
+    worker = _worker(MockBatchExecutor(), MockClient(), max_concurrent_prompts=4)
+    prompts = make_prompts(2, endpoint="/v1/embeddings")
+    prompts[0].body["stream"] = True
+
+    results = await worker._run_prompts(prompts, mock_job)
+
+    assert results[0].error.startswith("UNSUPPORTED_PARAMETER:")
+    assert results[1].is_success
+
+
+@pytest.mark.asyncio
+async def test_one_crashing_prompt_does_not_lose_the_batch(mock_job):
+    """An unexpected exception fails its own row and nothing else."""
+
+    class PoisonExecutor(BaseExecutor):
+        async def execute(self, prompt: PromptRequest) -> CompletionResult:
+            if prompt.custom_id == "prompt-3":
+                raise RuntimeError("boom")
+            return CompletionResult(
+                custom_id=prompt.custom_id, response={"choices": [{"message": {}}]}
+            )
+
+        async def health_check(self) -> bool:
+            return True
+
+    worker = _worker(PoisonExecutor(), MockClient(), max_concurrent_prompts=4)
+    results = await worker._run_prompts(make_prompts(10), mock_job)
+
+    assert len(results) == 10, "a crashing prompt destroyed completed results"
+    assert sum(r.is_success for r in results) == 9
+    bad = [r for r in results if not r.is_success]
+    assert len(bad) == 1 and bad[0].custom_id == "prompt-3"
+    assert bad[0].error.startswith("INTERNAL_ERROR:")
+
+
+@pytest.mark.asyncio
+async def test_null_usage_does_not_crash_the_worker(mock_job):
+    """A runtime answering "usage": null must not kill the row or the job."""
+
+    class NullUsageExecutor(BaseExecutor):
+        async def execute(self, prompt: PromptRequest) -> CompletionResult:
+            return CompletionResult(
+                custom_id=prompt.custom_id,
+                response={"choices": [{"message": {}}], "usage": None},
+            )
+
+        async def health_check(self) -> bool:
+            return True
+
+    worker = _worker(NullUsageExecutor(), MockClient(), max_concurrent_prompts=2)
+    results = await worker._run_prompts(make_prompts(4), mock_job)
+
+    assert len(results) == 4
+    assert all(r.is_success for r in results)
 
 
 @pytest.mark.asyncio
@@ -225,6 +290,8 @@ async def test_progress_throttle_suppresses_chatter(mock_job):
 class MockBatchExecutor(BaseExecutor):
     def __init__(self):
         self.batch_calls = 0
+        self.max_in_flight = 0
+        self._in_flight = 0
 
     async def execute(self, prompt: PromptRequest) -> CompletionResult:
         raise NotImplementedError("embeddings must go through batch_execute")
@@ -233,18 +300,26 @@ class MockBatchExecutor(BaseExecutor):
         self, prompts: List[PromptRequest]
     ) -> List[CompletionResult]:
         self.batch_calls += 1
-        return [
-            CompletionResult(custom_id=p.custom_id, response={"emb": True})
-            for p in prompts
-        ]
+        self._in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self._in_flight)
+        try:
+            await asyncio.sleep(0.02)
+            return [
+                CompletionResult(custom_id=p.custom_id, response={"emb": True})
+                for p in prompts
+            ]
+        finally:
+            self._in_flight -= 1
 
     async def health_check(self) -> bool:
         return True
 
 
 @pytest.mark.asyncio
-async def test_embeddings_go_through_batch_execute(mock_job):
+async def test_embeddings_coalesce_when_the_runtime_can(mock_job):
+    """An executor declaring a chunk size gets one call per chunk."""
     executor = MockBatchExecutor()
+    executor.embedding_chunk_size = 64
     worker = _worker(executor, MockClient(), max_concurrent_prompts=8)
 
     results = await worker._run_prompts(
@@ -254,6 +329,21 @@ async def test_embeddings_go_through_batch_execute(mock_job):
     assert len(results) == 64
     assert executor.batch_calls == 1
     assert results[0].response == {"emb": True}
+
+
+@pytest.mark.asyncio
+async def test_embeddings_run_in_the_pool_when_it_cannot(mock_job):
+    """Without coalescing, embeddings still get the pool — not a serial tail."""
+    executor = MockBatchExecutor()  # inherits chunk size 1 from BaseExecutor
+    worker = _worker(executor, MockClient(), max_concurrent_prompts=8)
+
+    results = await worker._run_prompts(
+        make_prompts(16, endpoint="/v1/embeddings"), mock_job
+    )
+
+    assert len(results) == 16
+    assert executor.batch_calls == 16, "rows were not scheduled individually"
+    assert executor.max_in_flight > 1, "embeddings ran serially, not in the pool"
 
 
 @pytest.mark.asyncio

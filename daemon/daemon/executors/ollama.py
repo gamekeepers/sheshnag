@@ -67,6 +67,9 @@ class OllamaExecutor(BaseExecutor):
         GET  /api/version  - get version info
     """
     
+    #: Ollama's /api/embed accepts a list of inputs in one request.
+    embedding_chunk_size: int = 64
+
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
@@ -235,15 +238,25 @@ class OllamaExecutor(BaseExecutor):
         accepts a list of inputs in one request, which removes one HTTP round
         trip per row.
         """
-        embedding_prompts = [p for p in prompts if p.url == "/v1/embeddings"]
-        chat_prompts = [p for p in prompts if p.url != "/v1/embeddings"]
+        def _coalescable(p: PromptRequest) -> bool:
+            # Only single-string inputs coalesce safely. A list-valued input is
+            # a valid OpenAI shape and nothing upstream rejects it, but nesting
+            # it in the batched body either fails the whole chunk or returns one
+            # embedding per *flattened* element — which silently desynchronises
+            # the data[j] -> chunk[j] fan-out below and hands later custom_ids
+            # somebody else's vector. execute() handles these rows correctly
+            # one at a time, so send them there.
+            return p.url == "/v1/embeddings" and isinstance(p.body.get("input"), str)
+
+        embedding_prompts = [p for p in prompts if _coalescable(p)]
+        per_prompt = [p for p in prompts if not _coalescable(p)]
 
         results_by_id = {}
 
-        for p in chat_prompts:
+        for p in per_prompt:
             results_by_id[p.custom_id] = await self.execute(p)
 
-        CHUNK_SIZE = 64
+        CHUNK_SIZE = self.embedding_chunk_size
         client = self._get_client()
         for i in range(0, len(embedding_prompts), CHUNK_SIZE):
             chunk = embedding_prompts[i:i + CHUNK_SIZE]

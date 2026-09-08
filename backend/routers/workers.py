@@ -304,8 +304,16 @@ def report_progress(
     _get_org_worker(db, org, req.worker_id)
     batch = _get_assigned_batch(db, req.job_id, req.worker_id)
 
-    batch.request_counts_completed = req.completed
-    batch.request_counts_failed = req.failed
+    # Monotonic: workers POST these snapshots concurrently and without a
+    # sequence number, so a delayed report can carry lower counts than one that
+    # already landed. Taking the max stops the dashboard rolling backwards.
+    # The upload handler below still writes authoritative final counts directly.
+    batch.request_counts_completed = max(
+        batch.request_counts_completed or 0, req.completed
+    )
+    batch.request_counts_failed = max(
+        batch.request_counts_failed or 0, req.failed
+    )
 
     # Token rollups are deliberately not written here. The daemon has no sender
     # for live per-prompt counts, and a progress report that arrives late (after

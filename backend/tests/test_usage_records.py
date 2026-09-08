@@ -347,6 +347,58 @@ def test_worker_progress_does_not_touch_token_rollups(db_session, test_user, _en
         app.dependency_overrides.clear()
 
 
+def test_worker_progress_never_goes_backwards(db_session, test_user, _engine):
+    """A late snapshot must not roll the dashboard back.
+
+    Pool workers POST progress concurrently and without a sequence number, so
+    reports can land out of order. The handler takes the max; the upload
+    handler still writes authoritative final counts directly.
+    """
+    from fastapi.testclient import TestClient
+    from main import app
+    from database import get_db
+    from tests.conftest import _make_override
+
+    key_val = "gk-test-worker-key-87654321"
+    org, worker, batch = _worker_fixture(
+        db_session, test_user, key_val, "Progress Order Org", "worker-progress-2"
+    )
+
+    app.dependency_overrides[get_db] = _make_override(_engine)
+    try:
+        with TestClient(app) as client:
+            client.headers.update({"Authorization": f"Bearer {key_val}"})
+
+            def report(completed, failed):
+                return client.post(
+                    "/workers/progress",
+                    json={
+                        "job_id": batch.id,
+                        "worker_id": worker.id,
+                        "completed": completed,
+                        "failed": failed,
+                        "total": 10,
+                    },
+                )
+
+            assert report(8, 1).status_code == 200
+            db_session.refresh(batch)
+            assert batch.request_counts_completed == 8
+
+            # A snapshot taken earlier, delivered later.
+            assert report(3, 0).status_code == 200
+            db_session.refresh(batch)
+            assert batch.request_counts_completed == 8, "progress regressed"
+            assert batch.request_counts_failed == 1, "failure count regressed"
+
+            # Forward progress still lands.
+            assert report(10, 1).status_code == 200
+            db_session.refresh(batch)
+            assert batch.request_counts_completed == 10
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_upload_results_endpoint_ingests_usage(db_session, test_user, _engine):
     """End-to-end through POST /workers/upload-results.
 

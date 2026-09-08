@@ -188,6 +188,9 @@ class CompletionResult(BaseModel):
         Note: Some providers return float values for certain usage
         fields, so we accept both int and float.
         """
-        if self.response and "usage" in self.response:
+        # `.get()`, not `in` — a runtime that answers with "usage": null
+        # otherwise returns None here and breaks the documented contract for
+        # every caller that treats this as a dict.
+        if self.response and self.response.get("usage"):
             return self.response["usage"]
         return {}
