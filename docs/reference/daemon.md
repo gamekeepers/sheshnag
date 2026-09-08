@@ -107,6 +107,28 @@ requeues its in-flight batch.
 See [`client.py`](https://github.com/gamekeepers/sheshnag/blob/develop/daemon/daemon/client.py)
 for full request/response details.
 
+## Executing a batch
+
+Prompts within a batch run through a bounded pool of concurrent workers, sized
+by `max_concurrent_prompts` (default 8). Decode is memory-bandwidth bound, so a
+single sequence leaves most of the card idle; running several at once reads the
+model's weights once per step and shares them, which is where the throughput
+comes from.
+
+The pool is fixed for the life of the job — the daemon does not yet measure the
+runtime's real capacity and size itself to it.
+
+Two consequences worth knowing:
+
+- **Results are keyed by `custom_id`, not append order.** Prompts finish out of
+  order; the output file is still written in input order.
+- **Duplicate `custom_id`s are rejected** before execution starts. The backend's
+  validator already rejects them at upload, so this only fires on a bypass.
+
+Embedding rows are handled separately: on Ollama they are coalesced into
+`/api/embed` calls of up to 64 inputs, which removes one HTTP round trip per
+row.
+
 ## Configuration
 
 Precedence, highest first: **CLI arguments**, then environment variables

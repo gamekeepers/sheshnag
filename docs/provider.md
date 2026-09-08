@@ -261,6 +261,7 @@ installer writes is deliberately minimal; these are the values worth knowing.
 | `poll_interval` | `5` | Seconds between "any work?" checks. |
 | `heartbeat_interval` | `30` | Seconds between liveness reports. |
 | `inference_timeout` | `300.0` | Per-prompt ceiling, in seconds. |
+| `max_concurrent_prompts` | `8` | How many prompts run at once. |
 | `log_level` | `INFO` | `DEBUG` when diagnosing. |
 
 Every one of these can also be given as an environment variable — `DAEMON_` plus
