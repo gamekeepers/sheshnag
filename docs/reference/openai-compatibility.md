@@ -79,7 +79,7 @@ checks the model's `runtime` field in the catalogue:
   `unsupported_parameter` error naming the exact lines and values.
 - **`runtime=vllm`** → `n > 1` accepted normally, passes through to vLLM natively.
 
-Integration point: [`batch_validator.py`](../backend/services/batch_validator.py) —
+Integration point: [`batch_validator.py`](https://github.com/gamekeepers/sheshnag/blob/develop/backend/services/batch_validator.py) —
 `_CrossFileContext.n_gt1_rows` accumulates offending rows; phase 4b of
 `validate_batch_file()` issues the catalogue lookup and applies the gate.
 
