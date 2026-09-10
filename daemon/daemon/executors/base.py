@@ -70,6 +70,21 @@ class BaseExecutor(ABC):
     #: prompt. Ollama overrides this; see OllamaExecutor.
     embedding_chunk_size: int = 1
 
+    def can_coalesce_embedding(self, prompt: PromptRequest) -> bool:
+        """Whether this row may share a request with other embedding rows.
+
+        `embedding_chunk_size` says *how many* rows coalesce; this says
+        *which*. The worker asks before it chunks, so a row that cannot be
+        coalesced becomes its own unit of work and gets the pool's concurrency
+        instead of being stranded inside somebody else's chunk and run
+        one-at-a-time there.
+
+        The default accepts any embedding row, so an executor only has to
+        declare `embedding_chunk_size` to opt in. Override to narrow it —
+        Ollama does, for list-valued inputs.
+        """
+        return prompt.url == "/v1/embeddings"
+
     async def batch_execute(
         self, prompts: List[PromptRequest]
     ) -> List[CompletionResult]:

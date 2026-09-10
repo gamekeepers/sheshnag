@@ -121,9 +121,16 @@ runtime's real capacity and size itself to it.
 Embedding rows go through the same pool. Where the runtime can serve several in
 one request, a chunk of them is one unit of work; where it cannot, each row is
 scheduled individually and gets the pool's concurrency rather than running
-serially after the chat prompts. How many rows go in a chunk is the executor's
-`embedding_chunk_size` — 64 on Ollama, whose `/api/embed` accepts a list of
-inputs, and 1 (no coalescing) by default.
+serially after the chat prompts. Two things decide this, both on the executor:
+`embedding_chunk_size` says how many rows may share a request — 64 on Ollama,
+whose `/api/embed` accepts a list of inputs, and 1 (no coalescing) by default —
+and `can_coalesce_embedding()` says which rows qualify. Ollama declines
+list-valued inputs there, because a nested list desynchronises the fan-out back
+to individual rows.
+
+The worker asks that question *before* it chunks. A row that cannot be
+coalesced becomes its own unit, rather than being carried inside a chunk and
+run one-at-a-time in a single pool slot.
 
 The guarantee the pool keeps is that **every input row produces exactly one
 output row, in input order.** Prompts finish out of order and the output file is
@@ -133,9 +140,15 @@ still written in order, and no single row can fail the job:
 |---|---|
 | Prompt fails in the runtime | That row carries the runtime's error |
 | Unexpected exception mid-execution | Only that unit's rows fail, with `INTERNAL_ERROR` |
+| A coalesced embedding request is rejected | Its rows are retried one at a time; only the genuinely bad ones fail |
 | `stream: true` on any endpoint | That row fails with `UNSUPPORTED_PARAMETER` |
 | Repeated `custom_id` | The second and later rows fail with `DUPLICATE_CUSTOM_ID` |
 | Shutdown signal | Prompts in flight finish; the rest are simply absent |
+
+Coalescing is a throughput optimisation and never costs isolation: Ollama
+rejects an entire `/api/embed` call if any single input is invalid, so a failed
+chunk says nothing about the other rows that travelled with it and they are
+re-sent individually.
 
 Rejections are all decided in one pass before execution starts, so an input
 cannot get different treatment depending on which runtime it lands on. A
