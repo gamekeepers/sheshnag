@@ -376,3 +376,87 @@ async def test_mixed_batch_keeps_every_row(mock_job):
     assert [r.custom_id for r in results] == [p.custom_id for p in prompts]
     assert results[0].response == {"choices": [{"message": {"content": "chat"}}]}
     assert results[1].response == {"emb": True}
+
+
+@pytest.mark.asyncio
+async def test_non_coalescable_rows_still_get_the_pool(mock_job):
+    """Rows the runtime cannot coalesce must not collapse the pool to one.
+
+    They used to be swept into a chunk and run one-at-a-time inside a single
+    pool slot, so a job made entirely of them ignored max_concurrent_prompts
+    (issue #106).
+    """
+
+    class PickyExecutor(BaseExecutor):
+        embedding_chunk_size = 64
+
+        def __init__(self):
+            self.max_in_flight = 0
+            self._in_flight = 0
+
+        def can_coalesce_embedding(self, prompt):
+            return isinstance(prompt.body.get("input"), str)
+
+        async def execute(self, p):
+            self._in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self._in_flight)
+            try:
+                await asyncio.sleep(0.01)
+                return CompletionResult(custom_id=p.custom_id, response={"emb": True})
+            finally:
+                self._in_flight -= 1
+
+        async def batch_execute(self, prompts):
+            return [await self.execute(p) for p in prompts]
+
+        async def health_check(self) -> bool:
+            return True
+
+    executor = PickyExecutor()
+    worker = _worker(executor, MockClient(), max_concurrent_prompts=8)
+
+    prompts = make_prompts(50, endpoint="/v1/embeddings")
+    for p in prompts:
+        p.body["input"] = ["a", "b"]        # list-valued: cannot coalesce
+
+    results = await worker._run_prompts(prompts, mock_job)
+
+    assert len(results) == 50
+    assert executor.max_in_flight > 1, "pool collapsed to a single worker"
+    assert executor.max_in_flight <= 8
+
+
+@pytest.mark.asyncio
+async def test_coalescable_rows_still_chunk(mock_job):
+    """The split must not stop coalescable rows from sharing a request."""
+
+    class Coalescing(BaseExecutor):
+        embedding_chunk_size = 64
+
+        def __init__(self):
+            self.batch_sizes = []
+
+        async def execute(self, p):
+            raise NotImplementedError
+
+        async def batch_execute(self, prompts):
+            self.batch_sizes.append(len(prompts))
+            return [
+                CompletionResult(custom_id=p.custom_id, response={"emb": True})
+                for p in prompts
+            ]
+
+        async def health_check(self) -> bool:
+            return True
+
+    executor = Coalescing()
+    worker = _worker(executor, MockClient(), max_concurrent_prompts=8)
+
+    prompts = make_prompts(50, endpoint="/v1/embeddings")
+    for p in prompts:
+        p.body["input"] = "a string"        # coalescable
+
+    results = await worker._run_prompts(prompts, mock_job)
+
+    assert len(results) == 50
+    assert executor.batch_sizes == [50], "coalescing regressed"

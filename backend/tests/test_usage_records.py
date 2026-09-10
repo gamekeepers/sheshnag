@@ -445,6 +445,14 @@ def test_requeue_past_max_attempts_still_marks_all_failed(db_session, test_user,
 
     assert status == "failed"
     assert batch.request_counts_failed == batch.request_counts_total == 10
+    # completed must be zeroed too. /workers/progress keeps the *peak* value
+    # ever reported, so leaving it would end a 10-row batch as
+    # completed=4, failed=10 — 14 rows accounted for out of 10 (issue #106).
+    assert batch.request_counts_completed == 0, (
+        f"completed={batch.request_counts_completed} + failed="
+        f"{batch.request_counts_failed} exceeds total="
+        f"{batch.request_counts_total}"
+    )
 
 
 def test_upload_results_endpoint_ingests_usage(db_session, test_user, _engine):

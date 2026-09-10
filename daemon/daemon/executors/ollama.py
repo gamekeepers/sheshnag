@@ -242,6 +242,21 @@ class OllamaExecutor(BaseExecutor):
             return True
         return (time.monotonic() - self._version_probed_at) >= VERSION_PROBE_RETRY_SECONDS
 
+    def can_coalesce_embedding(self, prompt: PromptRequest) -> bool:
+        """Only single-string inputs may share an /api/embed request.
+
+        A list-valued input is a valid OpenAI shape and nothing upstream
+        rejects it, but nesting it in a batched body either fails the whole
+        chunk or returns one embedding per *flattened* element — which
+        desynchronises the data[j] -> chunk[j] fan-out and hands later
+        custom_ids somebody else's vector. execute() handles these rows
+        correctly one at a time.
+        """
+        return (
+            prompt.url == "/v1/embeddings"
+            and isinstance(prompt.body.get("input"), str)
+        )
+
     async def batch_execute(self, prompts: List[PromptRequest]) -> List[CompletionResult]:
         """
         Execute a batch of prompts, coalescing embeddings into single
@@ -252,18 +267,8 @@ class OllamaExecutor(BaseExecutor):
         accepts a list of inputs in one request, which removes one HTTP round
         trip per row.
         """
-        def _coalescable(p: PromptRequest) -> bool:
-            # Only single-string inputs coalesce safely. A list-valued input is
-            # a valid OpenAI shape and nothing upstream rejects it, but nesting
-            # it in the batched body either fails the whole chunk or returns one
-            # embedding per *flattened* element — which silently desynchronises
-            # the data[j] -> chunk[j] fan-out below and hands later custom_ids
-            # somebody else's vector. execute() handles these rows correctly
-            # one at a time, so send them there.
-            return p.url == "/v1/embeddings" and isinstance(p.body.get("input"), str)
-
-        embedding_prompts = [p for p in prompts if _coalescable(p)]
-        per_prompt = [p for p in prompts if not _coalescable(p)]
+        embedding_prompts = [p for p in prompts if self.can_coalesce_embedding(p)]
+        per_prompt = [p for p in prompts if not self.can_coalesce_embedding(p)]
 
         results_by_id = {}
 
@@ -311,17 +316,27 @@ class OllamaExecutor(BaseExecutor):
                             custom_id=p.custom_id, response=per_row_response
                         )
                     else:
-                        results_by_id[p.custom_id] = CompletionResult(
-                            custom_id=p.custom_id,
-                            error="EMBEDDING_FAILED: missing vector in response",
+                        # Fewer vectors came back than rows went out. Ask for
+                        # this one on its own rather than calling it failed.
+                        logger.warning(
+                            "Ollama returned no vector for %s in a coalesced "
+                            "chunk — retrying it individually", p.custom_id,
                         )
+                        results_by_id[p.custom_id] = await self.execute(p)
 
             except Exception as e:
-                logger.error(f"Ollama batched embedding execution failed: {e}")
+                # Ollama rejects the entire request if any single input is bad
+                # (an empty string, one input over the context limit), so a
+                # chunk failure says nothing about the other 63 rows. Retry
+                # them one at a time rather than failing them all: coalescing
+                # is a throughput optimisation and must not cost isolation the
+                # per-prompt path had.
+                logger.warning(
+                    "Ollama coalesced embedding call failed (%s) — retrying "
+                    "%d row(s) individually", e, len(chunk),
+                )
                 for p in chunk:
-                    results_by_id[p.custom_id] = CompletionResult(
-                        custom_id=p.custom_id, error=f"EMBEDDING_FAILED: {e}"
-                    )
+                    results_by_id[p.custom_id] = await self.execute(p)
 
         return [results_by_id[p.custom_id] for p in prompts]
 

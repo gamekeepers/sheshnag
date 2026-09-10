@@ -411,10 +411,28 @@ class Worker:
             # Executors are free not to declare this, and test doubles often
             # don't. Anything unusable means "no coalescing".
             chunk_size = 1
+
+        # Ask before chunking. A row the runtime cannot coalesce (Ollama
+        # rejects list-valued inputs) would otherwise be swept into a chunk and
+        # run one-at-a-time inside a single pool slot — so a job made entirely
+        # of such rows collapsed to one worker no matter how the pool was
+        # sized.
+        can_coalesce = getattr(self._executor, "can_coalesce_embedding", None)
+        if chunk_size > 1 and callable(can_coalesce):
+            coalescable, solo = [], []
+            for row in embedding_rows:
+                try:
+                    (coalescable if can_coalesce(row[1]) else solo).append(row)
+                except Exception:
+                    # A predicate that raises means "don't risk it".
+                    solo.append(row)
+        else:
+            coalescable, solo = [], list(embedding_rows)
+
         embedding_units = [
-            embedding_rows[i:i + chunk_size]
-            for i in range(0, len(embedding_rows), chunk_size)
-        ]
+            coalescable[i:i + chunk_size]
+            for i in range(0, len(coalescable), chunk_size)
+        ] + [[row] for row in solo]
 
         units = chat_units + embedding_units
         queue: asyncio.Queue = asyncio.Queue()

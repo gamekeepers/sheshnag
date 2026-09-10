@@ -886,3 +886,76 @@ async def test_coalesced_usage_sums_back_to_the_chunk_total():
     assert sum(per_row) == 1000, f"{sum(per_row)} != 1000 — tokens were dropped"
     # And spread evenly: no row carries more than one extra.
     assert max(per_row) - min(per_row) <= 1
+
+
+# ── Coalesced chunk isolation (issue #106) ───────────────────────
+
+def _picky_embed_executor():
+    """Transport that 400s the whole request if any input is empty.
+
+    That is Ollama's behaviour: one invalid input rejects the entire
+    /api/embed call, however many good rows travelled with it.
+    """
+    calls = {"n": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        calls["n"] += 1
+        sent = _json.loads(request.content)["input"]
+        rows = sent if isinstance(sent, list) else [sent]
+        if any(r == "" for r in rows):
+            return httpx.Response(400, json={"error": "invalid input: empty string"})
+        return httpx.Response(200, json={
+            "model": "nomic-embed-text",
+            "embeddings": [[float(len(r))] for r in rows],
+            "prompt_eval_count": len(rows),
+        })
+
+    executor = OllamaExecutor()
+    executor._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://localhost:11434",
+    )
+    return executor, calls
+
+
+@pytest.mark.asyncio
+async def test_one_bad_row_does_not_fail_its_whole_chunk():
+    """A rejected coalesced call must not take healthy rows down with it."""
+    executor, calls = _picky_embed_executor()
+    prompts = [
+        _embed_prompt(f"e-{i}", "fine" if i != 7 else "")
+        for i in range(20)
+    ]
+
+    results = await executor.batch_execute(prompts)
+
+    assert len(results) == 20
+    ok = [r for r in results if r.is_success]
+    bad = [r for r in results if not r.is_success]
+
+    assert len(ok) == 19, "healthy rows were destroyed by one bad row"
+    assert len(bad) == 1 and bad[0].custom_id == "e-7"
+    # And the good rows carry their own vectors, not a neighbour's.
+    assert results[0].response["data"][0]["embedding"] == [4.0]  # "fine"
+    # One coalesced attempt, then one retry per row.
+    assert calls["n"] == 1 + 20
+
+
+@pytest.mark.asyncio
+async def test_healthy_chunk_still_costs_one_request():
+    """The retry path must not slow down the normal case."""
+    executor, calls = _picky_embed_executor()
+    prompts = [_embed_prompt(f"e-{i}", f"text {i}") for i in range(20)]
+
+    results = await executor.batch_execute(prompts)
+
+    assert all(r.is_success for r in results)
+    assert calls["n"] == 1, "coalescing regressed to per-row requests"
+
+
+def test_ollama_declines_to_coalesce_list_inputs():
+    """The predicate the worker consults before chunking."""
+    executor = OllamaExecutor()
+    assert executor.can_coalesce_embedding(_embed_prompt("a", "text")) is True
+    assert executor.can_coalesce_embedding(_embed_prompt("b", ["x", "y"])) is False

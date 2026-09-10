@@ -42,6 +42,11 @@ def requeue_or_fail_batch(db, batch, error: str | None = None) -> str:
         batch.status = "failed"
         batch.completed_at = unix_now()
         batch.request_counts_failed = batch.request_counts_total
+        # Zero this too, or the pair double-counts: /workers/progress keeps the
+        # *peak* completed count ever reported, so a batch that reached 800/1000
+        # before dying would end as completed=800, failed=1000 — 1800 rows
+        # accounted for out of 1000.
+        batch.request_counts_completed = 0
         return "failed"
 
     batch.status = "validated"
