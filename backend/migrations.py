@@ -160,7 +160,7 @@ def _backfill_inventory(conn) -> None:
                 text(
                     "INSERT OR IGNORE INTO worker_gpus "
                     "(id, worker_id, gpu_index, vendor, name, vram_gb, driver, cuda, updated_at) "
-                    "VALUES (:id, :wid, :idx, :vendor, :name, :vram, :driver, :cuda, unixepoch())"
+                    "VALUES (:id, :wid, :idx, :vendor, :name, :vram, :driver, :cuda, strftime('%s','now'))"
                 ),
                 {
                     "id": new_id("gpu"), "wid": worker_id,
@@ -178,7 +178,7 @@ def _backfill_inventory(conn) -> None:
                 text(
                     "INSERT OR IGNORE INTO worker_runtimes "
                     "(id, worker_id, engine, base_url, api_protocol, status, created_at, updated_at) "
-                    "VALUES (:id, :wid, :engine, :url, 'openai-compatible', 'ready', unixepoch(), unixepoch())"
+                    "VALUES (:id, :wid, :engine, :url, 'openai-compatible', 'ready', strftime('%s','now'), strftime('%s','now'))"
                 ),
                 {
                     "id": rt_id, "wid": worker_id,
@@ -193,7 +193,7 @@ def _backfill_inventory(conn) -> None:
                     text(
                         "INSERT OR IGNORE INTO runtime_models "
                         "(id, runtime_id, name, runtime_model_id, status, loaded, created_at, updated_at) "
-                        "VALUES (:id, :rt, :name, :name, 'available', :loaded, unixepoch(), unixepoch())"
+                        "VALUES (:id, :rt, :name, :name, 'available', :loaded, strftime('%s','now'), strftime('%s','now'))"
                     ),
                     {
                         "id": new_id("rtm"), "rt": rt_id,
