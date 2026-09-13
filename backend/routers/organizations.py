@@ -18,6 +18,9 @@ from auth import (
     get_current_user, generate_api_key, hash_api_key, get_api_key_prefix,
 )
 import secrets
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -627,8 +630,13 @@ def invite_member(
             f"This invite expires in 7 days.\n"
             f"If you don't have an account, sign up first, then use the link above.",
         )
-    except Exception:
-        pass  # Email is best-effort
+    except Exception as e:
+        logger.warning(
+            "Failed to send invite email to %s for org %s: %s",
+            req.email,
+            org_id,
+            e,
+        )  # Email is best-effort
 
     return {
         "status": "invite_sent",
