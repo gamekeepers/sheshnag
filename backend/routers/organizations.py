@@ -622,7 +622,7 @@ def invite_member(
         join_link = f"{frontend_url}/join?token={token}"
         org = db.query(Organization).filter(Organization.id == org_id).first()
         org_name = org.name if org else "an organization"
-        send_email(
+        sent = send_email(
             req.email,
             f"You're invited to join {org_name} on Sheshnag",
             f"{user.full_name} invited you to join '{org_name}' as {req.role}.\n\n"
@@ -630,6 +630,12 @@ def invite_member(
             f"This invite expires in 7 days.\n"
             f"If you don't have an account, sign up first, then use the link above.",
         )
+        if not sent:
+            logger.warning(
+                "Failed to send invite email to %s for org %s: send_email returned False",
+                req.email,
+                org_id,
+            )  # Email is best-effort
     except Exception as e:
         logger.warning(
             "Failed to send invite email to %s for org %s: %s",
