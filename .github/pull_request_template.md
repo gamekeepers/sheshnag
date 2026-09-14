@@ -1,3 +1,5 @@
+> **Base branch must be `develop`.** PRs into `main` are release merges from `develop` only.
+
 ## Description
 
 <!-- Brief description of the changes in this PR -->
@@ -15,6 +17,7 @@
 - [ ] **Local testing done** — I have verified the changes work correctly on my local machine.
 - [ ] **DB changes** — I have noted any database schema changes (migrations, new models, etc.) or confirmed there are none.
 - [ ] **Environment changes** — I have noted any environment variable additions/changes or confirmed there are none.
+- [ ] **Docs updated** — if this changes behaviour a guide describes, I updated it in this PR and ran `mkdocs build --strict`. If it changes nothing a reader would notice, I have said so.
 
 ## Notes
 

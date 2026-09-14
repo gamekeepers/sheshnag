@@ -57,11 +57,13 @@ _ENV_MAP: Dict[str, str] = {
     "runtime": "DAEMON_RUNTIME",
     "inference_timeout": "DAEMON_INFERENCE_TIMEOUT",
     "heartbeat_interval": "DAEMON_HEARTBEAT_INTERVAL",
+    "progress_interval_seconds": "DAEMON_PROGRESS_INTERVAL_SECONDS",
+    "max_concurrent_prompts": "DAEMON_MAX_CONCURRENT_PROMPTS",
 }
 
 # Fields that need type coercion from string env vars
-_INT_FIELDS = frozenset({"poll_interval", "heartbeat_interval"})
-_FLOAT_FIELDS = frozenset({"vram_gb", "inference_timeout"})
+_INT_FIELDS = frozenset({"poll_interval", "heartbeat_interval", "max_concurrent_prompts"})
+_FLOAT_FIELDS = frozenset({"vram_gb", "inference_timeout", "progress_interval_seconds"})
 
 
 def _read_env() -> Dict[str, Any]:
@@ -115,10 +117,12 @@ class DaemonConfig(BaseModel):
         api_key:        Org worker API key for authentication (spec §8.0/§17).
                         Created in the platform dashboard; required to register.
         gpu_name:       Human-readable GPU model name for registration (spec §8).
-        vram_gb:        GPU VRAM in gigabytes for registration (spec §8).
+        vram_gb:        Advertised GPU memory in GB. When > 0 it overrides
+                        probing in both registration and every heartbeat.
         models:         List of model names available on this worker (spec §8).
         runtime:        Inference runtime type — "ollama" (default) or "vllm" .
         inference_timeout: Per-prompt inference timeout in seconds (any runtime).
+        max_concurrent_prompts: Prompts executed concurrently per job.
     """
 
     worker_id: str = Field(default_factory=_generate_worker_id)
@@ -141,9 +145,16 @@ class DaemonConfig(BaseModel):
 
     # ── Executor tuning ──────────────────────────────────────────
     inference_timeout: float = Field(default=300.0, gt=0, description="Per-prompt timeout in seconds, must be > 0")
+    max_concurrent_prompts: int = Field(
+        default=8, gt=0,
+        description="Prompts executed concurrently per job, must be > 0",
+    )
 
     # ── Heartbeats & Progress ────────────────────────────────────
     heartbeat_interval: int = Field(default=30, gt=0)
+    progress_interval_seconds: float = Field(
+        default=5.0, gt=0, description="Minimum seconds between progress reporting roundtrips"
+    )
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> DaemonConfig:

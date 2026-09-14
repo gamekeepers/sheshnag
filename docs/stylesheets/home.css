@@ -1,0 +1,297 @@
+/* Landing page — ported from the inline styles in app/page.js so the docs site
+   and the product look like the same thing. Only loaded where overrides/home.html
+   is the template.
+
+   The design is light by nature (paper background, ink text). Material ships a
+   dark-mode toggle, so every colour below is re-stated for the slate scheme at
+   the bottom of this file rather than left to invert badly. */
+
+.sn-home {
+  --sn-ink: #16182d;
+  --sn-muted: #5c5f73;
+  --sn-paper: #faf8f5;
+  --sn-line: rgba(22, 24, 45, 0.12);
+  --sn-card: #ffffff;
+  --sn-accent: #4a4fa3;
+  --sn-faint: rgba(22, 24, 45, 0.35);
+
+  background: var(--sn-paper);
+  color: var(--sn-ink);
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  margin: -1.5rem -.8rem 0;   /* bleed past Material's article padding */
+  padding-bottom: 1px;
+}
+
+/* ── Hero ─────────────────────────────────────────────────────────── */
+
+.sn-hero {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 96px 24px 70px;
+  text-align: center;
+}
+
+.sn-hero__glyphs {
+  color: var(--sn-muted);
+  font-size: 18px;
+  letter-spacing: 0.35em;
+  margin-bottom: 24px;
+}
+
+.sn-hero__rule {
+  width: 200px;
+  height: 1px;
+  background: var(--sn-line);
+  margin: 0 auto 24px;
+}
+
+.sn-hero__eyebrow {
+  font-size: 15px;
+  color: var(--sn-accent);
+  margin-bottom: 30px;
+}
+
+.sn-hero__title {
+  font-family: Georgia, "Times New Roman", serif;
+  font-weight: 400;
+  font-size: clamp(44px, 7vw, 76px);
+  line-height: 1.08;
+  letter-spacing: -0.01em;
+  margin: 0 0 28px;
+  color: var(--sn-ink);
+}
+
+.sn-hero__lede {
+  font-size: 19px;
+  color: var(--sn-muted);
+  line-height: 1.6;
+  margin: 0 auto 40px;
+  max-width: 560px;
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────── */
+
+.sn-actions {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.sn-btn {
+  display: inline-block;
+  padding: 12px 28px;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 500;
+  text-decoration: none;
+  border: 1px solid var(--sn-line);
+  background: transparent;
+  color: var(--sn-ink);
+  transition: transform .12s ease, box-shadow .12s ease, opacity .12s ease;
+}
+
+.sn-btn:hover,
+.sn-btn:focus-visible {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(22, 24, 45, 0.10);
+  color: var(--sn-ink);
+}
+
+.sn-btn--primary {
+  background: var(--sn-ink);
+  color: var(--sn-paper);
+  border-color: var(--sn-ink);
+}
+
+.sn-btn--primary:hover,
+.sn-btn--primary:focus-visible {
+  color: var(--sn-paper);
+  opacity: .92;
+}
+
+/* ── Models strip ─────────────────────────────────────────────────── */
+
+.sn-strip {
+  border-top: 1px solid var(--sn-line);
+  border-bottom: 1px solid var(--sn-line);
+  background: var(--sn-card);
+  padding: 26px 24px;
+}
+
+.sn-strip__models {
+  display: flex;
+  gap: 42px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.sn-strip__models span {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--sn-faint);
+  letter-spacing: 0.02em;
+}
+
+/* ── Sections ─────────────────────────────────────────────────────── */
+
+.sn-label {
+  font-size: 13px;
+  letter-spacing: 0.18em;
+  color: var(--sn-muted);
+  text-transform: uppercase;
+  text-align: center;
+  margin-bottom: 14px;
+}
+
+.sn-section {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 80px 24px 40px;
+}
+
+.sn-h2 {
+  font-family: Georgia, serif;
+  font-weight: 400;
+  font-size: clamp(30px, 4vw, 44px);
+  text-align: center;
+  margin: 0 0 14px;
+  color: var(--sn-ink);
+}
+
+.sn-h2--large { font-size: clamp(34px, 5vw, 54px); }
+
+.sn-sub {
+  text-align: center;
+  color: var(--sn-muted);
+  font-size: 17px;
+  margin: 0 0 48px;
+}
+
+/* ── Cards ────────────────────────────────────────────────────────── */
+
+.sn-grid { display: grid; gap: 18px; }
+.sn-grid--4 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.sn-grid--3 { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.sn-grid--split { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-items: stretch; }
+
+.sn-stack { display: grid; gap: 18px; }
+
+.sn-card {
+  background: var(--sn-card);
+  border: 1px solid var(--sn-line);
+  border-radius: 18px;
+  padding: 26px 24px;
+}
+
+.sn-card h3 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 10px;
+  color: var(--sn-ink);
+}
+
+.sn-card p {
+  font-size: 14.5px;
+  color: var(--sn-muted);
+  line-height: 1.65;
+  margin: 0;
+}
+
+.sn-card code {
+  background: rgba(22, 24, 45, 0.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: .9em;
+  color: inherit;
+}
+
+/* ── Before/after code panel ──────────────────────────────────────── */
+
+.sn-code {
+  background: var(--sn-ink);
+  color: #e9e9f2;
+  border-radius: 18px;
+  padding: 28px 26px;
+  font-family: "SF Mono", "Fira Code", ui-monospace, monospace;
+  font-size: 14.5px;
+  line-height: 2;
+  overflow-x: auto;
+}
+
+.sn-code__label {
+  color: rgba(233, 233, 242, 0.45);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  margin-bottom: 10px;
+}
+
+.sn-code__label--spaced { margin: 18px 0 10px; }
+.sn-code__before { color: #f3a0a0; }
+.sn-code__after  { color: #a8e6b8; }
+.sn-code__key    { color: #9db8ee; margin-top: 4px; }
+
+.sn-code__note {
+  color: rgba(233, 233, 242, 0.4);
+  margin-top: 16px;
+  font-size: 13px;
+}
+
+/* ── Closing call to action ───────────────────────────────────────── */
+
+.sn-cta {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 80px 24px 90px;
+  text-align: center;
+}
+
+/* ── The markdown fork rendered beneath the landing ───────────────── */
+
+.sn-home-body {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 24px 40px;
+}
+
+/* ── Dark scheme ──────────────────────────────────────────────────── */
+
+[data-md-color-scheme="slate"] .sn-home {
+  --sn-ink: #e8e8f0;
+  --sn-muted: #9a9db4;
+  --sn-paper: #14151f;
+  --sn-line: rgba(232, 232, 240, 0.14);
+  --sn-card: #1c1d2a;
+  --sn-accent: #a8abe8;
+  --sn-faint: rgba(232, 232, 240, 0.32);
+}
+
+[data-md-color-scheme="slate"] .sn-btn--primary {
+  background: var(--sn-ink);
+  color: #14151f;
+  border-color: var(--sn-ink);
+}
+
+[data-md-color-scheme="slate"] .sn-btn--primary:hover {
+  color: #14151f;
+}
+
+/* The before/after panel is already dark; give it an edge so it does not
+   dissolve into the page. */
+[data-md-color-scheme="slate"] .sn-code {
+  background: #0f101a;
+  border: 1px solid var(--sn-line);
+}
+
+[data-md-color-scheme="slate"] .sn-card code {
+  background: rgba(232, 232, 240, 0.08);
+}
+
+/* ── Narrow screens ───────────────────────────────────────────────── */
+
+@media screen and (max-width: 600px) {
+  .sn-hero { padding: 56px 20px 48px; }
+  .sn-section { padding: 56px 20px 32px; }
+  .sn-strip__models { gap: 22px; }
+  .sn-strip__models span { font-size: 17px; }
+}

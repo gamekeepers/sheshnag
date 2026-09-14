@@ -43,6 +43,28 @@ class RequestCounts(BaseModel):
     failed: int = 0
 
 
+class UsageStats(BaseModel):
+    """Additive extension to OpenAI Batch object for token accounting (spec §16)."""
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+
+
+class UsageRecordOut(BaseModel):
+    """Per-prompt usage record for GET /v1/batches/{id}/usage."""
+    id: str
+    batch_id: str
+    custom_id: str
+    model: Optional[str] = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    created_at: int
+
+    class Config:
+        from_attributes = True
+
+
 class BatchOut(BaseModel):
     id: str
     object: str = "batch"
@@ -57,11 +79,23 @@ class BatchOut(BaseModel):
     created_at: int
     expires_at: Optional[int] = None
     requested_at: Optional[int] = None
+    # When a worker actually picked the job up. The Batch row has no column for
+    # it — the moment is recorded on BatchAssignment.assigned_at — so callers
+    # that want the full lifecycle pass it in. None means "not dispatched yet",
+    # which is the difference between a batch that is queued and one that is
+    # running, and the two look identical without it.
+    in_progress_at: Optional[int] = None
     completed_at: Optional[int] = None
     request_counts: RequestCounts = RequestCounts()
+    usage: Optional[UsageStats] = None
 
     @classmethod
-    def from_batch(cls, batch):
+    def from_batch(cls, batch, in_progress_at: Optional[int] = None):
+        has_usage = (
+            getattr(batch, "prompt_tokens", None) is not None
+            or getattr(batch, "completion_tokens", None) is not None
+            or getattr(batch, "total_tokens", None) is not None
+        )
         return cls(
             id=batch.id,
             endpoint=batch.endpoint,
@@ -75,11 +109,21 @@ class BatchOut(BaseModel):
             created_at=batch.created_at,
             expires_at=batch.expires_at,
             requested_at=batch.requested_at,
+            in_progress_at=in_progress_at,
             completed_at=batch.completed_at,
             request_counts=RequestCounts(
                 total=batch.request_counts_total or 0,
                 completed=batch.request_counts_completed or 0,
                 failed=batch.request_counts_failed or 0,
+            ),
+            usage=(
+                UsageStats(
+                    prompt_tokens=batch.prompt_tokens,
+                    completion_tokens=batch.completion_tokens,
+                    total_tokens=batch.total_tokens,
+                )
+                if has_usage
+                else None
             ),
         )
 
@@ -94,9 +138,15 @@ class BatchSummary(BaseModel):
     created_at: int
     completed_at: Optional[int] = None
     request_counts: RequestCounts = RequestCounts()
+    usage: Optional[UsageStats] = None
 
     @classmethod
     def from_batch(cls, batch):
+        has_usage = (
+            getattr(batch, "prompt_tokens", None) is not None
+            or getattr(batch, "completion_tokens", None) is not None
+            or getattr(batch, "total_tokens", None) is not None
+        )
         return cls(
             id=batch.id,
             endpoint=batch.endpoint,
@@ -108,6 +158,15 @@ class BatchSummary(BaseModel):
                 total=batch.request_counts_total or 0,
                 completed=batch.request_counts_completed or 0,
                 failed=batch.request_counts_failed or 0,
+            ),
+            usage=(
+                UsageStats(
+                    prompt_tokens=batch.prompt_tokens,
+                    completion_tokens=batch.completion_tokens,
+                    total_tokens=batch.total_tokens,
+                )
+                if has_usage
+                else None
             ),
         )
 
@@ -168,7 +227,8 @@ class WorkerHeartbeatRequest(BaseModel):
     gpu_utilization: float = 0.0
     gpu_memory_used_gb: float = 0.0
     vram_total_gb: float = 0.0
-    vram_available_gb: float = 0.0
+    # None = unknown (unified memory has no machine-wide "in use" counter).
+    vram_available_gb: Optional[float] = None
     loaded_models: List[str] = []
     # Optional name → digest map for the loaded models (additive; older
     # daemons omit it and fall back to name matching).
@@ -203,6 +263,12 @@ class ResetPasswordRequest(BaseModel):
     new_password: NewPassword
 
 
+class AllowedDomainCreate(BaseModel):
+    domain: str                          # bare domain, e.g. "dau.ac.in"
+    include_subdomains: bool = False
+    note: Optional[str] = None
+
+
 class GoogleAuthRequest(BaseModel):
     id_token: str   # Google ID token from the frontend
 
@@ -219,7 +285,8 @@ class GpuInfo(BaseModel):
     name: str
     vram_gb: float
     driver: Optional[str] = None
-    cuda: Optional[str] = None
+    cuda: Optional[str] = None      # NVIDIA only
+    rocm: Optional[str] = None      # AMD only (spec §8.4 worker_gpus.rocm)
 
 
 class RuntimeInfo(BaseModel):

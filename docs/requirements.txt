@@ -1,0 +1,14 @@
+# Documentation site dependencies — MkDocs only.
+#
+# Deliberately separate from backend/requirements.txt and daemon/pyproject.toml:
+# nothing here is needed to run Sheshnag, and nothing there is needed to build
+# the docs. Install into its own venv:
+#
+#     python3 -m venv .venv-docs
+#     .venv-docs/bin/pip install -r docs/requirements.txt
+#     .venv-docs/bin/mkdocs serve
+#
+# Pinned so a docs build cannot break from an upstream release.
+
+mkdocs==1.6.1
+mkdocs-material==9.7.7

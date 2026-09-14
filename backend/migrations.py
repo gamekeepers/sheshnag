@@ -1,252 +1,149 @@
-"""
-Startup migrations for pre-existing SQLite databases.
+"""Forward schema migration for existing databases.
 
-`Base.metadata.create_all()` only creates missing tables — it never adds
-columns to existing tables, backfills data, or drops anything. Everything
-of that kind lives here and runs once at app startup, idempotently.
-
-Current steps:
-1. Add columns introduced after a table already shipped.
-2. Backfill the normalized inventory tables (worker_runtimes,
-   runtime_models, worker_gpus — spec §8.2–8.4) from the legacy JSON
-   columns on workers, then drop those columns.
-3. Drop the long-orphaned provider_capabilities table.
+`Base.metadata.create_all()` creates missing tables but never adds columns to
+tables that already exist (see docs/develop.md), so each model change that
+adds a column ships an entry here. Migrations are pure-ADD and idempotent,
+run once at startup after `create_all()`, and apply on both Postgres and
+SQLite (the two dialects in the deployment matrix).
 """
-import json
+
 import logging
-import uuid
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
+from sqlalchemy import Integer, String
+
+from database import get_engine
+from models import Base, Batch, BatchAssignment, UsageRecord  # noqa: F401 — ensure models are registered
 
 logger = logging.getLogger(__name__)
 
-# Columns added after their table first shipped: table -> [(name, ddl)]
-_NEW_COLUMNS = {
-    "batches": [("attempts", "INTEGER DEFAULT 0"),("api_key_id", "TEXT"),],
-    "workers": [
-        ("activity", "TEXT DEFAULT 'idle'"),
-        ("vram_total_gb", "REAL"),
-        ("vram_available_gb", "REAL"),
-        ("api_key_id", "TEXT"),
-    ],
-    "runtime_models": [("digest", "TEXT")],
-    "model_catalog": [
-        ("source_type", "TEXT"),
-        ("source_ref", "TEXT"),
-        ("source_revision", "TEXT"),
-        ("homepage_url", "TEXT"),
-        ("task_type", "TEXT"),
-        ("parameter_size", "TEXT"),
-        ("context_length", "INTEGER"),
-    ],
-    "users": [
-        ("platform_role", "TEXT DEFAULT 'user'"),
-        ("is_active", "BOOLEAN DEFAULT 1"),
-        ("must_change_password", "BOOLEAN DEFAULT 0"),
-        ("google_id", "TEXT"),
-        ("auth_provider", "TEXT DEFAULT 'local'"),
-    ],
-    "api_keys": [
-        ("key_type", "TEXT DEFAULT 'worker'"),
-        ("created_by_user_id", "TEXT"),
-        ("key_prefix", "TEXT"),
-        ("key_hash", "TEXT"),
-        ("status", "TEXT DEFAULT 'active'"),
-        ("last_used_at", "INTEGER"),
-        ("expires_at", "INTEGER"),
-        ("revoked_at", "INTEGER"),
-    ],
-}
 
-# Legacy JSON columns on workers, replaced by the normalized tables.
-_LEGACY_WORKER_COLUMNS = ("gpus", "runtimes", "loaded_models")
+class _Migration:
+    def __init__(self, name, table, column, coltype):
+        self.name = name
+        self.table = table
+        self.column = column
+        self.coltype = coltype
 
-# Descriptive columns pruned from runtime_models (moved to model_catalog).
-# Dropped from pre-existing DBs; harmless if absent (fresh DB never had them).
-_DROPPED_RUNTIME_MODEL_COLUMNS = (
-    "revision", "task_type", "parameter_count", "quantization",
-    "context_length", "size_bytes", "license", "local_path",
-)
+    def apply(self, conn):
+        coltype = self.coltype.compile(dialect=conn.dialect)
+
+        # Postgres has idempotent DDL, so use it rather than check-then-ALTER:
+        # with more than one uvicorn worker booting at once, both would see the
+        # column missing and the loser of the race would fail on "column
+        # already exists".
+        if conn.dialect.name == "postgresql":
+            conn.execute(text(
+                f"ALTER TABLE {self.table} ADD COLUMN IF NOT EXISTS "
+                f"{self.column} {coltype}"
+            ))
+            logger.info("Migration ensured: %s", self.name)
+            return
+
+        # SQLite has no IF NOT EXISTS on ADD COLUMN — and no concurrent boot to
+        # race with either, so check-then-apply is safe here.
+        existing = {c["name"] for c in inspect(conn).get_columns(self.table)}
+        if self.column in existing:
+            return
+        conn.execute(text(
+            f"ALTER TABLE {self.table} ADD COLUMN {self.column} {coltype}"
+        ))
+        logger.info("Migration applied: %s", self.name)
 
 
-def _columns(conn, table: str) -> list:
-    return [row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))]
-
-
-# Indexes added after their table first shipped. ALTER TABLE ADD COLUMN
-# cannot carry UNIQUE, so uniqueness on late columns lives here. Safe on
-# existing DBs while the column is all-NULL (SQLite unique indexes allow
-# multiple NULLs); a genuine duplicate fails loudly at startup, which is
-# the correct outcome.
-_NEW_INDEXES = [
-    "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_google_id ON users(google_id)",
+MIGRATIONS = [
+    _Migration("batches.prompt_tokens", "batches", "prompt_tokens", Integer()),
+    _Migration("batches.completion_tokens", "batches", "completion_tokens", Integer()),
+    _Migration("batches.total_tokens", "batches", "total_tokens", Integer()),
+    # Added with the provider-record snapshot on BatchAssignment. Modelled
+    # NOT NULL, but added nullable here: existing rows predate the columns and
+    # have nothing to backfill from. Without these, every /workers/poll INSERT
+    # raises UndefinedColumn on a database created before they landed — the
+    # whole queue stops, because poll is the only path out of "validated".
+    _Migration("batch_assignments.org_id",
+               "batch_assignments", "org_id", String()),
+    _Migration("batch_assignments.worker_hostname",
+               "batch_assignments", "worker_hostname", String()),
 ]
 
 
-def _add_missing_indexes(conn) -> None:
-    for ddl in _NEW_INDEXES:
-        conn.execute(text(ddl))
-
-
-def _normalize_user_emails(conn) -> None:
-    """One-time lowercase/trim of users.email so lookups match the
-    normalized form all auth endpoints now use. Accounts differing only
-    by case are left untouched (merging them is a human decision)."""
-    rows = conn.execute(text(
-        "SELECT id, email FROM users WHERE email != lower(trim(email))"
-    )).fetchall()
-    for uid, email in rows:
-        target = email.strip().lower()
-        clash = conn.execute(
-            text("SELECT id FROM users WHERE email = :e AND id != :id"),
-            {"e": target, "id": uid},
-        ).first()
-        if clash:
-            logger.warning(
-                "users.email case-collision: %s (%s) vs %s — left as-is",
-                uid, email, clash[0],
-            )
-            continue
-        conn.execute(
-            text("UPDATE users SET email = :e WHERE id = :id"),
-            {"e": target, "id": uid},
-        )
-
-
-def _add_missing_columns(conn) -> None:
-    for table, columns in _NEW_COLUMNS.items():
-        existing = _columns(conn, table)
-        if not existing:
-            continue
-        for name, ddl in columns:
-            if name not in existing:
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
-
-
-def _backfill_inventory(conn) -> None:
-    """Move workers.gpus/runtimes/loaded_models JSON into the normalized
-    tables, then drop the JSON columns.
-
-    Only runs when the legacy columns still exist. Raw SQL throughout —
-    the ORM models no longer know about the old columns.
+def ensure_schema(engine=None):
+    """Add any columns the deployed database does not have yet.
+    Raises on the first failure rather than continuing into a boot that cannot
+    serve reads.
     """
-    worker_cols = _columns(conn, "workers")
-    legacy = [c for c in _LEGACY_WORKER_COLUMNS if c in worker_cols]
-    if not legacy:
-        return
+    engine = engine or get_engine()
 
-    def new_id(prefix):
-        return f"{prefix}-{uuid.uuid4().hex[:24]}"
-
-    select_cols = ", ".join(["id"] + legacy)
-    rows = conn.execute(text(f"SELECT {select_cols} FROM workers")).fetchall()
-    migrated = 0
-    for row in rows:
-        data = dict(zip(["id"] + legacy, row))
-        worker_id = data["id"]
-
-        def parse(col):
-            try:
-                return json.loads(data.get(col) or "[]")
-            except (json.JSONDecodeError, TypeError):
-                return []
-
-        loaded = set(parse("loaded_models"))
-
-        for gpu in parse("gpus"):
-            if not isinstance(gpu, dict):
-                continue
-            conn.execute(
-                text(
-                    "INSERT OR IGNORE INTO worker_gpus "
-                    "(id, worker_id, gpu_index, vendor, name, vram_gb, driver, cuda, updated_at) "
-                    "VALUES (:id, :wid, :idx, :vendor, :name, :vram, :driver, :cuda, unixepoch())"
-                ),
-                {
-                    "id": new_id("gpu"), "wid": worker_id,
-                    "idx": gpu.get("index", 0), "vendor": gpu.get("vendor"),
-                    "name": gpu.get("name"), "vram": gpu.get("vram_gb"),
-                    "driver": gpu.get("driver"), "cuda": gpu.get("cuda"),
-                },
-            )
-
-        for rt in parse("runtimes"):
-            if not isinstance(rt, dict):
-                continue
-            rt_id = new_id("wrt")
-            conn.execute(
-                text(
-                    "INSERT OR IGNORE INTO worker_runtimes "
-                    "(id, worker_id, engine, base_url, api_protocol, status, created_at, updated_at) "
-                    "VALUES (:id, :wid, :engine, :url, 'openai-compatible', 'ready', unixepoch(), unixepoch())"
-                ),
-                {
-                    "id": rt_id, "wid": worker_id,
-                    "engine": rt.get("type", "ollama"),
-                    "url": rt.get("endpoint", ""),
-                },
-            )
-            for model in rt.get("models", []):
-                if not isinstance(model, str):
-                    continue
-                conn.execute(
-                    text(
-                        "INSERT OR IGNORE INTO runtime_models "
-                        "(id, runtime_id, name, runtime_model_id, status, loaded, created_at, updated_at) "
-                        "VALUES (:id, :rt, :name, :name, 'available', :loaded, unixepoch(), unixepoch())"
-                    ),
-                    {
-                        "id": new_id("rtm"), "rt": rt_id,
-                        "name": model, "loaded": model in loaded,
-                    },
-                )
-        migrated += 1
-
-    for col in legacy:
-        try:
-            conn.execute(text(f"ALTER TABLE workers DROP COLUMN {col}"))
-        except Exception:
-            # SQLite < 3.35 can't drop columns — orphaned columns are harmless.
-            logger.warning("Could not drop legacy column workers.%s", col)
-
-    if migrated:
-        logger.info("Backfilled inventory tables for %d workers", migrated)
-
-
-def _drop_pruned_columns(conn) -> None:
-    """Drop the descriptive columns pruned from runtime_models."""
-    existing = _columns(conn, "runtime_models")
-    if not existing:
-        return
-    for col in _DROPPED_RUNTIME_MODEL_COLUMNS:
-        if col not in existing:
-            continue
-        try:
-            conn.execute(text(f"ALTER TABLE runtime_models DROP COLUMN {col}"))
-        except Exception:
-            # SQLite < 3.35 can't drop columns — unused columns are harmless.
-            logger.warning("Could not drop runtime_models.%s", col)
-
-    # Legacy columns superseded by the personal-API-keys restructure.
-    for table, col in (("users", "role"),
-                       ("organizations", "owner_id"),
-                       ("api_keys", "key")):
-        if col not in _columns(conn, table):
-            continue
-        try:
-            conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {col}"))
-        except Exception:
-            # SQLite < 3.35 can't drop columns — unused columns are harmless.
-            logger.warning("Could not drop %s.%s", table, col)
-
-
-def run_startup_migrations(engine) -> None:
-    """Run all idempotent schema/data migrations. Call after create_all."""
     with engine.connect() as conn:
-        _add_missing_columns(conn)
-        _add_missing_indexes(conn)
-        _normalize_user_emails(conn)
-        _backfill_inventory(conn)
-        _drop_pruned_columns(conn)
-        conn.execute(text("DROP TABLE IF EXISTS provider_capabilities"))
-        conn.commit()
+        existing_tables = set(inspect(conn).get_table_names())
+
+    for m in MIGRATIONS:
+        if m.table not in existing_tables:
+            continue
+        try:
+            with engine.begin() as conn:
+                m.apply(conn)
+        except Exception:
+            logger.exception("Schema migration %s failed", m.name)
+            raise
+
+    verify_schema(engine)
+
+
+class SchemaDriftError(RuntimeError):
+    """The live database is missing something the models declare."""
+
+
+def schema_drift(engine=None):
+    """Columns and tables the models declare but the database does not have.
+
+    Returns (missing_tables, missing_columns) as sorted lists of names.
+    Columns the database has but the models no longer declare are ignored:
+    that direction is normal during a rollback and breaks nothing.
+    """
+    engine = engine or get_engine()
+    insp = inspect(engine)
+    live_tables = set(insp.get_table_names())
+
+    missing_tables, missing_columns = [], []
+    for name, table in Base.metadata.tables.items():
+        if name not in live_tables:
+            missing_tables.append(name)
+            continue
+        live = {c["name"] for c in insp.get_columns(name)}
+        missing_columns.extend(
+            f"{name}.{col.name}" for col in table.columns if col.name not in live
+        )
+    return sorted(missing_tables), sorted(missing_columns)
+
+
+def verify_schema(engine=None):
+    """Fail the boot if the database is missing anything the models declare.
+
+    MIGRATIONS is maintained by hand, so a model column shipped without an
+    entry here is invisible in development — `create_all()` builds it into
+    every fresh database — and missing only where the table predates the
+    change, which in practice means production alone. The failure then
+    surfaces as a 500 from whichever endpoint touches the column first, with
+    nothing naming the real cause. `batch_assignments.org_id` /
+    `.worker_hostname` stalled every batch in the queue that way.
+
+    Raising here converts that into a deploy that refuses to start and says
+    exactly which column is missing.
+    """
+    missing_tables, missing_columns = schema_drift(engine)
+    if not missing_tables and not missing_columns:
+        return
+
+    detail = []
+    if missing_tables:
+        detail.append(f"tables: {', '.join(missing_tables)}")
+    if missing_columns:
+        detail.append(f"columns: {', '.join(missing_columns)}")
+    message = (
+        "Database schema is behind the models — " + "; ".join(detail) + ". "
+        "Add a _Migration entry in backend/migrations.py for each missing "
+        "column (tables come from Base.metadata.create_all)."
+    )
+    logger.error(message)
+    raise SchemaDriftError(message)

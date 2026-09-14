@@ -1,0 +1,132 @@
+{#
+  Custom homepage for the documentation site.
+
+  The markup below is a port of app/page.js — the Next.js landing page — so the
+  project has one look whether someone arrives at the app or at the docs. It is
+  static HTML here: the React version's only dynamic behaviour was a
+  logged-in check that swapped the nav buttons, and a docs site has nothing to
+  be logged into. The calls to action point into the guides instead.
+
+  Styles live in docs/stylesheets/home.css. Material's header and navigation are
+  deliberately kept, so a reader can always reach the docs from here.
+
+  The page's own markdown (docs/index.md — the audience fork) renders below the
+  hero via {{ super() }}, so the routing table is not duplicated into this file.
+#}
+{% extends "main.html" %}
+
+{% block content %}
+<div class="sn-home">
+
+  <header class="sn-hero">
+    <div class="sn-hero__glyphs">❋ ❋ ❋</div>
+    <div class="sn-hero__rule"></div>
+    <div class="sn-hero__eyebrow">The shared GPU compute platform</div>
+    <h1 class="sn-hero__title">Idle GPUs, working together</h1>
+    <p class="sn-hero__lede">
+      Built on pooled compute. Powered by open-weight models.<br>
+      Delivering batch AI at campus scale.
+    </p>
+    <div class="sn-actions">
+      <a class="sn-btn sn-btn--primary" href="{{ 'using-sheshnag/' | url }}">Submit a batch</a>
+      <a class="sn-btn" href="{{ 'provider/' | url }}">Lend a GPU</a>
+      <a class="sn-btn" href="{{ 'self-host/' | url }}">Host it yourself</a>
+    </div>
+  </header>
+
+  <section class="sn-strip">
+    <div class="sn-label">Runs open-weight models</div>
+    <div class="sn-strip__models">
+      <span>Llama 3</span><span>Mistral</span><span>Qwen</span>
+      <span>Gemma</span><span>Phi</span><span>DeepSeek</span>
+    </div>
+  </section>
+
+  <section class="sn-section" id="platform">
+    <div class="sn-label">Platform</div>
+    <h2 class="sn-h2">Everything a batch needs</h2>
+    <p class="sn-sub">From upload to download, the pool does the rest.</p>
+    <div class="sn-grid sn-grid--4">
+      <div class="sn-card">
+        <h3>Batch API</h3>
+        <p>Upload a JSONL of prompts, submit a batch, download results. OpenAI-compatible — existing code migrates by changing one line.</p>
+      </div>
+      <div class="sn-card">
+        <h3>Distributed GPU workers</h3>
+        <p>Jobs route to real GPUs pooled from labs and clusters. Workers pull work, so they run anywhere — even behind campus NAT.</p>
+      </div>
+      <div class="sn-card">
+        <h3>Organizations &amp; teams</h3>
+        <p>A lab is an org. Owner, admin and viewer roles, shared worker keys, and every job attributable to the team that ran it.</p>
+      </div>
+      <div class="sn-card">
+        <h3>Usage analytics</h3>
+        <p>Requests, models, and per-worker contribution tracked from day one — the utilization evidence your institution wants.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="sn-section" id="developers">
+    <div class="sn-label">Developers</div>
+    <h2 class="sn-h2">One-line migration</h2>
+    <div class="sn-grid sn-grid--split">
+      <div class="sn-code">
+        <div class="sn-code__label">BEFORE</div>
+        <div class="sn-code__before">base_url = "https://api.openai.com/v1"</div>
+        <div class="sn-code__label sn-code__label--spaced">AFTER</div>
+        <div class="sn-code__after">base_url = "https://your-deployment/v1"</div>
+        <div class="sn-code__key">api_key = "gk-your_personal_key"</div>
+        <div class="sn-code__note"># Everything else stays the same</div>
+      </div>
+      <div class="sn-stack">
+        <div class="sn-card">
+          <h3>OpenAI-compatible REST</h3>
+          <p>Files and batches, verbatim. Your SDK already speaks it.</p>
+        </div>
+        <div class="sn-card">
+          <h3>Model catalogue</h3>
+          <p>Pick a pinned model id from <code>/v1/models</code> — copy, paste, run.</p>
+        </div>
+        <div class="sn-card">
+          <h3>Dashboard</h3>
+          <p>Submit, track, and download without touching curl.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sn-section" id="providers">
+    <div class="sn-label">Providers</div>
+    <h2 class="sn-h2">Built for machines that come and go</h2>
+    <div class="sn-grid sn-grid--3">
+      <div class="sn-card">
+        <h3>Pull-based by design</h3>
+        <p>Workers poll for work and disappear without ceremony. Intermittent lab machines are a feature, not a failure.</p>
+      </div>
+      <div class="sn-card">
+        <h3>Fault tolerant</h3>
+        <p>Silent workers are detected in minutes and their jobs requeued automatically. Batches survive the hardware they run on.</p>
+      </div>
+      <div class="sn-card">
+        <h3>Curated model catalogue</h3>
+        <p>Every servable model is a pinned artifact — weights, quantization, runtime. Reproducible by construction.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="sn-cta">
+    <h2 class="sn-h2 sn-h2--large">Put idle GPUs to work</h2>
+    <p class="sn-sub">It is software you host — a commons, not a cloud bill.</p>
+    <div class="sn-actions">
+      <a class="sn-btn sn-btn--primary" href="{{ 'self-host/' | url }}">Read the self-host guide</a>
+      <a class="sn-btn" href="{{ 'develop/' | url }}">Work on the code</a>
+    </div>
+  </section>
+
+</div>
+
+{# The audience fork from docs/index.md. #}
+<div class="sn-home-body">
+  {{ super() }}
+</div>
+{% endblock %}

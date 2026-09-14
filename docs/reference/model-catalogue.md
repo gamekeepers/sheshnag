@@ -1,5 +1,7 @@
 # Model catalogue
 
+*Last updated 2026-08-02. Moved into its current location on 2026-08-26 and **not** re-verified against code since.*
+
 The set of models a user may select for a batch. `body.model` in a submitted
 JSONL is a **catalogue id** — a stable platform slug — not a raw runtime tag.
 
@@ -139,4 +141,4 @@ onto a worker that lacks it — never run an arbitrary id.
 
 - Design/decisions (vault): *Sheshnag - Batch processing via Ollama runtime*,
   *Sheshnag - Digest-based model matching*.
-- Spec: v1-spec.md §5 (workloads) and §8.3 (model metadata).
+- Design intent for workloads and model metadata lived in the v1 spec, which is no longer published; the behaviour it described is documented above and in [API reference](api.md).

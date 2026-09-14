@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from typing import Optional, List, Callable, Awaitable
 
 import httpx
@@ -9,6 +10,37 @@ from daemon.executors.base import BaseExecutor
 from daemon.models import CompletionResult, PromptRequest
 
 logger = logging.getLogger(__name__)
+
+
+def _split_tokens(total: int, parts: int, index: int) -> int:
+    """Share a coalesced chunk's token count across its rows, losing none.
+
+    Ollama bills one number for the whole /api/embed call, but each row is
+    reported separately. Plain floor division drops up to parts-1 tokens per
+    chunk, which makes every batch rollup systematically low. The remainder
+    goes to the first rows instead, so the parts always sum back to total.
+    """
+    if parts <= 0:
+        return 0
+    base, remainder = divmod(int(total), parts)
+    return base + (1 if index < remainder else 0)
+
+# App-server signatures that mean something other than Ollama is answering on
+# this port. Ollama itself sends no Server header, and a reverse proxy in front
+# of a working Ollama is fine — so we only warn on servers that host
+# applications directly. See issue #80 (aiohttp app squatting on :11434).
+NON_OLLAMA_SERVER_SIGNATURES = (
+    "aiohttp", "uvicorn", "gunicorn", "werkzeug", "python/",
+    "kestrel", "jetty", "tomcat", "coyote", "express",
+)
+
+# How long a *failed* version probe is cached before it is retried. Issue #83
+# is about not paying a 5s connect timeout on every prompt of a 10k batch, so
+# the failure has to be cached — but not for the life of the process. The
+# daemon is explicitly allowed to start before Ollama is up (see
+# Worker._wait_for_executor), and structured outputs have to start working
+# once it does. One probe per minute is ~0.08% of the pre-fix cost.
+VERSION_PROBE_RETRY_SECONDS = 60.0
 
 def parse_version(version_str: Optional[str]) -> tuple[int, ...]:
     """Semantic version parser that handles pre-releases and v prefix."""
@@ -49,17 +81,35 @@ class OllamaExecutor(BaseExecutor):
         GET  /api/version  - get version info
     """
     
-    def __init__(self, base_url: str = "http://localhost:11434", timeout: float = 300.0):
+    #: Ollama's /api/embed accepts a list of inputs in one request.
+    embedding_chunk_size: int = 64
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        timeout: float = 300.0,
+        max_concurrent: int = 8,
+    ):
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._max_concurrent = max_concurrent
         self._client: Optional[httpx.AsyncClient] = None
         self.version: Optional[str] = None
+        self._server_header_warned = False
+        self._version_probed_at: Optional[float] = None
         
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
+            # Sized from the pool: one connection per in-flight prompt, plus
+            # headroom for the health/version probes that run alongside them.
+            pool_limit = self._max_concurrent + 4
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=httpx.Timeout(self._timeout),
+                limits=httpx.Limits(
+                    max_connections=pool_limit,
+                    max_keepalive_connections=pool_limit,
+                ),
             )
         return self._client
     
@@ -91,8 +141,10 @@ class OllamaExecutor(BaseExecutor):
                     error=f"EMBEDDING_FAILED: {e}"
                 )
 
-        # Lazy check version if not set (chat path only — gates structured outputs)
-        if self.version is None:
+        # Lazy version probe (chat path only — gates structured outputs).
+        # A successful probe is cached for the process; a failed one is cached
+        # only for VERSION_PROBE_RETRY_SECONDS so a recovering server heals.
+        if self._should_probe_version():
             await self.health_check()
 
         response_format = prompt.body.get("response_format")
@@ -103,7 +155,11 @@ class OllamaExecutor(BaseExecutor):
                 logger.error("Ollama version undetermined. Server might be unreachable.")
                 return CompletionResult(
                     custom_id=prompt.custom_id,
-                    error="OLLAMA_UNREACHABLE: could not determine Ollama version — server may be down"
+                    error=(
+                        "OLLAMA_UNREACHABLE: could not determine Ollama version — "
+                        "server may be down. The failed probe is cached; it retries "
+                        f"every {VERSION_PROBE_RETRY_SECONDS:.0f}s."
+                    )
                 )
             v_tuple = parse_version(self.version)
             if v_tuple < (0, 5, 0):
@@ -115,20 +171,24 @@ class OllamaExecutor(BaseExecutor):
                     error=f"VERSION_MISMATCH: Ollama version {self.version} < 0.5.0 does not support structured outputs"
                 )
 
-        ollama_body = self._translate_request(prompt.body)
-        
         try:
+            ollama_body = self._translate_request(prompt.body)
             response = await client.post("/api/chat", json=ollama_body)
             response.raise_for_status()
             
             openai_response = self._translate_response(response.json())
             
             # Post-inference Validation
+            choices = openai_response.get("choices", [])
+            if not choices:
+                logger.warning(f"Ollama response contains no choices for {prompt.custom_id}")
+                return CompletionResult(
+                    custom_id=prompt.custom_id,
+                    response=openai_response,
+                    error="EMPTY_RESPONSE: Response contains no choices"
+                )
+
             if response_format is not None:
-                # Extract message content
-                choices = openai_response.get("choices", [])
-                if not choices:
-                    raise ValueError("Response contains no choices")
                 content = choices[0].get("message", {}).get("content", "")
                 
                 # Parse JSON (for both loose and strict modes)
@@ -168,12 +228,144 @@ class OllamaExecutor(BaseExecutor):
                 error=str(e)
             )
     
+    def _should_probe_version(self) -> bool:
+        """Whether to probe /api/version before serving this prompt.
+
+        A known version is cached for the life of the executor. An unknown one
+        is re-probed at most once per VERSION_PROBE_RETRY_SECONDS, so a server
+        that was down at startup stops blocking structured outputs when it
+        comes back.
+        """
+        if self.version is not None:
+            return False
+        if self._version_probed_at is None:
+            return True
+        return (time.monotonic() - self._version_probed_at) >= VERSION_PROBE_RETRY_SECONDS
+
+    def can_coalesce_embedding(self, prompt: PromptRequest) -> bool:
+        """Only single-string inputs may share an /api/embed request.
+
+        A list-valued input is a valid OpenAI shape and nothing upstream
+        rejects it, but nesting it in a batched body either fails the whole
+        chunk or returns one embedding per *flattened* element — which
+        desynchronises the data[j] -> chunk[j] fan-out and hands later
+        custom_ids somebody else's vector. execute() handles these rows
+        correctly one at a time.
+        """
+        return (
+            prompt.url == "/v1/embeddings"
+            and isinstance(prompt.body.get("input"), str)
+        )
+
+    async def batch_execute(self, prompts: List[PromptRequest]) -> List[CompletionResult]:
+        """
+        Execute a batch of prompts, coalescing embeddings into single
+        /api/embed calls.
+
+        Chat prompts fall through to per-prompt execute(); the worker's pool
+        supplies their concurrency. Embeddings are chunked because Ollama
+        accepts a list of inputs in one request, which removes one HTTP round
+        trip per row.
+        """
+        embedding_prompts = [p for p in prompts if self.can_coalesce_embedding(p)]
+        per_prompt = [p for p in prompts if not self.can_coalesce_embedding(p)]
+
+        results_by_id = {}
+
+        for p in per_prompt:
+            results_by_id[p.custom_id] = await self.execute(p)
+
+        CHUNK_SIZE = self.embedding_chunk_size
+        client = self._get_client()
+        for i in range(0, len(embedding_prompts), CHUNK_SIZE):
+            chunk = embedding_prompts[i:i + CHUNK_SIZE]
+            inputs = [p.body.get("input", "") for p in chunk]
+            model = chunk[0].body.get("model", "")
+
+            coalesced_body = {"model": model, "input": inputs}
+            if "truncate" in chunk[0].body:
+                coalesced_body["truncate"] = chunk[0].body["truncate"]
+
+            try:
+                response = await client.post("/api/embed", json=coalesced_body)
+                response.raise_for_status()
+
+                openai_response = self._translate_embeddings_response(response.json())
+
+                # Fan the single response back out, one CompletionResult per row.
+                for j, p in enumerate(chunk):
+                    data = openai_response.get("data", [])
+                    if j < len(data):
+                        data_item = dict(data[j])
+                        data_item["index"] = 0
+                        usage = openai_response.get("usage", {})
+                        per_row_response = {
+                            "object": "list",
+                            "data": [data_item],
+                            "model": openai_response.get("model", model),
+                            "usage": {
+                                "prompt_tokens": _split_tokens(
+                                    usage.get("prompt_tokens", 0), len(chunk), j
+                                ),
+                                "total_tokens": _split_tokens(
+                                    usage.get("total_tokens", 0), len(chunk), j
+                                ),
+                            },
+                        }
+                        results_by_id[p.custom_id] = CompletionResult(
+                            custom_id=p.custom_id, response=per_row_response
+                        )
+                    else:
+                        # Fewer vectors came back than rows went out. Ask for
+                        # this one on its own rather than calling it failed.
+                        logger.warning(
+                            "Ollama returned no vector for %s in a coalesced "
+                            "chunk — retrying it individually", p.custom_id,
+                        )
+                        results_by_id[p.custom_id] = await self.execute(p)
+
+            except Exception as e:
+                # Ollama rejects the entire request if any single input is bad
+                # (an empty string, one input over the context limit), so a
+                # chunk failure says nothing about the other 63 rows. Retry
+                # them one at a time rather than failing them all: coalescing
+                # is a throughput optimisation and must not cost isolation the
+                # per-prompt path had.
+                logger.warning(
+                    "Ollama coalesced embedding call failed (%s) — retrying "
+                    "%d row(s) individually", e, len(chunk),
+                )
+                for p in chunk:
+                    results_by_id[p.custom_id] = await self.execute(p)
+
+        return [results_by_id[p.custom_id] for p in prompts]
+
     async def health_check(self) -> bool:
         """Check Ollama is running via GET /api/version and GET /api/tags."""
+        self._version_probed_at = time.monotonic()
         client = self._get_client()
         try:
             # Query version and cache it
             version_response = await client.get("/api/version", timeout=5.0)
+
+            server_header = version_response.headers.get("server", "")
+            if server_header and not self._server_header_warned:
+                # Latched: health_check() runs per startup retry and per prompt
+                # while version is unset, so log the header diagnosis only once.
+                self._server_header_warned = True
+                logger.info(f"Server header from {self._base_url}: {server_header}")
+                header_lc = server_header.lower()
+                if any(sig in header_lc for sig in NON_OLLAMA_SERVER_SIGNATURES):
+                    hint = (
+                        "Inference may fail even though metadata endpoints respond."
+                        if version_response.is_success
+                        else f"/api/version returned HTTP {version_response.status_code}."
+                    )
+                    logger.warning(
+                        f"Detected non-Ollama application server on {self._base_url} "
+                        f"(Server: {server_header}). {hint}"
+                    )
+
             version_response.raise_for_status()
             self.version = version_response.json().get("version")
             if not self.version:
@@ -242,8 +434,47 @@ class OllamaExecutor(BaseExecutor):
             logger.error(f"Failed to list models: {e}")
             return []
             
+    # ── OpenAI → Ollama parameter mappings ────────────────────
+    #
+    # Ollama nests most sampling parameters under an "options"
+    # object rather than top-level. This mapping is the single
+    # source of truth for which OpenAI keys map to which Ollama
+    # options keys. See docs/reference/openai-compatibility.md for the
+    # full matrix.
+
+    _OPTION_TRANSLATIONS = {
+        "top_p":              "top_p",
+        "top_k":              "top_k",
+        "stop":               "stop",
+        "seed":               "seed",
+        "frequency_penalty":  "frequency_penalty",
+        "presence_penalty":   "presence_penalty",
+    }
+
+    # Parameters that have NO Ollama equivalent. Each is logged
+    # with its reason — no silent drops, that is the whole point
+    # of issue #39.
+    _UNSUPPORTED_PARAMS = {
+        "logprobs":     "Ollama does not support logprobs",
+        "top_logprobs": "Ollama does not support top_logprobs",
+        "tool_choice":  ("Ollama does not support tool_choice — tool "
+                         "selection is determined by the model from "
+                         "the tools list"),
+    }
+
     def _translate_request(self, openai_body: dict) -> dict:
-        """OpenAI chat format -> Ollama chat format."""
+        """OpenAI chat format -> Ollama chat format.
+
+        Translates every supported sampling parameter into Ollama's
+        ``options`` object, warns on unsupported parameters (never
+        drops silently), and rejects parameters that are fundamentally
+        incompatible (``n > 1``, ``stream``).
+
+        Raises:
+            ValueError: if ``n > 1`` (Ollama produces exactly 1
+                completion per request).  Callers must catch this
+                and convert to a CompletionResult.
+        """
         translated = {
             "model": openai_body.get("model", ""),
             "messages": openai_body.get("messages", []),
@@ -253,8 +484,40 @@ class OllamaExecutor(BaseExecutor):
                 "num_predict": openai_body.get("max_tokens", 512),
             }
         }
-        
-        # Translate response_format to format per contract
+
+        # ── Sampling parameters → options.* ──────────────────
+        for openai_key, ollama_key in self._OPTION_TRANSLATIONS.items():
+            if openai_key in openai_body:
+                value = openai_body[openai_key]
+                # OpenAI permits a bare string for `stop`; Ollama's
+                # options decoder only accepts an array.
+                if openai_key == "stop" and isinstance(value, str):
+                    value = [value]
+                translated["options"][ollama_key] = value
+
+        # ── Unsupported parameters → warn-and-drop ───────────
+        for param, reason in self._UNSUPPORTED_PARAMS.items():
+            if param in openai_body:
+                logger.warning("Parameter '%s' dropped: %s", param, reason)
+
+        # ── n > 1 → reject ───────────────────────────────────
+        # Ollama produces exactly 1 completion per request.
+        # n=1 is fine (it is the default); n>1 is unsupported.
+        n_value = openai_body.get("n")
+        if n_value is not None and n_value != 1:
+            raise ValueError(
+                f"UNSUPPORTED_PARAMETER: n={n_value} is not supported by "
+                f"Ollama (exactly 1 completion per request)"
+            )
+
+        # ── tools → top-level (Ollama native since ~0.3) ─────
+        # `tool_choice: "none"` means the model may NOT call tools.
+        # Ollama has no tool_choice, so honour it by withholding the
+        # tool list rather than dropping the caller's intent.
+        if "tools" in openai_body and openai_body.get("tool_choice") != "none":
+            translated["tools"] = openai_body["tools"]
+
+        # ── response_format → format (existing, from #41) ────
         response_format = openai_body.get("response_format")
         if isinstance(response_format, dict):
             rf_type = response_format.get("type")
@@ -264,17 +527,20 @@ class OllamaExecutor(BaseExecutor):
                 schema = response_format.get("json_schema", {}).get("schema")
                 if schema is not None:
                     translated["format"] = schema
-                    
+
         return translated
         
     def _translate_response(self, ollama_response: dict) -> dict:
         """Ollama response -> OpenAI-compatible response format."""
-        return {
-            "choices": [{
+        choices = []
+        if "message" in ollama_response and ollama_response["message"]:
+            choices.append({
                 "index": 0,
                 "message": ollama_response.get("message", {}),
                 "finish_reason": "stop" if ollama_response.get("done") else "length",
-            }],
+            })
+        return {
+            "choices": choices,
             "model": ollama_response.get("model", ""),
             "usage": {
                 "prompt_tokens": ollama_response.get("prompt_eval_count", 0),

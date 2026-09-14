@@ -3,13 +3,17 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import jsonschema
 
-from daemon.executors.ollama import OllamaExecutor, parse_version
+from daemon.executors.ollama import (
+    OllamaExecutor,
+    parse_version,
+    VERSION_PROBE_RETRY_SECONDS,
+)
 from daemon.models import PromptRequest, CompletionResult
 
 # Helper to create responses with mock request bound to prevent raise_for_status issues
-def create_mock_response(status_code: int, json_data: dict) -> httpx.Response:
+def create_mock_response(status_code: int, json_data: dict, headers: dict = None) -> httpx.Response:
     req = httpx.Request("POST", "http://localhost:11434/api/chat")
-    return httpx.Response(status_code=status_code, json=json_data, request=req)
+    return httpx.Response(status_code=status_code, json=json_data, headers=headers, request=req)
 
 # Test parse_version helper
 def test_parse_version():
@@ -272,18 +276,84 @@ async def test_execute_strict_mode_schema_violation():
 
 
 @pytest.mark.asyncio
-async def test_health_check_success():
+async def test_execute_empty_response_choices():
     executor = OllamaExecutor()
-    
+    executor.version = "0.5.1"
+
+    prompt = PromptRequest(
+        custom_id="req-empty-choices",
+        body={
+            "model": "llama3:8b",
+            "messages": [{"role": "user", "content": "hello"}],
+            "response_format": {"type": "json_object"}
+        }
+    )
+
+    # Response with no choices / empty message
+    mock_response = create_mock_response(
+        200,
+        {
+            "done": True,
+            "model": "llama3:8b",
+        }
+    )
+
+    with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = mock_response
+        res = await executor.execute(prompt)
+        assert not res.is_success
+        assert res.error.startswith("EMPTY_RESPONSE:")
+        assert "Response contains no choices" in res.error
+        assert res.response is not None
+
+
+@pytest.mark.asyncio
+async def test_execute_empty_response_choices_non_structured():
+    executor = OllamaExecutor()
+    executor.version = "0.5.1"
+
+    prompt = PromptRequest(
+        custom_id="req-empty-choices-plain",
+        body={
+            "model": "llama3:8b",
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+    )
+
+    # Response with no choices / empty message
+    mock_response = create_mock_response(
+        200,
+        {
+            "done": True,
+            "model": "llama3:8b",
+        }
+    )
+
+    with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = mock_response
+        res = await executor.execute(prompt)
+        assert not res.is_success
+        assert res.error.startswith("EMPTY_RESPONSE:")
+        assert "Response contains no choices" in res.error
+        assert res.response is not None
+
+
+@pytest.mark.asyncio
+async def test_health_check_success(caplog):
+    executor = OllamaExecutor()
+
     version_res = create_mock_response(200, {"version": "0.5.1"})
     tags_res = create_mock_response(200, {"models": []})
-    
+
     with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
         mock_get.side_effect = [version_res, tags_res]
-        
-        healthy = await executor.health_check()
+
+        with caplog.at_level("INFO"):
+            healthy = await executor.health_check()
         assert healthy is True
         assert executor.version == "0.5.1"
+        # Real Ollama sends no Server header: the issue #80 warning must not fire
+        assert "Detected non-Ollama" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -319,6 +389,125 @@ async def test_execute_version_unreachable():
         res = await executor.execute(prompt)
         assert not res.is_success
         assert "OLLAMA_UNREACHABLE" in res.error
+
+
+# ── Version probe caching (issue #83) ────────────────────────────────────────
+#
+# These drive the real health_check() against a mocked transport rather than
+# patching health_check out, so the probe bookkeeping inside it is covered too.
+# The clock is faked: the retry window is wall-clock, and a test that sleeps
+# through 60s of it is not a test anyone will keep running.
+
+def _probe_counting_executor(server_up):
+    """An executor whose /api/version answers according to `server_up['up']`.
+
+    Returns (executor, counts) where counts["version"] is the number of real
+    probes that reached the transport.
+    """
+    counts = {"version": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/version":
+            counts["version"] += 1
+        if not server_up["up"]:
+            raise httpx.ConnectError("connection refused")
+        if request.url.path == "/api/version":
+            return httpx.Response(200, json={"version": "0.6.0"})
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": []})
+        return httpx.Response(200, json={
+            "message": {"role": "assistant", "content": '{"ok": true}'},
+            "model": "llama3:8b",
+            "done": True,
+        })
+
+    executor = OllamaExecutor()
+    executor._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://localhost:11434",
+    )
+    return executor, counts
+
+
+def _json_prompt(custom_id):
+    return PromptRequest(
+        custom_id=custom_id,
+        body={
+            "model": "llama3:8b",
+            "messages": [{"role": "user", "content": "hello"}],
+            "response_format": {"type": "json_object"},
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_version_probe_not_repeated_for_every_prompt():
+    """Issue #83: a down server used to cost a 5s probe on every prompt, so a
+    10k-row batch spent ~14 hours failing. Within the retry window the failed
+    probe is cached and prompts fail immediately."""
+    server = {"up": False}
+    executor, counts = _probe_counting_executor(server)
+
+    # Clock frozen: nothing can trip the retry window.
+    with patch("daemon.executors.ollama.time.monotonic", return_value=1000.0):
+        for n in range(5):
+            res = await executor.execute(_json_prompt(f"req-{n}"))
+            assert not res.is_success
+            assert "OLLAMA_UNREACHABLE" in res.error
+
+    assert counts["version"] == 1, "one probe for five prompts, not five"
+    await executor._client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_failed_version_probe_is_retried_after_the_window():
+    """The negative cache must not be permanent. The daemon is allowed to start
+    before Ollama is up (Worker._wait_for_executor retries for 60s and then
+    proceeds anyway), so a latched failure would leave structured outputs dead
+    for the life of the process while plain chat kept working."""
+    server = {"up": False}
+    executor, counts = _probe_counting_executor(server)
+
+    now = [1000.0]
+    with patch("daemon.executors.ollama.time.monotonic", side_effect=lambda: now[0]):
+        # Startup pre-flight against a server that is down.
+        assert await executor.health_check() is False
+        assert executor.version is None
+        assert counts["version"] == 1
+
+        # Still inside the window: cached, no new probe, still failing.
+        now[0] += VERSION_PROBE_RETRY_SECONDS - 1
+        assert not (await executor.execute(_json_prompt("during"))).is_success
+        assert counts["version"] == 1
+
+        # Ollama comes up; the window elapses.
+        server["up"] = True
+        now[0] += 2
+        res = await executor.execute(_json_prompt("after"))
+
+    assert counts["version"] == 2, "the probe must be retried once the window passes"
+    assert res.is_success, "structured outputs must work again once Ollama is back"
+    assert executor.version == "0.6.0"
+    await executor._client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_successful_version_probe_is_cached_permanently():
+    """A known version never needs re-probing — the retry window applies only to
+    failures, so a healthy server still pays exactly one probe per process."""
+    server = {"up": True}
+    executor, counts = _probe_counting_executor(server)
+
+    now = [1000.0]
+    with patch("daemon.executors.ollama.time.monotonic", side_effect=lambda: now[0]):
+        assert (await executor.execute(_json_prompt("first"))).is_success
+        assert counts["version"] == 1
+        # Far beyond the retry window.
+        now[0] += VERSION_PROBE_RETRY_SECONDS * 100
+        assert (await executor.execute(_json_prompt("much-later"))).is_success
+
+    assert counts["version"] == 1
+    await executor._client.aclose()
 
 
 def test_translate_embeddings_request():
@@ -472,3 +661,301 @@ async def test_embeddings_path_skips_version_probe():
             res = await executor.execute(prompt)
     assert res.is_success
     hc.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_health_check_non_ollama_server_header_warning(caplog):
+    """Regression for issue #80: an aiohttp app squatting on :11434 passed health
+    checks silently. Warn when the Server header names a known app server."""
+    executor = OllamaExecutor()
+    version_resp = create_mock_response(
+        200, {"version": "0.1.0"}, headers={"server": "Python/3.12 aiohttp/3.13.5"}
+    )
+    tags_resp = create_mock_response(200, {"models": []})
+
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [version_resp, tags_resp]
+        with caplog.at_level("INFO"):
+            healthy = await executor.health_check()
+
+    assert healthy is True
+    assert "Server header from http://localhost:11434: Python/3.12 aiohttp/3.13.5" in caplog.text
+    assert "Detected non-Ollama application server" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_health_check_server_header_warning_logged_once(caplog):
+    """Issue #80 follow-up: health_check() runs per startup retry and per prompt
+    while version is unset, so the header INFO+WARNING pair must be latched."""
+    executor = OllamaExecutor()
+    responses = [
+        create_mock_response(
+            200, {"version": "0.1.0"}, headers={"server": "Python/3.12 aiohttp/3.13.5"}
+        ),
+        create_mock_response(200, {"models": []}),
+    ] * 2
+
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = responses
+        with caplog.at_level("INFO"):
+            await executor.health_check()
+            await executor.health_check()
+
+    assert caplog.text.count("Detected non-Ollama application server") == 1
+    assert caplog.text.count("Server header from") == 1
+
+
+@pytest.mark.asyncio
+async def test_health_check_app_server_with_proxy_like_name_warns(caplog):
+    """Issue #80 hardening: Apache-Coyote (Tomcat's connector) is an app server,
+    not a proxy — the old proxy allowlist's 'apache' substring wrongly absolved it."""
+    executor = OllamaExecutor()
+    version_resp = create_mock_response(
+        200, {"version": "0.1.0"}, headers={"server": "Apache-Coyote/1.1"}
+    )
+    tags_resp = create_mock_response(200, {"models": []})
+
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [version_resp, tags_resp]
+        with caplog.at_level("INFO"):
+            healthy = await executor.health_check()
+
+    assert healthy is True
+    assert "Detected non-Ollama application server" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_health_check_reverse_proxy_server_header_normal(caplog):
+    """Ollama behind a front-end (nginx, openresty, an ALB, …) completes without a
+    false-positive warning: unknown Server values are not treated as squatters."""
+    executor = OllamaExecutor()
+    version_resp = create_mock_response(
+        200, {"version": "0.5.1"}, headers={"server": "nginx/1.24.0 (Ubuntu)"}
+    )
+    tags_resp = create_mock_response(200, {"models": []})
+
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [version_resp, tags_resp]
+        with caplog.at_level("INFO"):
+            healthy = await executor.health_check()
+
+    assert healthy is True
+    assert "Server header from http://localhost:11434: nginx/1.24.0 (Ubuntu)" in caplog.text
+    assert "Detected non-Ollama" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_health_check_non_200_server_header_logged(caplog):
+    """Issue #80: a squatter returning 404/502 on /api/version must still get its
+    Server header logged (before raise_for_status), with a status-aware message."""
+    executor = OllamaExecutor()
+    version_resp = create_mock_response(
+        404, {"error": "not found"}, headers={"server": "uvicorn"}
+    )
+
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = [version_resp]
+        with caplog.at_level("INFO"):
+            healthy = await executor.health_check()
+
+    assert healthy is False
+    assert "Server header from http://localhost:11434: uvicorn" in caplog.text
+    assert "Detected non-Ollama application server" in caplog.text
+    # On an error status the warning must not claim metadata endpoints responded
+    assert "/api/version returned HTTP 404." in caplog.text
+    assert "metadata endpoints respond" not in caplog.text
+
+
+
+# ── Coalesced embeddings (issue #55) ─────────────────────────────
+
+def _embed_prompt(custom_id, value):
+    return PromptRequest(
+        custom_id=custom_id,
+        method="POST",
+        url="/v1/embeddings",
+        body={"model": "nomic-embed-text", "input": value},
+    )
+
+
+def _embed_recording_executor():
+    """Executor whose /api/embed records every body it is sent."""
+    bodies = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        body = _json.loads(request.content)
+        bodies.append(body)
+        sent = body["input"]
+        rows = sent if isinstance(sent, list) else [sent]
+        # One vector per element Ollama sees — the flattening behaviour that
+        # makes nested lists dangerous.
+        flat = []
+        for r in rows:
+            flat.extend(r if isinstance(r, list) else [r])
+        return httpx.Response(
+            200,
+            json={
+                "model": "nomic-embed-text",
+                "embeddings": [[float(len(str(x)))] for x in flat],
+                "prompt_eval_count": 3,
+            },
+        )
+
+    executor = OllamaExecutor()
+    executor._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://localhost:11434",
+    )
+    return executor, bodies
+
+
+@pytest.mark.asyncio
+async def test_string_embeddings_are_coalesced_into_one_call():
+    executor, bodies = _embed_recording_executor()
+    prompts = [_embed_prompt(f"e-{i}", f"text {i}") for i in range(5)]
+
+    results = await executor.batch_execute(prompts)
+
+    assert len(bodies) == 1, "string inputs should coalesce into a single call"
+    assert bodies[0]["input"] == [f"text {i}" for i in range(5)]
+    assert [r.custom_id for r in results] == [f"e-{i}" for i in range(5)]
+    assert all(r.is_success for r in results)
+
+
+@pytest.mark.asyncio
+async def test_list_valued_input_is_not_coalesced():
+    """A list-valued input must not be nested inside a coalesced chunk.
+
+    It is a valid OpenAI shape and nothing upstream rejects it. Nesting it
+    desynchronises the data[j] -> chunk[j] fan-out, so later custom_ids
+    silently receive somebody else's vector.
+    """
+    executor, bodies = _embed_recording_executor()
+    prompts = [
+        _embed_prompt("e-0", "first"),
+        _embed_prompt("e-1", ["a", "b"]),   # list-valued
+        _embed_prompt("e-2", "third"),
+    ]
+
+    results = await executor.batch_execute(prompts)
+
+    # No request body may contain a nested list.
+    for body in bodies:
+        sent = body["input"]
+        if isinstance(sent, list):
+            assert not any(isinstance(x, list) for x in sent), (
+                f"list-valued input was coalesced into a chunk: {sent}"
+            )
+
+    assert [r.custom_id for r in results] == ["e-0", "e-1", "e-2"]
+    assert all(r.is_success for r in results), [r.error for r in results]
+
+    # And the vectors must belong to the right rows.
+    assert results[0].response["data"][0]["embedding"] == [5.0]   # "first"
+    assert results[2].response["data"][0]["embedding"] == [5.0]   # "third"
+
+
+@pytest.mark.asyncio
+async def test_coalesced_usage_sums_back_to_the_chunk_total():
+    """Splitting a chunk's tokens must not lose any to floor division."""
+    seen = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        rows = _json.loads(request.content)["input"]
+        seen["n"] = len(rows)
+        return httpx.Response(200, json={
+            "model": "nomic-embed-text",
+            "embeddings": [[1.0] for _ in rows],
+            # 1000 over 7 rows is 142 each by floor division — 6 tokens lost.
+            "prompt_eval_count": 1000,
+        })
+
+    executor = OllamaExecutor()
+    executor._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://localhost:11434",
+    )
+
+    prompts = [_embed_prompt(f"e-{i}", f"text {i}") for i in range(7)]
+    results = await executor.batch_execute(prompts)
+
+    assert seen["n"] == 7, "rows should have coalesced into one call"
+    per_row = [r.response["usage"]["prompt_tokens"] for r in results]
+    assert sum(per_row) == 1000, f"{sum(per_row)} != 1000 — tokens were dropped"
+    # And spread evenly: no row carries more than one extra.
+    assert max(per_row) - min(per_row) <= 1
+
+
+# ── Coalesced chunk isolation (issue #106) ───────────────────────
+
+def _picky_embed_executor():
+    """Transport that 400s the whole request if any input is empty.
+
+    That is Ollama's behaviour: one invalid input rejects the entire
+    /api/embed call, however many good rows travelled with it.
+    """
+    calls = {"n": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        calls["n"] += 1
+        sent = _json.loads(request.content)["input"]
+        rows = sent if isinstance(sent, list) else [sent]
+        if any(r == "" for r in rows):
+            return httpx.Response(400, json={"error": "invalid input: empty string"})
+        return httpx.Response(200, json={
+            "model": "nomic-embed-text",
+            "embeddings": [[float(len(r))] for r in rows],
+            "prompt_eval_count": len(rows),
+        })
+
+    executor = OllamaExecutor()
+    executor._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://localhost:11434",
+    )
+    return executor, calls
+
+
+@pytest.mark.asyncio
+async def test_one_bad_row_does_not_fail_its_whole_chunk():
+    """A rejected coalesced call must not take healthy rows down with it."""
+    executor, calls = _picky_embed_executor()
+    prompts = [
+        _embed_prompt(f"e-{i}", "fine" if i != 7 else "")
+        for i in range(20)
+    ]
+
+    results = await executor.batch_execute(prompts)
+
+    assert len(results) == 20
+    ok = [r for r in results if r.is_success]
+    bad = [r for r in results if not r.is_success]
+
+    assert len(ok) == 19, "healthy rows were destroyed by one bad row"
+    assert len(bad) == 1 and bad[0].custom_id == "e-7"
+    # And the good rows carry their own vectors, not a neighbour's.
+    assert results[0].response["data"][0]["embedding"] == [4.0]  # "fine"
+    # One coalesced attempt, then one retry per row.
+    assert calls["n"] == 1 + 20
+
+
+@pytest.mark.asyncio
+async def test_healthy_chunk_still_costs_one_request():
+    """The retry path must not slow down the normal case."""
+    executor, calls = _picky_embed_executor()
+    prompts = [_embed_prompt(f"e-{i}", f"text {i}") for i in range(20)]
+
+    results = await executor.batch_execute(prompts)
+
+    assert all(r.is_success for r in results)
+    assert calls["n"] == 1, "coalescing regressed to per-row requests"
+
+
+def test_ollama_declines_to_coalesce_list_inputs():
+    """The predicate the worker consults before chunking."""
+    executor = OllamaExecutor()
+    assert executor.can_coalesce_embedding(_embed_prompt("a", "text")) is True
+    assert executor.can_coalesce_embedding(_embed_prompt("b", ["x", "y"])) is False

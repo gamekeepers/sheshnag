@@ -1,5 +1,7 @@
 # Google sign-in (OAuth/OIDC) — how Sheshnag implements it
 
+*Last updated 2026-08-02. Moved into its current location on 2026-08-26 and **not** re-verified against code since.*
+
 This doc covers Sheshnag specifics only; for how OAuth/OIDC works as a
 mechanism, see any OIDC primer (the flow below assumes you know an ID token
 is a signed JWT verified against Google's public keys).

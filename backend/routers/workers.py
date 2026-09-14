@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from database import get_db
 from models import (
@@ -14,6 +14,7 @@ from typing import Optional
 from auth import get_worker_context
 from provider_picker import picker, get_catalog_entry
 from sweeper import MAX_BATCH_ATTEMPTS, requeue_or_fail_batch
+from services.usage_ingest import ingest_usage_records
 import shutil, os, logging
 
 logger = logging.getLogger(__name__)
@@ -106,7 +107,7 @@ def register_worker(
         return [
             WorkerGpu(
                 gpu_index=g.index, vendor=g.vendor, name=g.name,
-                vram_gb=g.vram_gb, driver=g.driver, cuda=g.cuda,
+                vram_gb=g.vram_gb, driver=g.driver, cuda=g.cuda, rocm=g.rocm,
             )
             for g in req.gpus
         ]
@@ -264,6 +265,10 @@ def poll_job(
     assignment = BatchAssignment(
         batch_id=batch.id,
         worker_id=req.worker_id,
+        # Snapshot org and hostname now — the assignment is the provider's
+        # record of the work and must survive the worker being removed.
+        org_id=org.id,
+        worker_hostname=worker.hostname,
         assigned_at=unix_now(),
     )
     db.add(assignment)
@@ -299,8 +304,22 @@ def report_progress(
     _get_org_worker(db, org, req.worker_id)
     batch = _get_assigned_batch(db, req.job_id, req.worker_id)
 
-    batch.request_counts_completed = req.completed
-    batch.request_counts_failed = req.failed
+    # Monotonic: workers POST these snapshots concurrently and without a
+    # sequence number, so a delayed report can carry lower counts than one that
+    # already landed. Taking the max stops the dashboard rolling backwards.
+    # The upload handler below still writes authoritative final counts directly.
+    batch.request_counts_completed = max(
+        batch.request_counts_completed or 0, req.completed
+    )
+    batch.request_counts_failed = max(
+        batch.request_counts_failed or 0, req.failed
+    )
+
+    # Token rollups are deliberately not written here. The daemon has no sender
+    # for live per-prompt counts, and a progress report that arrives late (after
+    # upload has triggered ingestion) would overwrite authoritative totals with
+    # stale provisional ones. Usage is set once, by ingest_usage_records.
+
     db.commit()
 
     return {"status": "ok", "batch_id": batch.id}
@@ -332,6 +351,7 @@ def report_model_download(
 
 @router.post("/upload-results")
 def upload_results(
+    background_tasks: BackgroundTasks,
     job_id: str = Form(...),
     worker_id: str = Form(...),
     file: UploadFile = File(...),
@@ -375,6 +395,12 @@ def upload_results(
 
     db.commit()
     db.refresh(batch)
+
+    # Parse per-prompt usage from the output JSONL and recompute authoritative
+    # rollups after the response is sent. This handler is sync, so FastAPI runs
+    # it in a worker thread where there is no event loop to schedule onto —
+    # BackgroundTasks is what defers work correctly from here.
+    background_tasks.add_task(ingest_usage_records, batch.id, filepath)
 
     return {
         "status":         "completed",

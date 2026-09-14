@@ -1,6 +1,7 @@
 from database import Base
 from sqlalchemy import (
-    Column, String, Integer, Boolean, Float, Text, ForeignKey, UniqueConstraint,
+    BigInteger, Column, String, Integer, Boolean, Float, Text, ForeignKey,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
@@ -10,6 +11,10 @@ import hashlib
 
 def generate_user_id():
     return f"user-{uuid.uuid4().hex[:24]}"
+
+
+def generate_allowed_domain_id():
+    return f"domain-{uuid.uuid4().hex[:24]}"
 
 
 def generate_org_id():
@@ -52,6 +57,10 @@ def generate_catalog_id():
     return f"mdl-{uuid.uuid4().hex[:24]}"
 
 
+def generate_usage_id():
+    return f"usage-{uuid.uuid4().hex[:24]}"
+
+
 def unix_now():
     return int(datetime.now(timezone.utc).timestamp())
 
@@ -73,6 +82,29 @@ class User(Base):
     created_at           = Column(Integer, default=unix_now)
 
     memberships = relationship("OrganizationMembership", back_populates="user")
+
+
+class AllowedEmailDomain(Base):
+    """A domain permitted to self-register.
+
+    Governs *self-service* signup only — both the password and Google paths.
+    Invites and superadmin-created users are deliberately exempt: inviting an
+    external collaborator is a considered act, and gating it would break
+    cross-institution work.
+
+    **An empty table means no restriction.** Fail-open is deliberate: a fresh
+    install has no superadmin yet, so failing closed would lock out the very
+    account needed to add the first domain. Enforcement is opt-in, switched on
+    by adding one row.
+    """
+    __tablename__ = "allowed_email_domains"
+
+    id                 = Column(String, primary_key=True, default=generate_allowed_domain_id)
+    domain             = Column(String, unique=True, nullable=False)  # lower-case, no leading '@'
+    include_subdomains = Column(Boolean, default=False)
+    note               = Column(String, nullable=True)   # e.g. "Students"
+    created_by_id      = Column(String, ForeignKey("users.id"), nullable=True)
+    created_at         = Column(Integer, default=unix_now)
 
 
 class Organization(Base):
@@ -361,7 +393,10 @@ class File(Base):
     user_id    = Column(String, nullable=True)
     filename   = Column(String, nullable=False)
     purpose    = Column(String, default="batch")
-    bytes      = Column(Integer, default=0)
+    # BigInteger, not Integer: Postgres INTEGER caps at 2^31-1, and a batch
+    # input/output JSONL above 2 GiB would abort the upload with
+    # "integer out of range" after the bytes had already hit disk.
+    bytes      = Column(BigInteger, default=0)
     filepath   = Column(String, nullable=False, default="")
     created_at = Column(Integer, default=unix_now)
 
@@ -388,14 +423,52 @@ class Batch(Base):
     request_counts_failed    = Column(Integer, default=0)
     error_details            = Column(String, nullable=True)
     attempts                 = Column(Integer, default=0)  # execution attempts (spec §12 requeue)
+    prompt_tokens            = Column(Integer, nullable=True)
+    completion_tokens        = Column(Integer, nullable=True)
+    total_tokens             = Column(Integer, nullable=True)
+
+    usage_records = relationship(
+        "UsageRecord", back_populates="batch",
+        cascade="all, delete-orphan",
+    )
+
+
+class UsageRecord(Base):
+    """Per-prompt token usage record for batch auditing and pricing (spec §16).
+
+    Unique on (batch_id, custom_id) to guarantee idempotency across
+    worker retries and requeued batches.
+    """
+    __tablename__ = "usage_records"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "custom_id"),
+    )
+
+    id                = Column(String, primary_key=True, default=generate_usage_id)
+    batch_id          = Column(
+        String, ForeignKey("batches.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    custom_id         = Column(String, nullable=False)
+    model             = Column(String, nullable=True)
+    prompt_tokens     = Column(Integer, nullable=False, default=0)
+    completion_tokens = Column(Integer, nullable=False, default=0)
+    total_tokens      = Column(Integer, nullable=False, default=0)
+    created_at        = Column(Integer, default=unix_now)
+
+    batch = relationship("Batch", back_populates="usage_records")
 
 
 class BatchAssignment(Base):
     __tablename__ = "batch_assignments"
 
     batch_id    = Column(String, primary_key=True)
-    worker_id   = Column(String, ForeignKey("workers.id"), nullable=False)
-    assigned_at = Column(Integer, default=unix_now)
+    worker_id       = Column(String, nullable=False)
+    # Snapshotted at assignment time so those views still resolve once the
+    # worker is gone. The live Worker row, when it still exists, remains the
+    # source of truth for the current hostname.
+    org_id          = Column(String, nullable=False)
+    worker_hostname = Column(String, nullable=True)
+    assigned_at     = Column(Integer, default=unix_now)
 
 
 # ─── Password Reset ────────────────────────────────────────

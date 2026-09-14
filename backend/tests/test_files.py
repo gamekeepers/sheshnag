@@ -3,7 +3,7 @@
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from models import File as FileModel
+from models import Batch, File as FileModel
 
 
 def _seed_file(_engine, owner_id, tmp_path, name="input.jsonl"):
@@ -63,15 +63,29 @@ def test_delete_someone_elses_file_403(auth_client, _engine, _test_superuser, tm
     assert jsonl.exists()
 
 
-def test_delete_file_with_active_batch_409(auth_client, _engine, _test_user, tmp_path):
-    record, jsonl = _seed_file(_engine, _test_user.id, tmp_path, name="active.jsonl")
+@pytest.mark.parametrize("status", ["validating", "validated", "in_progress"])
+def test_delete_file_with_active_batch_409(auth_client, _engine, _test_user, tmp_path, status):
+    record, jsonl = _seed_file(_engine, _test_user.id, tmp_path, name=f"active-{status}.jsonl")
 
-    res = auth_client.post("/v1/batches", json={
-        "input_file_id": record.id,
-        "endpoint": "/v1/chat/completions",
-        "completion_window": "24h",
-    })
-    assert res.status_code == 200, res.text
+    # Seeded directly rather than via POST /v1/batches. Creation fires a
+    # fire-and-forget validation task (routers/batches.py:58) that writes the
+    # batch's final status from a worker thread, so a batch made through the
+    # API can reach `failed` — not an active status — before the delete lands.
+    # Creation itself is covered in test_batches.py; the guard is what this
+    # test is about, and it should not race a background thread to assert it.
+    SM = sessionmaker(bind=_engine, expire_on_commit=False)
+    db = SM()
+    try:
+        db.add(Batch(
+            user_id=_test_user.id,
+            endpoint="/v1/chat/completions",
+            input_file_id=record.id,
+            completion_window="24h",
+            status=status,
+        ))
+        db.commit()
+    finally:
+        db.close()
 
     res = auth_client.delete(f"/v1/files/{record.id}")
     assert res.status_code == 409

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import GoogleAuthButton from '../components/GoogleAuthButton';
@@ -44,7 +44,23 @@ export default function SignupPage() {
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [policy, setPolicy] = useState({ restricted: false, domains: [] });
   const router = useRouter();
+
+  // The server is the gate; this is purely so people are told the rule before
+  // they fill in the form rather than after.
+  useEffect(() => {
+    fetch(`${BACKEND}/v1/auth/signup-policy`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (d) setPolicy(d); })
+      .catch(() => {});
+  }, []);
+
+  function domainAllowed(addr) {
+    if (!policy.restricted) return true;
+    const d = (addr || '').trim().toLowerCase().split('@').pop();
+    return policy.domains.some(a => d === a || d.endsWith('.' + a));
+  }
 
   async function handleSubmit() {
     setError('');
@@ -55,6 +71,10 @@ export default function SignupPage() {
     }
     if (password !== confirm) {
       setError('Passwords do not match.');
+      return;
+    }
+    if (!domainAllowed(email)) {
+      setError(`Sign-ups are restricted to ${policy.domains.map(d => '@' + d).join(', ')}.`);
       return;
     }
 
@@ -127,6 +147,11 @@ export default function SignupPage() {
           <div style={{ marginBottom: 16 }}>
             <span style={labelStyle}>Email address</span>
             <input type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" style={inputStyle} />
+            {policy.restricted && (
+              <span style={{ display: 'block', marginTop: 6, fontSize: 12, color: '#888' }}>
+                Use your {policy.domains.map(d => '@' + d).join(' or ')} address.
+              </span>
+            )}
           </div>
 
           <div style={{ marginBottom: 16 }}>

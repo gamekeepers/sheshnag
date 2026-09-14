@@ -277,6 +277,33 @@ def get_human_context(
     return (user, None)
 
 
+# ─── 5. get_optional_human_context — auth if offered ───────
+
+# Same bearer scheme, but a missing Authorization header yields None
+# instead of a 401, so one endpoint can serve both anonymous and
+# authenticated callers.
+optional_security = HTTPBearer(auto_error=False)
+
+
+def get_optional_human_context(
+    credentials: HTTPAuthorizationCredentials = Depends(optional_security),
+    db: Session = Depends(get_db),
+):
+    """Authenticate if credentials are offered, else return None.
+
+    For endpoints that are public but show more to a known caller. A
+    token that is absent, malformed, expired or revoked all degrade to
+    anonymous rather than 401 — the caller asked for the public view and
+    is entitled to it either way. Returns (user, api_key_or_None) or None.
+    """
+    if credentials is None:
+        return None
+    try:
+        return get_human_context(credentials, db)
+    except HTTPException:
+        return None
+
+
 # ─── Role checker (built on get_current_user — JWT only) ──
 
 def require_role(*roles):

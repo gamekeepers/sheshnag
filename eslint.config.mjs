@@ -10,6 +10,12 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Not ours to lint: the documentation site's build output and the
+    // virtualenv that builds it both ship vendored JS (lunr, wordcut) which
+    // otherwise reports errors that have nothing to do with the app.
+    "site/**",
+    ".venv-docs/**",
+    ".venv/**",
   ]),
 ]);
 
