@@ -1,3 +1,5 @@
+> **Base branch must be `develop`.** PRs into `main` are release merges from `develop` only.
+
 ## Description
 
 <!-- Brief description of the changes in this PR -->
