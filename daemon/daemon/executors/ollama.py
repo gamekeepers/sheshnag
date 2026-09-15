@@ -1,6 +1,9 @@
+import asyncio
 import json
 import logging
+import os
 import time
+from pathlib import Path
 from typing import Optional, List, Callable, Awaitable
 
 import httpx
@@ -89,10 +92,12 @@ class OllamaExecutor(BaseExecutor):
         base_url: str = "http://localhost:11434",
         timeout: float = 300.0,
         max_concurrent: int = 8,
+        models_dir: Optional[str] = None,
     ):
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._max_concurrent = max_concurrent
+        self._models_dir = models_dir
         self._client: Optional[httpx.AsyncClient] = None
         self.version: Optional[str] = None
         self._server_header_warned = False
@@ -413,6 +418,102 @@ class OllamaExecutor(BaseExecutor):
     async def list_models(self) -> List[str]:
         """List locally available model names via GET /api/tags."""
         return [m["name"] for m in await self.list_models_detailed()]
+
+    # ── On-disk inventory (registry identity) ─────────────────
+
+    def _resolve_models_dir(self) -> Optional[Path]:
+        """The Ollama models dir whose manifests we can actually read.
+
+        Order: explicit config, $OLLAMA_MODELS, the user store
+        (~/.ollama/models), the systemd service store
+        (/usr/share/ollama/.ollama/models). Read-only; when none is
+        readable (daemon runs as a different user), inventory() degrades
+        to /api/tags names — never escalate privileges to win the read.
+        """
+        candidates = [
+            self._models_dir,
+            os.environ.get("OLLAMA_MODELS"),
+            os.path.expanduser("~/.ollama/models"),
+            "/usr/share/ollama/.ollama/models",
+        ]
+        for c in candidates:
+            if not c:
+                continue
+            manifests = Path(c) / "manifests"
+            try:
+                if manifests.is_dir() and os.access(manifests, os.R_OK):
+                    return Path(c)
+            except OSError:
+                continue
+        return None
+
+    @staticmethod
+    def _manifest_model_name(rel_parts: tuple) -> Optional[str]:
+        """Manifest path -> Ollama model name.
+
+        manifests/<host>/<namespace>/<model>/<tag>: the default registry's
+        `library` namespace renders as `model:tag`; anything else keeps its
+        full prefix (`hf.co/user/model:tag`).
+        """
+        if len(rel_parts) != 4:
+            return None
+        host, namespace, model, tag = rel_parts
+        if host == "registry.ollama.ai" and namespace == "library":
+            return f"{model}:{tag}"
+        return f"{host}/{namespace}/{model}:{tag}"
+
+    def _scan_manifests(self, models_dir: Path) -> List[dict]:
+        """Blocking walk of the manifests tree — call via to_thread."""
+        items = []
+        manifests_root = models_dir / "manifests"
+        for path in sorted(manifests_root.rglob("*")):
+            if not path.is_file():
+                continue
+            name = self._manifest_model_name(path.relative_to(manifests_root).parts)
+            if name is None:
+                continue
+            try:
+                with open(path) as f:
+                    manifest = json.load(f)
+            except (OSError, ValueError) as exc:
+                logger.warning(f"Unreadable Ollama manifest {path}: {exc}")
+                continue
+            for layer in manifest.get("layers", []):
+                # Only the model layer is the artifact; templates/params/
+                # projector layers have their own mediaTypes.
+                if not str(layer.get("mediaType", "")).endswith("image.model"):
+                    continue
+                digest = str(layer.get("digest", ""))
+                items.append({
+                    "local_name": name,
+                    # The layer digest IS the GGUF file's sha256 (unlike
+                    # /api/tags' digest, which hashes the manifest).
+                    "sha256": digest.split(":", 1)[-1] if digest else None,
+                    "size_bytes": layer.get("size"),
+                })
+                break
+        return items
+
+    async def inventory(self) -> List[dict]:
+        """Every model on disk with its GGUF file hash.
+
+        Reads Ollama's own manifests tree (the API never exposes per-file
+        hashes). Falls back to /api/tags names with sha256=None when the
+        tree is unreadable. Never raises.
+        """
+        try:
+            models_dir = self._resolve_models_dir()
+            if models_dir is not None:
+                items = await asyncio.to_thread(self._scan_manifests, models_dir)
+                if items:
+                    return items
+            return [
+                {"local_name": m["name"], "sha256": None, "size_bytes": None}
+                for m in await self.list_models_detailed()
+            ]
+        except Exception as exc:
+            logger.warning(f"Ollama inventory failed: {exc}")
+            return []
 
     async def list_models_detailed(self) -> List[dict]:
         """List local models with their digests via GET /api/tags.

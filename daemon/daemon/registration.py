@@ -25,7 +25,7 @@ class RegistrationManager:
         self._credentials_path = Path(credentials_path)
         self._credentials_path.parent.mkdir(parents=True, exist_ok=True)
 
-    async def register(self, client, config, model_digests=None) -> str:
+    async def register(self, client, config, model_digests=None, inventory=None) -> str:
         """
         Register worker with the control plane, returning the assigned
         worker_id. Re-registering (same hostname + org) updates the
@@ -33,6 +33,8 @@ class RegistrationManager:
 
         `model_digests` (name → digest) is best-effort provenance for the
         advertised models; empty when the runtime can't be queried.
+        `inventory` is the first full on-disk artifact list (file hashes),
+        so availability rows are born identity-carrying — see #116.
         """
         logger.info("Detecting hardware for registration...")
         hardware = await asyncio.to_thread(detect_hardware)
@@ -48,6 +50,7 @@ class RegistrationManager:
             hardware=hardware,
             models=config.models,
             model_digests=model_digests or {},
+            inventory=inventory or [],
             runtime=config.runtime,
             status="online"
         )

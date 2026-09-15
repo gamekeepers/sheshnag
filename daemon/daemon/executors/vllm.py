@@ -13,7 +13,7 @@ Architecture note:
 
 from __future__ import annotations
 
-from typing import Optional, Set, Union
+from typing import List, Optional, Set, Union
 
 import httpx
 
@@ -234,6 +234,31 @@ class VLLMExecutor(BaseExecutor):
                 # but the server is alive — it might just be loading
 
         return True
+
+    async def inventory(self) -> List[dict]:
+        """Models this vLLM server serves, identified by their HF path.
+
+        `root` is the real model path even when --served-model-name
+        aliases the public id. vLLM exposes no per-file hash over HTTP, so
+        sha256 stays None — the backend identifies these entries by the
+        catalogue's pinned HF repo+revision instead. Never raises.
+        """
+        try:
+            client = self._get_client()
+            resp = await client.get("/v1/models", timeout=10.0)
+            resp.raise_for_status()
+            return [
+                {
+                    "local_name": m.get("root") or m.get("id"),
+                    "sha256": None,
+                    "size_bytes": None,
+                }
+                for m in resp.json().get("data", [])
+                if m.get("root") or m.get("id")
+            ]
+        except Exception as exc:
+            logger.warning(f"vLLM inventory failed: {exc}")
+            return []
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

@@ -26,6 +26,7 @@ def create_executor(config: DaemonConfig) -> BaseExecutor:
             base_url=config.ollama_url,
             timeout=config.inference_timeout,
             max_concurrent=config.max_concurrent_prompts,
+            models_dir=config.ollama_models_dir,
         )
     elif config.runtime == "vllm":
         return VLLMExecutor(

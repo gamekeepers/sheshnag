@@ -86,6 +86,10 @@ class WorkerInfo(BaseModel):
     hardware: Optional[HardwareInfo] = None
     models: List[str] = Field(default_factory=list)
     model_digests: Dict[str, Any] = Field(default_factory=dict)  # name → digest
+    # Full on-disk inventory [{local_name, sha256, size_bytes}] — artifact
+    # FILE hashes (registry identity), richer than model_digests' manifest
+    # digests. Empty when the runtime can't report at register time.
+    inventory: List[Dict[str, Any]] = Field(default_factory=list)
     runtime: str = "ollama"
     status: str = "online"
 

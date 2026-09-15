@@ -198,9 +198,20 @@ assigned to (403 otherwise).
   "vram_total_gb": 24.0,
   "vram_available_gb": 9.8,
   "loaded_models": ["mistral-7b"],
+  "inventory": [
+    {"local_name": "mistral-7b", "sha256": "7485fe…", "size_bytes": 2497280256,
+     "loaded": true, "runtime": "ollama"}
+  ],
   "uptime_seconds": 3600
 }
 ```
+
+`inventory` (additive; older daemons omit it) is the full on-disk artifact
+list with FILE hashes — Ollama manifest-layer digests, which equal the GGUF
+file's sha256 and join against `model_catalog.digest` (#116). It is resent
+whole every beat, so a model pulled manually on the box surfaces on the
+next heartbeat. Registration's `runtimes[].inventory` carries the same
+shape, so availability rows are born identity-carrying.
 
 #### POST /workers/poll
 ```json

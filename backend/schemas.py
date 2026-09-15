@@ -214,6 +214,21 @@ class TokenOut(BaseModel):
     must_change_password: bool = False
 
 
+class InventoryItem(BaseModel):
+    """One on-disk artifact a worker's runtime holds (#116 identity join).
+
+    `sha256` is the artifact FILE's hash (Ollama manifest layer digest,
+    which equals the GGUF file sha256) — never a runtime manifest digest.
+    None when the runtime can't report it (vLLM, unreadable models dir);
+    matching then falls back to the name.
+    """
+    local_name: str
+    sha256: Optional[str] = None
+    size_bytes: Optional[int] = None
+    loaded: bool = False
+    runtime: Optional[str] = None
+
+
 class WorkerHeartbeatRequest(BaseModel):
     """Unified worker heartbeat (spec §8.1: dynamic properties).
 
@@ -233,6 +248,11 @@ class WorkerHeartbeatRequest(BaseModel):
     # Optional name → digest map for the loaded models (additive; older
     # daemons omit it and fall back to name matching).
     loaded_model_digests: dict = {}
+    # Full on-disk inventory, resent whole every beat (additive). Richer
+    # than loaded_models: covers unloaded artifacts and carries file
+    # hashes, so availability rows stay identity-true and drift (a manual
+    # `ollama pull`) surfaces on the next beat.
+    inventory: List[InventoryItem] = []
     uptime_seconds: int = 0
 
 
@@ -295,6 +315,9 @@ class RuntimeInfo(BaseModel):
     models: List[str] = []
     # Optional name → digest map (additive; older daemons omit it).
     model_digests: dict = {}
+    # Full on-disk inventory with file hashes (additive; older daemons
+    # omit it and rows fall back to model_digests / name matching).
+    inventory: List[InventoryItem] = []
 
 
 class WorkerRegisterRequest(BaseModel):

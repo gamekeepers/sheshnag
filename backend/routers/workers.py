@@ -113,20 +113,30 @@ def register_worker(
         ]
 
     def _runtime_rows():
-        return [
-            WorkerRuntime(
+        rows = []
+        for r in req.runtimes:
+            # Availability rows come from the configured models list plus
+            # the on-disk inventory; the inventory's FILE hash outranks the
+            # legacy model_digests manifest digest, so rows are born
+            # carrying registry identity (#116).
+            inv_by_name = {i.local_name: i for i in r.inventory}
+            names = list(dict.fromkeys(list(r.models) + list(inv_by_name)))
+            rows.append(WorkerRuntime(
                 engine=r.type,
                 base_url=r.endpoint,
                 models=[
                     RuntimeModel(
                         name=m, runtime_model_id=m,
-                        digest=(r.model_digests or {}).get(m),
+                        digest=(
+                            inv_by_name[m].sha256
+                            if m in inv_by_name and inv_by_name[m].sha256
+                            else (r.model_digests or {}).get(m)
+                        ),
                     )
-                    for m in r.models
+                    for m in names
                 ],
-            )
-            for r in req.runtimes
-        ]
+            ))
+        return rows
 
     if existing:
         existing.api_key_id = _api_key.id
@@ -222,6 +232,31 @@ def worker_heartbeat(
                     digest=digests.get(name), loaded=True,
                 )
             )
+
+    # Full on-disk inventory (additive; older daemons send none): refresh
+    # digests with artifact FILE hashes and record on-disk models that were
+    # never registered, so availability tracks the disk, not just VRAM.
+    # Trust classification of these rows (verified/drift/unregistered) is
+    # the reconciliation loop's job, not the heartbeat's.
+    if req.inventory and worker.runtimes:
+        rows_by_name = {
+            m.name: m for rt in worker.runtimes for m in rt.models
+        }
+        for item in req.inventory:
+            row = rows_by_name.get(item.local_name)
+            if row is not None:
+                if item.sha256 and row.digest != item.sha256:
+                    row.digest = item.sha256
+                    row.updated_at = unix_now()
+            else:
+                worker.runtimes[0].models.append(
+                    RuntimeModel(
+                        name=item.local_name,
+                        runtime_model_id=item.local_name,
+                        digest=item.sha256,
+                        loaded=item.loaded,
+                    )
+                )
 
     db.commit()
     return {"status": "ok", "worker_id": worker_id}

@@ -106,6 +106,21 @@ class BaseExecutor(ABC):
             results.append(result)
         return results
 
+    async def inventory(self) -> List[dict]:
+        """
+        Every model artifact this runtime holds on disk, with file hashes.
+
+        Returns [{"local_name", "sha256", "size_bytes"}] — `sha256` is the
+        hash of the artifact FILE (the registry's identity/join key), never
+        a runtime-level manifest digest; None when the runtime cannot
+        provide it (the backend then falls back to name matching).
+
+        Feeds registration (first full inventory) and every heartbeat
+        (refresh + drift detection). Must never raise — return [] on any
+        failure; reporting nothing degrades to today's name-only behavior.
+        """
+        return []
+
     async def close(self) -> None:
         """
         Release any resources held by the executor.
