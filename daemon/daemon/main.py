@@ -260,10 +260,16 @@ async def _run(config: DaemonConfig) -> None:
             }
         except Exception as exc:
             logger.debug(f"Could not query model digests at registration: {exc}")
+    # First full on-disk inventory (artifact file hashes) — never raises,
+    # [] when the runtime or its models dir isn't reachable yet.
+    inventory = [
+        dict(item, runtime=config.runtime)
+        for item in await executor.inventory()
+    ]
 
     # ── Register with platform ───────────────────────────────────
     try:
-        assigned_worker_id = await reg_manager.register(client, config, model_digests)
+        assigned_worker_id = await reg_manager.register(client, config, model_digests, inventory)
         config.worker_id = assigned_worker_id
         client.update_worker_id(assigned_worker_id)
         logger.info(f"Worker registered: {assigned_worker_id}")

@@ -79,6 +79,7 @@ class Worker:
             interval=config.heartbeat_interval,
             get_loaded_models=self._get_loaded_models,
             get_loaded_model_digests=self._get_loaded_model_digests,
+            get_inventory=self._get_inventory,
             declared_vram_gb=config.vram_gb,
         )
 
@@ -118,6 +119,17 @@ class Worker:
                 if m.get("name")
             }
         return {}
+
+    async def _get_inventory(self) -> List[dict]:
+        """Full on-disk inventory with artifact file hashes, tagged with
+        this worker's runtime. BaseExecutor.inventory() never raises and
+        returns [] where the runtime can't report — heartbeats then carry
+        no inventory and the backend keeps name matching.
+        """
+        return [
+            dict(item, runtime=self._config.runtime)
+            for item in await self._executor.inventory()
+        ]
 
     # ── Public API ───────────────────────────────────────────────
 

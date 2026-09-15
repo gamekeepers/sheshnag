@@ -48,6 +48,7 @@ _ENV_MAP: Dict[str, str] = {
     "backend_url": "DAEMON_BACKEND_URL",
     "vllm_url": "DAEMON_VLLM_URL",
     "ollama_url": "DAEMON_OLLAMA_URL",
+    "ollama_models_dir": "DAEMON_OLLAMA_MODELS_DIR",
     "poll_interval": "DAEMON_POLL_INTERVAL",
     "log_level": "DAEMON_LOG_LEVEL",
     "work_dir": "DAEMON_WORK_DIR",
@@ -129,6 +130,10 @@ class DaemonConfig(BaseModel):
     backend_url: str = "http://localhost:8000"
     vllm_url: str = "http://localhost:8100"
     ollama_url: str = "http://localhost:11434"
+    # Ollama models dir for on-disk inventory (manifest layer hashes).
+    # None = auto-detect ($OLLAMA_MODELS, ~/.ollama/models, the systemd
+    # service store). Read-only; unreadable degrades to name-only.
+    ollama_models_dir: Optional[str] = None
     poll_interval: int = Field(default=5, gt=0, description="Seconds between poll attempts, must be > 0")
     log_level: str = "INFO"
     work_dir: str = Field(default_factory=lambda: str(Path.home() / ".gpu-daemon" / "jobs"))
