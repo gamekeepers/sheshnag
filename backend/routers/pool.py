@@ -79,10 +79,17 @@ def _compute_snapshot(db: Session) -> dict:
     idle = sum(1 for w in workers if w.activity == "idle")
     vram = sum(w.vram_total_gb or 0 for w in workers)
     gpus = sum(len(w.gpus) for w in workers)
+    # The fleet sum says how large the pool is. It says nothing about what a
+    # single job can have — a job runs on one worker, and on a single-device
+    # runtime on one card — so report the largest card alongside it rather
+    # than letting the sum imply a 300 GB machine exists.
+    largest_gpu = max(
+        (g.vram_gb for w in workers for g in w.gpus if g.vram_gb), default=0.0,
+    )
+    ram = sum(w.ram_total_gb or 0 for w in workers)
 
     # A model is servable when at least one online worker could be given
     # a batch for it — the scheduler's own predicate, not a lookalike.
-    advertised = [(w.advertised_models(), w.vram_total_gb) for w in workers]
     servable = [
         {
             "id": e.id,
@@ -91,7 +98,7 @@ def _compute_snapshot(db: Session) -> dict:
             "org_id": e.org_id,
         }
         for e in entries
-        if any(can_serve(e, models, w_vram) for models, w_vram in advertised)
+        if any(can_serve(e, w) for w in workers)
     ]
 
     return {
@@ -99,6 +106,8 @@ def _compute_snapshot(db: Session) -> dict:
         "workers_idle": idle,
         "workers_busy": len(workers) - idle,
         "vram_total_gb": round(vram, 1) if vram else 0.0,
+        "vram_largest_gpu_gb": round(largest_gpu, 1) if largest_gpu else 0.0,
+        "ram_total_gb": round(ram, 1) if ram else 0.0,
         "gpus_online": gpus,
         "servable": servable,
         "as_of": unix_now(),
@@ -178,9 +187,13 @@ def pool_capacity(
     # both stop being aggregates on a thin pool.
     if user is not None and snapshot["workers_online"] >= MIN_WORKERS_FOR_HARDWARE:
         body["vram_total_gb"] = snapshot["vram_total_gb"]
+        body["vram_largest_gpu_gb"] = snapshot["vram_largest_gpu_gb"]
+        body["ram_total_gb"] = snapshot["ram_total_gb"]
         body["gpus_online"] = snapshot["gpus_online"]
     else:
         body["vram_total_gb"] = None
+        body["vram_largest_gpu_gb"] = None
+        body["ram_total_gb"] = None
         body["gpus_online"] = None
 
     return body

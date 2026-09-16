@@ -213,6 +213,11 @@ class Worker(Base):
     os             = Column(String, nullable=True)
     cpu_cores      = Column(Integer, nullable=True)
     ram_total_gb   = Column(Float, nullable=True)
+    # Free RAM at the last heartbeat. NULL = unknown, never 0: a host that
+    # exposes no reading must not look saturated. Total is a registration
+    # snapshot and cannot answer "will a hybrid run fit right now" — what
+    # another process is holding is what decides that.
+    ram_available_gb = Column(Float, nullable=True)
     # Liveness (spec §8.1): online | offline | draining | error.
     # Managed server-side (heartbeat arrival / sweeper timeout).
     status         = Column(String, default="online")

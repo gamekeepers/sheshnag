@@ -142,6 +142,8 @@ whose. Per-worker rows stay on the superadmin `GET /v1/admin/workers`.
   "workers_busy": 3,
   "gpus_online": 14,
   "vram_total_gb": 312.0,
+  "vram_largest_gpu_gb": 24.0,
+  "ram_total_gb": 768.0,
   "models_servable": [
     {"id": "llama3.1-8b", "display_name": "Llama 3.1 8B", "parameter_size": "8B"}
   ],
@@ -151,16 +153,23 @@ whose. Per-worker rows stay on the superadmin `GET /v1/admin/workers`.
 
 - **`models_servable`** is what the *scheduler* would dispatch, not what the
   catalogue lists: an entry appears only when some online worker both hosts
-  the artifact and fits its `vram_gb`, decided by `provider_picker.can_serve`
-  — the same predicate `POST /workers/poll` matches on.
+  the artifact and satisfies that runtime's fit rule, decided by
+  `provider_picker.can_serve` — the same predicate `POST /workers/poll`
+  matches on.
+- **`vram_total_gb` is the fleet sum; `vram_largest_gpu_gb` is what one job
+  can actually have.** A batch runs on a single worker, and on a
+  single-device runtime on a single card, so the sum describes the size of
+  the pool and nothing about what will fit. A pool totalling 312 GB whose
+  biggest card is 24 GB cannot run a 40 GB model.
 - **Online** means `status = "online"` *and* a heartbeat within
   `HEARTBEAT_TIMEOUT_SECONDS`. The sweeper only flips the column once a
   minute, so this endpoint applies the cutoff at read time as well.
-- **`vram_total_gb` and `gpus_online` are `null`** for anonymous callers, and
-  for everyone while fewer than `MIN_WORKERS_FOR_HARDWARE` (3) workers are
-  online — on a thin pool "141 GB" names a specific machine, which is the
-  disclosure the aggregate exists to prevent. GPU *count* is aggregate and
-  travels with VRAM; GPU *names* are never returned at all.
+- **The hardware figures are `null`** — `vram_total_gb`,
+  `vram_largest_gpu_gb`, `ram_total_gb` and `gpus_online` — for anonymous
+  callers, and for everyone while fewer than `MIN_WORKERS_FOR_HARDWARE` (3)
+  workers are online: on a thin pool "141 GB" names a specific machine,
+  which is the disclosure the aggregate exists to prevent. They travel
+  together for that reason. GPU *names* are never returned at all.
 - **Org-private catalogue entries** appear only for members of that org
   (superadmins see all), matching `GET /v1/models`.
 - **Never returned:** hostnames, GPU names, worker ids, org ids.
@@ -197,6 +206,7 @@ assigned to (403 otherwise).
   "gpu_memory_used_gb": 14.2,
   "vram_total_gb": 24.0,
   "vram_available_gb": 9.8,
+  "ram_available_gb": 41.2,
   "loaded_models": ["mistral-7b"],
   "uptime_seconds": 3600
 }
@@ -221,10 +231,19 @@ assigned to (403 otherwise).
 {"job": null}
 ```
 
-> **Matching:** the picker filters by VRAM (from heartbeats) and prefers
-> workers that already have the model loaded. A worker that has never
-> heartbeated only receives batches whose model it advertised at
-> registration — never an arbitrary batch.
+> **Matching:** the picker offers a batch only to a worker that hosts the
+> artifact *and* satisfies the fit rule of the runtime hosting it
+> (`provider_picker.FIT_RULES`), then prefers workers that already have the
+> model loaded.
+>
+> Fit is per-card, not per-machine: a single-device runtime needs one GPU
+> large enough on its own, so a 2 × 12 GB worker is never offered a 20 GB
+> model. Per-GPU sizes arrive at **registration**, so fit works before the
+> first heartbeat; the machine aggregate is used only when a worker reports
+> no per-GPU inventory. A worker that has stated no capacity at all — no
+> GPU rows and no heartbeat — is **not** offered work, since every worker
+> that can state one does so at registration (by probing, or via
+> `DAEMON_VRAM_GB`).
 
 #### POST /workers/upload-results
 ```
@@ -271,7 +290,7 @@ Postgres with SQLAlchemy ORM. Tables (see `models.py`):
 | `organizations` | Ownership boundary; owner derived from memberships |
 | `organization_memberships` | `role`: `owner` / `admin` / `viewer` |
 | `api_keys` | Hashed keys; `key_type`: `worker` (org-scoped) or `personal`; prefix for UI |
-| `workers` | Static specs; `status` (liveness, server-managed) vs `activity` (daemon-reported); aggregate `vram_total_gb` / `vram_available_gb` from heartbeats |
+| `workers` | Static specs; `status` (liveness, server-managed) vs `activity` (daemon-reported); aggregate `vram_total_gb` / `vram_available_gb` / `ram_available_gb` from heartbeats (`null` = unknown, not zero). `ram_total_gb` is a registration snapshot. Per-card sizes live on `worker_gpus` — that is what the fit rule reads, not the aggregate |
 | `worker_runtimes` | Inference engines a worker exposes (spec §8.2): engine, base_url, status |
 | `runtime_models` | Per-worker availability rows (spec §8.3): `name`, `runtime_model_id`, `digest`, `status` (on-disk) + `loaded` (in VRAM, heartbeat-updated). Lean by design — descriptive metadata lives on `model_catalog`. |
 | `worker_gpus` | Physical GPUs per worker (spec §8.4): vendor, name, vram_gb, driver, cuda |

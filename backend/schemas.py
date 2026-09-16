@@ -229,6 +229,9 @@ class WorkerHeartbeatRequest(BaseModel):
     vram_total_gb: float = 0.0
     # None = unknown (unified memory has no machine-wide "in use" counter).
     vram_available_gb: Optional[float] = None
+    # Free system RAM. None = unknown (older daemon, or a platform with no
+    # reading) — never coerce to 0, which would read as "saturated".
+    ram_available_gb: Optional[float] = None
     loaded_models: List[str] = []
     # Optional name → digest map for the loaded models (additive; older
     # daemons omit it and fall back to name matching).

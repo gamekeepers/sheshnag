@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, List, Optional, Dict
 
-from daemon.hardware import get_gpu_utilization
+from daemon.hardware import available_ram_gb, get_gpu_utilization
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +103,9 @@ class HeartbeatManager:
         gpu_stats = await asyncio.to_thread(get_gpu_utilization)
         memory_total = gpu_stats.get("memory_total_gb", 0.0)
         memory_used = gpu_stats.get("memory_used_gb", 0.0)
+        # Also off the loop: a subprocess on macOS. None where unreadable —
+        # sent as-is, because "unknown" and "none left" are different states.
+        ram_available = await asyncio.to_thread(available_ram_gb)
 
         # An operator-declared capacity (DAEMON_VRAM_GB) overrides probing, so
         # a provider can lend less than the card holds. It is also the only
@@ -142,6 +145,7 @@ class HeartbeatManager:
             "gpu_memory_used_gb": memory_used if memory_used is not None else 0.0,
             "vram_total_gb": memory_total,
             "vram_available_gb": memory_available,
+            "ram_available_gb": ram_available,
             "loaded_models": await self._fetch_loaded_models(),
             "loaded_model_digests": await self._fetch_loaded_model_digests(),
             "uptime_seconds": int(time.time() - self._start_time),

@@ -104,4 +104,14 @@ never being handed a single batch. The daemon logs one warning
 > scheduler reads only the total today. Intel Macs are not detected (no unified-memory
 > ceiling); set `DAEMON_VRAM_GB` there.
 
+> **Free system RAM.** Each heartbeat also carries `ram_available_gb` —
+> `MemAvailable` on Linux, free plus inactive pages on macOS, and `null`
+> anywhere neither is readable. `null` means *unknown*, never *none left*.
+> It is fitted against only by a runtime whose offload split is *declared*
+> rather than inferred — `llamacpp`, for which no daemon exists yet. The
+> runtimes in use today are fitted on VRAM alone: Ollama chooses its own
+> split at load time and spills to RAM silently rather than failing, so the
+> platform can neither predict the slowdown nor be sure the job fits, and
+> vLLM has no hybrid mode at all.
+
 See [Daemon internals](daemon.md) for the architecture and the backend contract.

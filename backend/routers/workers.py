@@ -196,6 +196,11 @@ def worker_heartbeat(
     worker.last_heartbeat = unix_now()
     worker.vram_total_gb = req.vram_total_gb
     worker.vram_available_gb = req.vram_available_gb
+    # Only overwrite when the daemon actually reported one: an older daemon
+    # omits the field entirely, and blanking a known value on every beat
+    # would make it permanently unknown.
+    if req.ram_available_gb is not None:
+        worker.ram_available_gb = req.ram_available_gb
 
     # Map reported loaded models onto runtime_models.loaded flags, and
     # record the digest of each loaded model (the reproducibility pin).

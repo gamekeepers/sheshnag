@@ -10,7 +10,7 @@ SQLite (the two dialects in the deployment matrix).
 import logging
 
 from sqlalchemy import inspect, text
-from sqlalchemy import Integer, String
+from sqlalchemy import Float, Integer, String
 
 from database import get_engine
 from models import Base, Batch, BatchAssignment, UsageRecord  # noqa: F401 — ensure models are registered
@@ -64,6 +64,11 @@ MIGRATIONS = [
                "batch_assignments", "org_id", String()),
     _Migration("batch_assignments.worker_hostname",
                "batch_assignments", "worker_hostname", String()),
+    # Free RAM, reported per heartbeat alongside the VRAM fields. Nullable
+    # because "unknown" is a real state: rows predate the column, and a
+    # platform with no reading reports None rather than 0.
+    _Migration("workers.ram_available_gb",
+               "workers", "ram_available_gb", Float()),
 ]
 
 

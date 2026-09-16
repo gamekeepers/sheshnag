@@ -525,6 +525,53 @@ def get_gpu_utilization() -> Dict[str, Any]:
     return stats
 
 
+def available_ram_gb() -> Optional[float]:
+    """Free system RAM in GiB, or None where the platform exposes no reading.
+
+    None is a real answer and must not be collapsed to 0 — a worker that
+    cannot measure is not a worker with nothing left.
+
+    Linux reads `MemAvailable`, not `MemFree`: MemFree excludes the page
+    cache the kernel hands straight back under pressure, so a healthy server
+    with a warm cache would report near zero. macOS has no single field —
+    free plus inactive pages is the closest equivalent, inactive being what
+    the VM reclaims first.
+    """
+    system = platform.system()
+
+    if system == "Linux":
+        try:
+            with open("/proc/meminfo", "r") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        kb = int(line.split()[1])
+                        return round(kb / (1024 * 1024), 2)
+        except (OSError, ValueError, IndexError) as e:
+            logger.debug(f"MemAvailable read failed: {e}")
+        return None
+
+    if system == "Darwin":
+        try:
+            out = subprocess.run(
+                ["vm_stat"], capture_output=True, text=True,
+                timeout=_SMI_TIMEOUT, check=True,
+            ).stdout
+            page_match = re.search(r"page size of (\d+) bytes", out)
+            page_bytes = int(page_match.group(1)) if page_match else 4096
+            pages = 0
+            for field in ("Pages free", "Pages inactive"):
+                m = re.search(rf"{field}:\s+(\d+)", out)
+                if m:
+                    pages += int(m.group(1))
+            if pages:
+                return round(pages * page_bytes / (1024 ** 3), 2)
+        except (subprocess.SubprocessError, OSError, ValueError) as e:
+            logger.debug(f"vm_stat read failed: {e}")
+        return None
+
+    return None
+
+
 def apply_declared_vram(gpus: List[Dict[str, Any]], declared_gb: float,
                         name: str = "unknown") -> List[Dict[str, Any]]:
     """

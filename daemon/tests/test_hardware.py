@@ -759,3 +759,75 @@ def test_successful_vram_probe_is_memoised(monkeypatch):
     assert hardware._apple_vram_gb() == 17.76
     assert hardware._apple_vram_gb() == 17.76
     assert len(calls) == 1
+
+
+# ══ Free system RAM ═════════════════════════════════════════════
+
+_MEMINFO = (
+    "MemTotal:       33554432 kB\n"
+    "MemFree:          524288 kB\n"
+    "MemAvailable:   16777216 kB\n"      # 16 GiB exactly
+    "Buffers:          131072 kB\n"
+)
+
+_VM_STAT = (
+    "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
+    "Pages free:                               65536.\n"
+    "Pages active:                            300000.\n"
+    "Pages inactive:                           32768.\n"
+    "Pages wired down:                        150000.\n"
+)
+
+
+def test_available_ram_reads_memavailable_not_memfree(monkeypatch):
+    """MemFree excludes reclaimable page cache, so a healthy server with a
+    warm cache would report near zero. MemAvailable is the honest figure."""
+    from unittest.mock import mock_open
+
+    monkeypatch.setattr(hardware.platform, "system", lambda: "Linux")
+    with patch("builtins.open", mock_open(read_data=_MEMINFO)):
+        assert hardware.available_ram_gb() == 16.0   # not 0.5 (MemFree)
+
+
+def test_available_ram_is_unknown_when_memavailable_is_absent(monkeypatch):
+    """A kernel too old for MemAvailable reports unknown, never a guess."""
+    from unittest.mock import mock_open
+
+    monkeypatch.setattr(hardware.platform, "system", lambda: "Linux")
+    without = "MemTotal:  33554432 kB\nMemFree:  524288 kB\n"
+    with patch("builtins.open", mock_open(read_data=without)):
+        assert hardware.available_ram_gb() is None
+
+
+def test_available_ram_survives_an_unreadable_meminfo(monkeypatch):
+    monkeypatch.setattr(hardware.platform, "system", lambda: "Linux")
+    with patch("builtins.open", side_effect=OSError("nope")):
+        assert hardware.available_ram_gb() is None
+
+
+def test_available_ram_on_macos_counts_free_plus_inactive(monkeypatch):
+    """Inactive pages are what the VM reclaims first, so they are available
+    in every sense that matters to a job about to allocate."""
+    monkeypatch.setattr(hardware.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        hardware.subprocess, "run",
+        lambda *a, **kw: type("R", (), {"stdout": _VM_STAT})(),
+    )
+
+    # (65536 + 32768) pages * 16384 bytes = 1.5 GiB
+    assert hardware.available_ram_gb() == 1.5
+
+
+def test_available_ram_survives_vm_stat_failure(monkeypatch):
+    monkeypatch.setattr(hardware.platform, "system", lambda: "Darwin")
+
+    def boom(*a, **kw):
+        raise OSError("vm_stat missing")
+
+    monkeypatch.setattr(hardware.subprocess, "run", boom)
+    assert hardware.available_ram_gb() is None
+
+
+def test_available_ram_is_unknown_on_an_unsupported_platform(monkeypatch):
+    monkeypatch.setattr(hardware.platform, "system", lambda: "Windows")
+    assert hardware.available_ram_gb() is None
