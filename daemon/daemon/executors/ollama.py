@@ -98,6 +98,10 @@ class OllamaExecutor(BaseExecutor):
         self._timeout = timeout
         self._max_concurrent = max_concurrent
         self._models_dir = models_dir
+        # sha256 (or name when hash-less) -> details dict. Details never
+        # change for a given artifact, so /api/show is paid once per model,
+        # not once per heartbeat.
+        self._details_cache: dict = {}
         self._client: Optional[httpx.AsyncClient] = None
         self.version: Optional[str] = None
         self._server_header_warned = False
@@ -504,8 +508,61 @@ class OllamaExecutor(BaseExecutor):
                 break
         return items
 
+    async def _fetch_tag_details(self) -> dict:
+        """name -> {quantization, parameter_size, family} from /api/tags
+        (one call for every model). Best-effort: {} on failure."""
+        try:
+            response = await self._get_client().get("/api/tags", timeout=10.0)
+            response.raise_for_status()
+            out = {}
+            for m in response.json().get("models", []):
+                d = m.get("details") or {}
+                if m.get("name"):
+                    out[m["name"]] = {
+                        "quantization": d.get("quantization_level"),
+                        "parameter_size": d.get("parameter_size"),
+                        "family": d.get("family"),
+                    }
+            return out
+        except Exception as exc:
+            logger.debug(f"Could not fetch /api/tags details: {exc}")
+            return {}
+
+    async def _fetch_context_length(self, name: str) -> Optional[int]:
+        """`<arch>.context_length` from /api/show model_info. None on failure."""
+        try:
+            response = await self._get_client().post(
+                "/api/show", json={"model": name}, timeout=10.0,
+            )
+            response.raise_for_status()
+            info = response.json().get("model_info") or {}
+            for key, value in info.items():
+                if key.endswith(".context_length"):
+                    return int(value)
+        except Exception as exc:
+            logger.debug(f"Could not fetch /api/show for {name}: {exc}")
+        return None
+
+    async def _attach_details(self, items: List[dict]) -> List[dict]:
+        """Add `details` so the backend can register a discovered model
+        without a human filling in quant/params/ctx/family (#116 auto-adopt).
+        Cached per sha256: the per-model /api/show round trip happens once
+        per artifact for the life of the process, never per heartbeat."""
+        tags = await self._fetch_tag_details()
+        for item in items:
+            key = item.get("sha256") or item["local_name"]
+            cached = self._details_cache.get(key)
+            if cached is None:
+                details = dict(tags.get(item["local_name"], {}))
+                details["context_length"] = await self._fetch_context_length(item["local_name"])
+                if any(v is not None for v in details.values()):
+                    self._details_cache[key] = details
+                cached = details
+            item["details"] = cached if any(v is not None for v in cached.values()) else None
+        return items
+
     async def inventory(self) -> List[dict]:
-        """Every model on disk with its GGUF file hash.
+        """Every model on disk with its GGUF file hash and descriptive details.
 
         Reads Ollama's own manifests tree (the API never exposes per-file
         hashes). Falls back to /api/tags names with sha256=None when the
@@ -513,14 +570,15 @@ class OllamaExecutor(BaseExecutor):
         """
         try:
             models_dir = self._resolve_models_dir()
+            items = []
             if models_dir is not None:
                 items = await asyncio.to_thread(self._scan_manifests, models_dir)
-                if items:
-                    return items
-            return [
-                {"local_name": m["name"], "sha256": None, "size_bytes": None}
-                for m in await self.list_models_detailed()
-            ]
+            if not items:
+                items = [
+                    {"local_name": m["name"], "sha256": None, "size_bytes": None}
+                    for m in await self.list_models_detailed()
+                ]
+            return await self._attach_details(items)
         except Exception as exc:
             logger.warning(f"Ollama inventory failed: {exc}")
             return []

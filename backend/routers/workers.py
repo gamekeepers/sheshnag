@@ -135,6 +135,7 @@ def register_worker(
                     name=m, runtime_model_id=m, digest=sha,
                     status=status, catalog_id=catalog_id,
                     loaded=inv_by_name[m].loaded if m in inv_by_name else False,
+                    details=inv_by_name[m].details if m in inv_by_name else None,
                 ))
             rows.append(WorkerRuntime(engine=r.type, base_url=r.endpoint, models=models))
         return rows

@@ -202,7 +202,9 @@ assigned to (403 otherwise).
   "loaded_models": ["mistral-7b"],
   "inventory": [
     {"local_name": "mistral-7b", "sha256": "7485fe…", "size_bytes": 2497280256,
-     "loaded": true, "runtime": "ollama"}
+     "loaded": true, "runtime": "ollama",
+     "details": {"quantization": "Q4_K_M", "parameter_size": "7.2B",
+                 "context_length": 32768, "family": "llama"}}
   ],
   "uptime_seconds": 3600
 }
@@ -213,7 +215,11 @@ list with FILE hashes — Ollama manifest-layer digests, which equal the GGUF
 file's sha256 and join against `model_catalog.digest` (#116). It is resent
 whole every beat, so a model pulled manually on the box surfaces on the
 next heartbeat. Registration's `runtimes[].inventory` carries the same
-shape, so availability rows are born identity-carrying.
+shape, so availability rows are born identity-carrying. `details` (Ollama
+only; null for vLLM) is what the runtime knows about the artifact — it
+pre-fills adopt and lets auto-adopt register a discovered model without a
+human; the daemon caches it per hash so `/api/show` is called once per
+model, not per beat.
 
 Consequence: a worker advertises **everything its runtime holds**, not only
 `DAEMON_MODELS` — every on-disk Ollama model, every model vLLM serves — so a

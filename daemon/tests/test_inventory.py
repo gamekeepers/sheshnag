@@ -50,11 +50,13 @@ async def test_ollama_inventory_reads_model_layer_hash(tmp_path):
         [_template_layer(), _model_layer(WEIGHTS_SHA, 2497280256)],
     )
     ex = OllamaExecutor(models_dir=str(tmp_path))
+    ex._client = _api_client({})           # no details available -> None
     items = await ex.inventory()
     assert items == [{
         "local_name": "qwen3:4b",
         "sha256": WEIGHTS_SHA,
         "size_bytes": 2497280256,
+        "details": None,
     }]
 
 
@@ -76,6 +78,7 @@ async def test_ollama_inventory_namespaced_and_multiple(tmp_path):
         [_model_layer("e" * 64, 30)],
     )
     ex = OllamaExecutor(models_dir=str(tmp_path))
+    ex._client = _api_client({})
     names = {i["local_name"] for i in await ex.inventory()}
     assert names == {
         "gemma3:4b",
@@ -94,6 +97,7 @@ async def test_ollama_inventory_skips_junk_manifest(tmp_path):
     bad.mkdir(parents=True)
     (bad / "latest").write_text("{not json")
     ex = OllamaExecutor(models_dir=str(tmp_path))
+    ex._client = _api_client({})
     items = await ex.inventory()
     assert [i["local_name"] for i in items] == ["good:latest"]
 
@@ -111,14 +115,84 @@ async def test_ollama_inventory_falls_back_to_tags(tmp_path, monkeypatch):
     )
     # Auto-detection must not pick up the real machine's Ollama store.
     monkeypatch.setattr(ex, "_resolve_models_dir", lambda: None)
+    ex._client = _api_client({})
     items = await ex.inventory()
-    assert items == [{"local_name": "qwen3:4b", "sha256": None, "size_bytes": None}]
+    assert items == [{"local_name": "qwen3:4b", "sha256": None, "size_bytes": None,
+                      "details": None}]
 
 
 def _async(value):
     async def _coro():
         return value
     return _coro()
+
+
+def _api_client(models, show_calls=None):
+    """Mock Ollama API: /api/tags with `details`, /api/show with model_info.
+    `models` = {name: {"quantization_level", "parameter_size", "family",
+    "context_length"}}. `show_calls` (a list) records /api/show names."""
+    def handler(request):
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [
+                {"name": n, "digest": "x" * 64,
+                 "details": {k: v for k, v in d.items() if k != "context_length"}}
+                for n, d in models.items()
+            ]})
+        if request.url.path == "/api/show":
+            name = json.loads(request.content)["model"]
+            if show_calls is not None:
+                show_calls.append(name)
+            d = models.get(name)
+            if d is None:
+                return httpx.Response(404, json={"error": "not found"})
+            return httpx.Response(200, json={"model_info": {
+                "general.architecture": "qwen3",
+                "qwen3.context_length": d["context_length"],
+            }})
+        return httpx.Response(404)
+    return httpx.AsyncClient(base_url="http://ollama.test", transport=httpx.MockTransport(handler))
+
+
+# ─── Details for auto-adopt ──────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_inventory_attaches_details_and_caches_show_per_hash(tmp_path):
+    """quant/params/family from one /api/tags call, context_length from
+    /api/show — and /api/show is paid once per artifact, not per beat."""
+    _write_manifest(
+        tmp_path, "registry.ollama.ai", "library", "qwen3", "4b",
+        [_model_layer(WEIGHTS_SHA, 10)],
+    )
+    show_calls = []
+    ex = OllamaExecutor(models_dir=str(tmp_path))
+    ex._client = _api_client({
+        "qwen3:4b": {"quantization_level": "Q4_K_M", "parameter_size": "4.0B",
+                     "family": "qwen3", "context_length": 40960},
+    }, show_calls)
+
+    items = await ex.inventory()
+    assert items[0]["details"] == {
+        "quantization": "Q4_K_M", "parameter_size": "4.0B",
+        "family": "qwen3", "context_length": 40960,
+    }
+    await ex.inventory()
+    await ex.inventory()
+    assert show_calls == ["qwen3:4b"]          # cached by sha256 after the first beat
+
+
+@pytest.mark.asyncio
+async def test_inventory_details_degrade_without_show(tmp_path):
+    """/api/show failing (or the model unknown to the API) must not drop the
+    item or raise — details carry whatever /api/tags gave, ctx None."""
+    _write_manifest(
+        tmp_path, "registry.ollama.ai", "library", "orphan", "1b",
+        [_model_layer(MMPROJ_SHA, 10)],
+    )
+    ex = OllamaExecutor(models_dir=str(tmp_path))
+    # /api/tags knows nothing about it -> no details at all -> None
+    ex._client = _api_client({})
+    items = await ex.inventory()
+    assert items[0]["local_name"] == "orphan:1b" and items[0]["details"] is None
 
 
 # ─── vLLM ────────────────────────────────────────────────────

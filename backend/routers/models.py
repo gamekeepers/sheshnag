@@ -111,8 +111,11 @@ def list_quarantine(
             "local_names": set(),
             "workers": [],
             "claimed_entries": [],
+            "details": None,      # first non-null runtime-reported details
         })
         g["local_names"].add(m.name)
+        if g["details"] is None and m.details:
+            g["details"] = m.details
         g["workers"].append({
             "worker_id": w.id, "hostname": w.hostname, "org_id": w.org_id,
             "runtime": rt.engine, "loaded": m.loaded,

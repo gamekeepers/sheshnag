@@ -83,8 +83,9 @@ def _rows(db, worker_id):
     }
 
 
-def _item(name, sha, loaded=False, runtime="ollama"):
-    return {"local_name": name, "sha256": sha, "size_bytes": 1, "loaded": loaded, "runtime": runtime}
+def _item(name, sha, loaded=False, runtime="ollama", details=None):
+    return {"local_name": name, "sha256": sha, "size_bytes": 1, "loaded": loaded,
+            "runtime": runtime, "details": details}
 
 
 # ─── classify() ──────────────────────────────────────────────
@@ -262,3 +263,25 @@ def test_adopt_rejects_unreported_name_and_unknown_org(auth_client, superadmin_c
                  if m["id"] == "zztest-realname-3b-q4km")
     assert entry["status"] == "unverified"
     assert _rows(db, wid)["realname:3b"].status == AVAILABLE
+
+
+# ─── details for auto-adopt ──────────────────────────────────
+
+def test_details_stored_and_exposed_in_quarantine(auth_client, superadmin_client, db):
+    details = {"quantization": "Q4_K_M", "parameter_size": "4.0B",
+               "family": "qwen3", "context_length": 40960}
+    key = _worker_key(auth_client, "Recon Org Det")
+    wid = _register(auth_client, key, "zzrecon-det", [
+        _item("detailed:4b", "6" * 64, details=details),
+    ])
+    assert _rows(db, wid)["detailed:4b"].details == details
+
+    # Heartbeat refreshes details when they change (e.g. daemon upgrade
+    # that starts reporting ctx).
+    richer = dict(details, context_length=131072)
+    _heartbeat(auth_client, key, wid, [_item("detailed:4b", "6" * 64, details=richer)])
+    assert _rows(db, wid)["detailed:4b"].details == richer
+
+    group = next(g for g in superadmin_client.get("/v1/models/quarantine").json()["data"]
+                 if g["sha256"] == "6" * 64)
+    assert group["details"] == richer

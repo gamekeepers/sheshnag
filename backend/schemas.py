@@ -229,6 +229,10 @@ class InventoryItem(BaseModel):
     size_bytes: Optional[int] = None
     loaded: bool = False
     runtime: Optional[str] = None
+    # Descriptive facts the runtime knows about the artifact (quantization,
+    # parameter_size, context_length, family) — what auto-adopt needs to
+    # register a discovered model without a human. Null for vLLM.
+    details: Optional[dict] = None
 
 
 class WorkerHeartbeatRequest(BaseModel):
