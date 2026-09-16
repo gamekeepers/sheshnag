@@ -245,14 +245,19 @@ def worker_heartbeat(
                     row.digest = item.sha256
                     row.updated_at = unix_now()
             else:
-                worker.runtimes[0].models.append(
-                    RuntimeModel(
-                        name=item.local_name,
-                        runtime_model_id=item.local_name,
-                        digest=item.sha256,
-                        loaded=item.loaded,
-                    )
+                row = RuntimeModel(
+                    name=item.local_name,
+                    runtime_model_id=item.local_name,
+                    digest=item.sha256,
+                    loaded=item.loaded,
                 )
+                worker.runtimes[0].models.append(row)
+                # Record it so a duplicate local_name later in the SAME
+                # report updates this row instead of appending a second one
+                # — UniqueConstraint(runtime_id, name) would otherwise fire
+                # at commit and roll back the whole heartbeat, liveness
+                # included, every 30s for as long as the client misbehaves.
+                rows_by_name[item.local_name] = row
 
     db.commit()
     return {"status": "ok", "worker_id": worker_id}

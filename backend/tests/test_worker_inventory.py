@@ -113,6 +113,32 @@ def test_heartbeat_inventory_refreshes_digests_and_adds_rows(auth_client, db_ses
     assert rows["deepseek-r1:1.5b"].loaded is False
 
 
+def test_heartbeat_duplicate_inventory_name_does_not_500(auth_client, db_session):
+    """A buggy daemon listing the same local_name twice in one report must
+    not trip UniqueConstraint(runtime_id, name) at commit — that rolled back
+    the whole heartbeat, liveness included, every 30s."""
+    key = _worker_key(auth_client, "Inv Org Dup")
+    resp = auth_client.post(
+        "/workers/register",
+        json={"hostname": "dup-box",
+              "runtimes": [{"type": "ollama", "endpoint": "localhost", "models": []}]},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    worker_id = resp.json()["worker_id"]
+    hb = auth_client.post(
+        f"/workers/{worker_id}/heartbeat",
+        json={"worker_id": worker_id, "activity": "idle", "loaded_models": [],
+              "inventory": [
+                  {"local_name": "twice:1b", "sha256": "a" * 64, "loaded": False},
+                  {"local_name": "twice:1b", "sha256": "a" * 64, "loaded": False},
+              ]},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert hb.status_code == 200, hb.text
+    rows = _rows(db_session, worker_id)
+    assert list(rows) == ["twice:1b"]
+
+
 def test_digest_mismatch_rejects_and_warns_once(caplog):
     """A worker whose artifact differs from the catalogue pin is never
     scheduled — and the rejection is logged (once per distinct mismatch),

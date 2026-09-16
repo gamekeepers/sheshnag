@@ -213,6 +213,11 @@ whole every beat, so a model pulled manually on the box surfaces on the
 next heartbeat. Registration's `runtimes[].inventory` carries the same
 shape, so availability rows are born identity-carrying.
 
+Consequence: a worker advertises **everything its runtime holds**, not only
+`DAEMON_MODELS` — every on-disk Ollama model, every model vLLM serves — so a
+batch for a catalogued model may be routed to a box whose operator never
+listed it. Limiting what a box offers is the provider-control work in #104.
+
 #### POST /workers/poll
 ```json
 // Request

@@ -321,7 +321,7 @@ class RuntimeInfo(BaseModel):
     # (see InventoryItem.sha256). Remove once all daemons send `inventory`.
     model_digests: dict = {}
     # Full on-disk inventory with file hashes (additive; older daemons
-    # omit it and rows fall back to model_digests / name matching).
+    # omit it and their rows keep a null digest -> name matching).
     inventory: List[InventoryItem] = []
 
 

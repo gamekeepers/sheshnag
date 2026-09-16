@@ -105,7 +105,8 @@ def fetch_local_file_digests(models_dir) -> dict:
         if not path.is_file() or len(parts) != 4:
             continue
         try:
-            digest = _model_layer_digest(json.load(open(path)))
+            with open(path) as f:
+                digest = _model_layer_digest(json.load(f))
         except (OSError, ValueError):
             continue
         if digest:
@@ -117,7 +118,13 @@ def fetch_registry_file_digest(runtime_model_id: str):
     """File sha256 for a default-registry model via its manifest API — no
     blob download. `library/` is assumed for bare names (`gemma3:12b`)."""
     name, _, tag = runtime_model_id.partition(":")
-    namespace, _, model = name.rpartition("/") if "/" in name else ("library", "", name)
+    parts = name.split("/")
+    if len(parts) > 2 or (len(parts) == 2 and "." in parts[0]):
+        # hf.co/user/model or some.host/ns/model — not on the default
+        # registry; only the local manifests tree can hash those.
+        print(f"  {runtime_model_id}: non-default registry name, no registry fallback")
+        return None
+    namespace, model = (parts[0], parts[1]) if len(parts) == 2 else ("library", parts[0])
     url = f"https://{_DEFAULT_REGISTRY}/v2/{namespace}/{model}/manifests/{tag or 'latest'}"
     try:
         r = httpx.get(url, timeout=20.0,
@@ -263,9 +270,12 @@ def _enrich(entries, tags, args) -> int:
                 updates["vram_gb"] = vram
                 print(f"    vram_gb={vram} ({how} — verify)")
 
+        # `digest` is written even when None: an unresolvable file hash must
+        # CLEAR a stale (manifest-digest) pin, not preserve it forever.
+        clearable = {"digest"} if t.get("digest_resolved") else set()
         entry_changed = False
         for k, v in updates.items():
-            if v is not None and e.get(k) != v:
+            if (v is not None or k in clearable) and e.get(k) != v:
                 e[k] = v
                 entry_changed = True
         if entry_changed:
@@ -337,16 +347,23 @@ def main():
 
     tags = fetch_tags(args.ollama)
     # Swap /api/tags' manifest digest for the artifact FILE hash — the only
-    # digest a daemon's inventory will ever report. Unknown -> None, not a
-    # wrong pin.
+    # digest a daemon's inventory will ever report. Unknown -> None, which
+    # _enrich WRITES (clearing any stale pin) rather than skipping: a wrong
+    # pin rejects every worker, an absent one merely name-matches.
+    # Only resolve what this run will touch (--only), so the registry
+    # fallback is not one serial 20s request per model on the box.
     local = fetch_local_file_digests(args.models_dir)
-    for name, t in tags.items():
+    wanted = set(args.only) if (args.only and not args.discover) else set(tags)
+    for name in wanted & set(tags):
+        t = tags[name]
         digest = local.get(name)
         if digest is None and not args.no_registry:
             digest = fetch_registry_file_digest(name)
         if digest is None:
-            print(f"  no file hash for {name}: digest left unpinned (name matching)")
+            print(f"  no file hash for {name}: digest will be cleared/unpinned (name matching) "
+                  f"— re-run with a readable --models-dir or registry access to pin it")
         t["digest"] = digest
+        t["digest_resolved"] = True
     changed = _discover(entries, tags, args) if args.discover else _enrich(entries, tags, args)
 
     if changed:
