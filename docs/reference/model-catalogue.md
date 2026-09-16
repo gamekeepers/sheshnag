@@ -189,11 +189,26 @@ Verify: `GET /v1/models`, or count `model_catalog` rows.
 There is **no "run an uncatalogued model" path** — instead, tiers of how an
 entry is added (every runnable model stays a pinned entry):
 
-1. **Platform-curated (public)** — the seed manifest. V1 default.
-2. **Org-private self-service** — an org adds a pinned entry scoped to itself
-   (`org_id`). Reserved; column exists, flow not wired.
-3. **Request → promote** — user requests, admin promotes from discovery
-   staging. Follow-up.
+1. **Platform-curated (public)** — the seed manifest (`models.yaml`).
+2. **Auto-adopted (public, registry-confirmed)** — a worker reports a hash
+   the catalogue does not know; the sweeper's auto-adopt pass
+   (`catalog_service.auto_adopt_pass`, every 60s) asks the identity
+   resolver whether the public registry serves exactly those bytes under
+   that name. If yes, an entry is created with no human: slug from the
+   name + quant (`qwen3:4b` → `qwen3-4b-q4km`), `vram_gb` **estimated**
+   from size (verify later), capabilities from the model family,
+   provenance from the registry, `status: unverified`,
+   `adopted_by: auto`. Its worker rows flip to schedulable on the same
+   pass. Governed by `CATALOG_AUTO_ADOPT` / `CATALOG_AUTO_ADOPT_ENABLED`
+   (see [Configuration](configuration.md)). A provider that pulls a public
+   model therefore sees it offered within about a minute.
+3. **Admin-adopted** — hashes the registry cannot confirm (custom
+   fine-tunes, private builds) stay quarantined; a superadmin adopts them
+   via `POST /v1/models/adopt` / the Models tab, supplying what bytes
+   cannot. `adopted_by` records who.
+4. **Org-private self-service** — an org adds a pinned entry scoped to
+   itself (`org_id`). Column exists; adopt accepts `org_id`; self-service
+   flow not wired.
 
 On-the-fly downloads only ever **materialize an existing catalogue entry**
 onto a worker that lacks it — never run an arbitrary id.

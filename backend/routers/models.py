@@ -13,16 +13,12 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import (
-    ModelCatalog, OrganizationMembership, RuntimeModel, ServingProfile,
-    WorkerRuntime, Worker,
+    ModelCatalog, OrganizationMembership, RuntimeModel, WorkerRuntime, Worker,
 )
 from auth import get_human_context, require_role
 from catalog_seed import validate_entry_id
-from models import Organization
-from reconciliation import (
-    DRIFT, UNREGISTERED, find_entries_by_name, find_entry_by_hash,
-    local_names_for_hash, reclassify_hash,
-)
+from catalog_service import AdoptError, adopt
+from reconciliation import DRIFT, UNREGISTERED, find_entries_by_name
 
 router = APIRouter()
 
@@ -68,6 +64,8 @@ def list_models(
             "task_type": e.task_type,
             # active | unverified (adopted from a worker hash; provenance unconfirmed)
             "status": e.status,
+            # NULL = seeded, 'auto' = auto-adopt pass, else adopting admin's id
+            "adopted_by": e.adopted_by,
             "capabilities": e.capabilities,
             "lineage": e.lineage,
             "vram_gb": e.vram_gb,
@@ -161,61 +159,25 @@ def adopt_model(
     available immediately — no YAML, no restart. Identity is the hash; the
     admin supplies what bytes cannot (vram_gb, name, capabilities).
     """
-    errors = validate_entry_id(req.id, {"quantization": req.quantization})
-    if errors:
-        raise HTTPException(status_code=400, detail="; ".join(errors))
-    if db.query(ModelCatalog).filter(ModelCatalog.id == req.id).first() is not None:
-        raise HTTPException(status_code=409, detail=f"catalogue id {req.id!r} already exists")
-    existing = find_entry_by_hash(db, req.sha256)
-    if existing is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"sha256 already pinned by catalogue entry {existing.id!r} "
-                f"(status={existing.status}, enabled={existing.enabled}) — "
-                "enable/activate that entry instead of adopting again"
-            ),
+    try:
+        entry, verified = adopt(
+            db,
+            sha256=req.sha256,
+            entry_id=req.id,
+            display_name=req.display_name,
+            runtime=req.runtime,
+            runtime_model_id=req.runtime_model_id,
+            vram_gb=req.vram_gb,
+            quantization=req.quantization,
+            task_type=req.task_type,
+            capabilities=req.capabilities,
+            lineage=req.lineage,
+            size_gb=req.size_gb,
+            org_id=req.org_id,
+            adopted_by=_admin.id,
         )
-    # The picker matches worker rows on the entry's runtime ids, so an
-    # adopted id that no worker reports for this hash would flip the rows
-    # to available yet never dispatch — a false success.
-    names = local_names_for_hash(db, req.sha256)
-    if names and req.runtime_model_id not in names:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"runtime_model_id {req.runtime_model_id!r} is not what any worker "
-                f"reports for this hash; workers call it {sorted(names)}"
-            ),
-        )
-    if req.org_id is not None and db.get(Organization, req.org_id) is None:
-        raise HTTPException(status_code=400, detail=f"unknown org_id {req.org_id!r}")
-
-    digest = req.sha256.strip().lower().split(":", 1)[-1]
-    entry = ModelCatalog(
-        id=req.id,
-        display_name=req.display_name,
-        runtime=req.runtime,                      # legacy pair kept dual-written
-        runtime_model_id=req.runtime_model_id,
-        digest=digest,
-        quantization=req.quantization,
-        vram_gb=req.vram_gb,
-        size_gb=req.size_gb,
-        task_type=req.task_type,
-        capabilities=req.capabilities,
-        lineage=req.lineage,
-        source_type="worker-adopted",
-        org_id=req.org_id,
-        status="unverified",
-        enabled=True,
-    )
-    db.add(entry)
-    db.flush()
-    db.add(ServingProfile(
-        catalog_id=entry.id, runtime=req.runtime, runtime_model_id=req.runtime_model_id,
-    ))
-    db.flush()
-    verified = reclassify_hash(db, digest)
+    except AdoptError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
     db.commit()
     return {
         "id": entry.id,

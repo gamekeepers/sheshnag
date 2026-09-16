@@ -116,3 +116,15 @@ async def run_sweeper() -> None:
             logger.exception("Worker sweep failed — retrying next interval")
         finally:
             db.close()
+
+        # Auto-adopt (#116): quarantined worker hashes the identity resolver
+        # confirms against their public registry become catalogue entries.
+        # Registry lookups are blocking HTTP with 20s timeouts — kept off
+        # the event loop so heartbeats/polls never wait on them.
+        try:
+            from catalog_service import run_auto_adopt_once
+            adopted = await asyncio.to_thread(run_auto_adopt_once)
+            if adopted:
+                logger.info("Auto-adopt pass registered %d model(s)", adopted)
+        except Exception:
+            logger.exception("Auto-adopt pass failed — retrying next interval")

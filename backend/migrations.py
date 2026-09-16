@@ -10,7 +10,7 @@ SQLite (the two dialects in the deployment matrix).
 import logging
 
 from sqlalchemy import inspect, text
-from sqlalchemy import Integer, String, JSON
+from sqlalchemy import BigInteger, Integer, String, JSON
 
 from database import get_engine
 from models import Base, Batch, BatchAssignment, UsageRecord  # noqa: F401 — ensure models are registered
@@ -79,6 +79,11 @@ MIGRATIONS = [
     # Auto-adopt (#116): runtime-reported details per worker model row.
     _Migration("runtime_models.details",
                "runtime_models", "details", JSON()),
+    # Auto-adopt (#116): artifact size for vram estimates; who adopted an entry.
+    _Migration("runtime_models.size_bytes",
+               "runtime_models", "size_bytes", BigInteger()),
+    _Migration("model_catalog.adopted_by",
+               "model_catalog", "adopted_by", String()),
 ]
 
 

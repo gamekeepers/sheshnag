@@ -337,6 +337,7 @@ class RuntimeModel(Base):
     # Runtime-reported facts (quantization, parameter_size, context_length,
     # family) — pre-fills adopt / auto-adopt; descriptive only.
     details    = Column(JSON, nullable=True)
+    size_bytes = Column(BigInteger, nullable=True)   # artifact size as reported; feeds vram estimates
     last_used_at = Column(Integer, nullable=True)
     created_at = Column(Integer, default=unix_now)
     updated_at = Column(Integer, default=unix_now)
@@ -435,6 +436,12 @@ class ModelCatalog(Base):
     status           = Column(String, default="active")
     enabled          = Column(Boolean, default=True)
     created_at       = Column(Integer, default=unix_now)
+
+    # How the entry came to exist: NULL = seeded from the manifest,
+    # 'auto' = auto-adopt pass (registry-confirmed worker hash), else the
+    # id of the admin who adopted it. Lets the Models tab list auto entries
+    # for review without overloading `source_type` (which is provenance).
+    adopted_by       = Column(String, nullable=True)
 
     SELECTABLE_STATUSES = ("active", "unverified")
 

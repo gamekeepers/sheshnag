@@ -177,6 +177,7 @@ def apply_inventory(db, worker, items) -> None:
                 name=item.local_name, runtime_model_id=item.local_name,
                 digest=item.sha256, loaded=item.loaded,
                 details=getattr(item, "details", None),
+                size_bytes=getattr(item, "size_bytes", None),
             )
             rt.models.append(row)
             rows[key] = row
@@ -187,6 +188,9 @@ def apply_inventory(db, worker, items) -> None:
         if details and row.details != details:
             row.details = details
             row.updated_at = unix_now()
+        size = getattr(item, "size_bytes", None)
+        if size and row.size_bytes != size:
+            row.size_bytes = size
         status, entry = classify_entry(db, item.local_name, row.digest)
         _set_state(row, status, entry, worker.id)
     for (rt_id, name), row in rows.items():
