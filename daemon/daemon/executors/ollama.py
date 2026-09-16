@@ -98,6 +98,12 @@ class OllamaExecutor(BaseExecutor):
         self._timeout = timeout
         self._max_concurrent = max_concurrent
         self._models_dir = models_dir
+        # sha256 (or name when hash-less) -> details dict. Details never
+        # change for a given artifact, so /api/show is paid once per model,
+        # not once per heartbeat.
+        self._details_cache: dict = {}
+        self._details_failed_at: dict = {}            # key -> monotonic time of last failed lookup
+        self._details_api_failed_at: Optional[float] = None
         self._client: Optional[httpx.AsyncClient] = None
         self.version: Optional[str] = None
         self._server_header_warned = False
@@ -504,23 +510,125 @@ class OllamaExecutor(BaseExecutor):
                 break
         return items
 
+    # Negative-cache window for details lookups. Mirrors
+    # VERSION_PROBE_RETRY_SECONDS: a failed /api/tags or /api/show is not
+    # retried every heartbeat, or a black-holed Ollama endpoint would cost
+    # 10s x (N+1) per beat, indefinitely, and the sweeper would mark this
+    # worker offline for a runtime that is merely slow to answer metadata.
+    DETAILS_RETRY_SECONDS = 60.0
+    # Per-beat bound on /api/show lookups: N models converge over a few
+    # beats instead of one beat costing N x timeout on a slow server.
+    DETAILS_LOOKUPS_PER_BEAT = 4
+
+    async def _fetch_context_length(self, name: str) -> Optional[int]:
+        """`<arch>.context_length` from /api/show model_info. None on failure."""
+        try:
+            response = await self._get_client().post(
+                "/api/show", json={"model": name}, timeout=5.0,
+            )
+            response.raise_for_status()
+            info = response.json().get("model_info") or {}
+            for key, value in info.items():
+                if key.endswith(".context_length"):
+                    return int(value)
+        except Exception as exc:
+            logger.debug(f"Could not fetch /api/show for {name}: {exc}")
+        return None
+
+    @staticmethod
+    def _details_key(item: dict) -> Optional[str]:
+        """Cache key = the ARTIFACT, never the name alone: sha256 when we have
+        it; on the no-hash fallback path the name plus /api/tags' manifest
+        digest, which changes when the model under that name is re-pulled.
+        None when neither is known — such items are never cached."""
+        if item.get("sha256"):
+            return item["sha256"]
+        if item.get("_tag_digest"):
+            return f"{item['local_name']}@{item['_tag_digest']}"
+        return None
+
+    async def _attach_details(self, items: List[dict], tags: Optional[List[dict]] = None) -> List[dict]:
+        """Add `details` so the backend can register a discovered model
+        without a human filling in quant/params/ctx/family (#116 auto-adopt).
+
+        Steady state costs zero API calls: every item is served from
+        `_details_cache`. Lookups run only for uncached items, at most
+        DETAILS_LOOKUPS_PER_BEAT per beat, and a failed lookup (API down,
+        model unknown to the API) is remembered for DETAILS_RETRY_SECONDS.
+        `tags` lets the no-hash path pass its already-fetched /api/tags.
+        """
+        now = time.monotonic()
+        pending = []
+        for item in items:
+            key = self._details_key(item)
+            item["_key"] = key
+            if key in self._details_cache:
+                item["details"] = self._details_cache[key]
+            elif key in self._details_failed_at and now - self._details_failed_at[key] < self.DETAILS_RETRY_SECONDS:
+                item["details"] = None
+            else:
+                item["details"] = None
+                pending.append(item)
+
+        api_recently_failed = (
+            self._details_api_failed_at is not None
+            and now - self._details_api_failed_at < self.DETAILS_RETRY_SECONDS
+        )
+        if pending and not api_recently_failed:
+            if tags is None:
+                tags = await self.list_models_detailed()
+            if not tags:
+                # API down or no models known to it: back off for the window.
+                self._details_api_failed_at = now
+            else:
+                self._details_api_failed_at = None
+                by_name = {m["name"]: m for m in tags}
+                for item in pending[: self.DETAILS_LOOKUPS_PER_BEAT]:
+                    tag = by_name.get(item["local_name"])
+                    details = dict(tag["details"]) if tag else {}
+                    details["context_length"] = await self._fetch_context_length(item["local_name"])
+                    key = item["_key"]
+                    if not any(v is not None for v in details.values()):
+                        # Unknown to the API (on-disk/API desync): remember, retry later.
+                        if key:
+                            self._details_failed_at[key] = now
+                        continue
+                    item["details"] = details
+                    if key:
+                        if details["context_length"] is None:
+                            # Partial (show failed): serve it now, retry the ctx later.
+                            self._details_failed_at[key] = now
+                        else:
+                            self._details_cache[key] = details
+                            self._details_failed_at.pop(key, None)
+
+        for item in items:
+            item.pop("_key", None)
+            item.pop("_tag_digest", None)
+        return items
+
     async def inventory(self) -> List[dict]:
-        """Every model on disk with its GGUF file hash.
+        """Every model on disk with its GGUF file hash and descriptive details.
 
         Reads Ollama's own manifests tree (the API never exposes per-file
-        hashes). Falls back to /api/tags names with sha256=None when the
-        tree is unreadable. Never raises.
+        hashes) — pure filesystem, and once details are cached this path
+        makes no API call at all. Falls back to /api/tags names with
+        sha256=None when the tree is unreadable. Never raises.
         """
         try:
             models_dir = self._resolve_models_dir()
+            items = []
+            tags = None
             if models_dir is not None:
                 items = await asyncio.to_thread(self._scan_manifests, models_dir)
-                if items:
-                    return items
-            return [
-                {"local_name": m["name"], "sha256": None, "size_bytes": None}
-                for m in await self.list_models_detailed()
-            ]
+            if not items:
+                tags = await self.list_models_detailed()
+                items = [
+                    {"local_name": m["name"], "sha256": None, "size_bytes": None,
+                     "_tag_digest": m.get("digest")}
+                    for m in tags
+                ]
+            return await self._attach_details(items, tags)
         except Exception as exc:
             logger.warning(f"Ollama inventory failed: {exc}")
             return []
@@ -536,11 +644,21 @@ class OllamaExecutor(BaseExecutor):
             response = await client.get("/api/tags", timeout=10.0)
             response.raise_for_status()
             data = response.json()
-            return [
-                {"name": m["name"], "digest": m.get("digest")}
-                for m in data.get("models", [])
-                if m.get("name")
-            ]
+            out = []
+            for m in data.get("models", []):
+                if not m.get("name"):
+                    continue
+                d = m.get("details") or {}
+                out.append({
+                    "name": m["name"],
+                    "digest": m.get("digest"),   # MANIFEST digest — not artifact identity
+                    "details": {
+                        "quantization": d.get("quantization_level"),
+                        "parameter_size": d.get("parameter_size"),
+                        "family": d.get("family"),
+                    },
+                })
+            return out
         except Exception as e:
             logger.error(f"Failed to list models: {e}")
             return []

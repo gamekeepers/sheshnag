@@ -334,6 +334,9 @@ class RuntimeModel(Base):
     # NON_SCHEDULABLE rows; see reconciliation.py.
     status     = Column(String, default="available")
     loaded     = Column(Boolean, default=False)
+    # Runtime-reported facts (quantization, parameter_size, context_length,
+    # family) — pre-fills adopt / auto-adopt; descriptive only.
+    details    = Column(JSON, nullable=True)
     last_used_at = Column(Integer, nullable=True)
     created_at = Column(Integer, default=unix_now)
     updated_at = Column(Integer, default=unix_now)

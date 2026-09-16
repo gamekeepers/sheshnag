@@ -176,11 +176,16 @@ def apply_inventory(db, worker, items) -> None:
             row = RuntimeModel(
                 name=item.local_name, runtime_model_id=item.local_name,
                 digest=item.sha256, loaded=item.loaded,
+                details=getattr(item, "details", None),
             )
             rt.models.append(row)
             rows[key] = row
         elif item.sha256 and row.digest != item.sha256:
             row.digest = item.sha256
+            row.updated_at = unix_now()
+        details = getattr(item, "details", None)
+        if details and row.details != details:
+            row.details = details
             row.updated_at = unix_now()
         status, entry = classify_entry(db, item.local_name, row.digest)
         _set_state(row, status, entry, worker.id)

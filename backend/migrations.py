@@ -76,6 +76,9 @@ MIGRATIONS = [
     # databases (pure-ADD); create_all builds it with the FK on fresh ones.
     _Migration("runtime_models.catalog_id",
                "runtime_models", "catalog_id", String()),
+    # Auto-adopt (#116): runtime-reported details per worker model row.
+    _Migration("runtime_models.details",
+               "runtime_models", "details", JSON()),
 ]
 
 
