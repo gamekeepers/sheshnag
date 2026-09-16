@@ -58,12 +58,21 @@ class Confirmed:
     stores (HF repo + commit; Ollama library path with `source_revision`
     NULL, matching seeded entries). `digest` is the bare sha256 that was
     confirmed — the identity key the adopting entry pins.
+
+    `source_file` is the path inside the repo whose bytes matched (HF only;
+    Ollama's model layer has no path). Confirmation is deliberately
+    file-agnostic — the hash is the identity, the `:tag` in a local name is
+    a human label that may be wrong (mispull, upstream rename) — so the
+    matched path is recorded here to make the pull reference complete
+    without re-listing the tree, and to let the adopting entry pin the
+    exact file in `catalog_artifact_files`.
     """
     source_type: str
     source_ref: str
     source_revision: Optional[str]
     digest: str
     homepage_url: Optional[str] = None
+    source_file: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -235,6 +244,9 @@ class IdentityResolver:
         negative_ttl: float = DEFAULT_NEGATIVE_TTL,
         clock: Callable[[], float] = time.monotonic,
     ):
+        # Only a client this resolver created is closed by close(); an
+        # injected one belongs to the caller (mirrors registry_file_digest).
+        self._owns_client = client is None
         self._client = client or _default_client()
         self._negative_ttl = negative_ttl
         self._clock = clock
@@ -266,7 +278,10 @@ class IdentityResolver:
         return result
 
     def close(self) -> None:
-        self._client.close()
+        """Release the HTTP client if this resolver created it. An injected
+        client is left open — the caller owns its lifetime."""
+        if self._owns_client:
+            self._client.close()
 
     # -- caching --------------------------------------------------------------
 
@@ -347,5 +362,6 @@ class IdentityResolver:
                     source_revision=revision,
                     digest=digest,
                     homepage_url=name.homepage_url,
+                    source_file=entry.get("path"),
                 )
         return Unconfirmed("digest-mismatch")

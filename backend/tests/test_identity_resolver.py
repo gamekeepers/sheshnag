@@ -231,19 +231,36 @@ def test_hf_hash_confirmed_at_pinned_revision(clock):
     assert res == Confirmed(source_type="huggingface",
                             source_ref="bartowski/Llama-3.2-1B-Instruct-GGUF",
                             source_revision=HF_REV, digest=SHA,
-                            homepage_url="https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF")
+                            homepage_url="https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF",
+                            source_file="Llama-3.2-1B-Instruct-IQ3_M.gguf")
     assert [q.url.host for q in reg.requests] == ["huggingface.co", "huggingface.co"]
     assert reg.requests[1].url.params["recursive"] == "true"
 
 
 def test_hf_tag_does_not_matter_only_bytes_do(clock):
     """Ollama's `:Q4_K_M` tag names a quant, not a file; the hash is matched
-    against every LFS file in the repo."""
+    against every LFS file in the repo — and the file that actually matched
+    is recorded, so a tag that lies (here: bytes are the IQ3_M file) still
+    yields a complete, re-pullable reference for the adopting entry."""
     reg = Registry({HF_INFO: (200, {"sha": HF_REV}), HF_TREE: (200, hf_tree())})
+    res = make_resolver(reg, clock).resolve("hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M", SHA)
+    assert isinstance(res, Confirmed)
+    assert res.source_file == "Llama-3.2-1B-Instruct-IQ3_M.gguf"
+    assert res.source_revision == HF_REV
+
+
+def test_close_only_releases_an_owned_client(clock):
+    """An injected client belongs to the caller: close() must not shut it."""
+    reg = Registry({HF_INFO: (200, {"sha": HF_REV}), HF_TREE: (200, hf_tree())})
+    resolver = make_resolver(reg, clock)
+    resolver.close()
+    # Still usable: the shared client was left open.
     assert isinstance(
-        make_resolver(reg, clock).resolve("hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M", SHA),
-        Confirmed,
+        resolver.resolve("hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M", SHA), Confirmed
     )
+    owned = IdentityResolver(clock=clock)
+    owned.close()
+    assert owned._client.is_closed
 
 
 def test_hf_no_matching_file_is_unconfirmed(clock):

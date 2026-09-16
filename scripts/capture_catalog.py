@@ -53,14 +53,12 @@ import yaml
 
 try:
     from backend.identity_resolver import (
-        DEFAULT_REGISTRY, bare_digest, manifest_model_name, model_layer_digest,
-        registry_file_digest,
+        bare_digest, manifest_model_name, model_layer_digest, registry_file_digest,
     )
 except ImportError:  # run as a plain file (python scripts/capture_catalog.py)
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from backend.identity_resolver import (
-        DEFAULT_REGISTRY, bare_digest, manifest_model_name, model_layer_digest,
-        registry_file_digest,
+        bare_digest, manifest_model_name, model_layer_digest, registry_file_digest,
     )
 
 
@@ -71,7 +69,6 @@ def _bytes_to_gb(n):
 # Digest / name helpers live in backend/identity_resolver.py — the same
 # lookup the auto-adopt pass uses to confirm quarantined hashes, so the two
 # cannot drift apart.
-_DEFAULT_REGISTRY = DEFAULT_REGISTRY
 _bare_digest = bare_digest
 _manifest_model_name = manifest_model_name
 _model_layer_digest = model_layer_digest
