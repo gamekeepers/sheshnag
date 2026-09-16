@@ -108,17 +108,16 @@ async def test_ollama_inventory_falls_back_to_tags(tmp_path, monkeypatch):
     /api/tags names with sha256=None — never a manifest digest passed off
     as a file hash, and never a raised exception."""
     ex = OllamaExecutor(models_dir=str(tmp_path / "nonexistent"))
-    monkeypatch.setattr(
-        ex, "list_models_detailed",
-        # /api/tags digest deliberately present — it must NOT leak into sha256.
-        lambda: _async([{"name": "qwen3:4b", "digest": "d" * 64}]),
-    )
     # Auto-detection must not pick up the real machine's Ollama store.
     monkeypatch.setattr(ex, "_resolve_models_dir", lambda: None)
-    ex._client = _api_client({})
+    # /api/tags digest deliberately present — it must NOT leak into sha256.
+    ex._client = _api_client({"qwen3:4b": {"digest": "d" * 64, "quantization_level": "Q4_K_M",
+                                            "parameter_size": "4.0B", "family": "qwen3",
+                                            "context_length": 40960}})
     items = await ex.inventory()
     assert items == [{"local_name": "qwen3:4b", "sha256": None, "size_bytes": None,
-                      "details": None}]
+                      "details": {"quantization": "Q4_K_M", "parameter_size": "4.0B",
+                                  "family": "qwen3", "context_length": 40960}}]
 
 
 def _async(value):
@@ -127,15 +126,21 @@ def _async(value):
     return _coro()
 
 
-def _api_client(models, show_calls=None):
+def _api_client(models, show_calls=None, calls=None, timeout=False):
     """Mock Ollama API: /api/tags with `details`, /api/show with model_info.
     `models` = {name: {"quantization_level", "parameter_size", "family",
-    "context_length"}}. `show_calls` (a list) records /api/show names."""
+    "context_length", optional "digest"}}. `show_calls` records /api/show
+    names; `calls` records every request path; `timeout=True` makes every
+    request raise like a black-holed endpoint."""
     def handler(request):
+        if calls is not None:
+            calls.append(request.url.path)
+        if timeout:
+            raise httpx.ConnectTimeout("blackhole", request=request)
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [
-                {"name": n, "digest": "x" * 64,
-                 "details": {k: v for k, v in d.items() if k != "context_length"}}
+                {"name": n, "digest": d.get("digest", "x" * 64),
+                 "details": {k: v for k, v in d.items() if k not in ("context_length", "digest")}}
                 for n, d in models.items()
             ]})
         if request.url.path == "/api/show":
@@ -265,3 +270,95 @@ async def test_heartbeat_inventory_failure_degrades_to_empty(monkeypatch):
     manager = HeartbeatManager(client=None, worker_id="w1", get_inventory=broken)
     payload = await manager._build_payload()
     assert payload["inventory"] == []
+
+
+@pytest.mark.asyncio
+async def test_details_steady_state_makes_zero_api_calls(tmp_path):
+    _write_manifest(tmp_path, "registry.ollama.ai", "library", "qwen3", "4b",
+                    [_model_layer(WEIGHTS_SHA, 10)])
+    calls = []
+    ex = OllamaExecutor(models_dir=str(tmp_path))
+    ex._client = _api_client({"qwen3:4b": {"quantization_level": "Q4_K_M", "parameter_size": "4.0B",
+                                            "family": "qwen3", "context_length": 1}}, calls=calls)
+    await ex.inventory()
+    assert calls == ["/api/tags", "/api/show"]
+    await ex.inventory()
+    await ex.inventory()
+    assert calls == ["/api/tags", "/api/show"]     # cached: the manifest path is filesystem-only again
+
+
+@pytest.mark.asyncio
+async def test_details_api_failure_is_negative_cached(tmp_path):
+    """A black-holed Ollama endpoint must not cost 10s x (N+1) on EVERY beat:
+    one failed /api/tags backs the daemon off for DETAILS_RETRY_SECONDS, and
+    the inventory (hashes!) is still reported with details=None."""
+    for i in range(3):
+        _write_manifest(tmp_path, "registry.ollama.ai", "library", f"m{i}", "1b",
+                        [_model_layer(str(i) * 64, 10)])
+    calls = []
+    ex = OllamaExecutor(models_dir=str(tmp_path))
+    ex._client = _api_client({}, calls=calls, timeout=True)
+    items = await ex.inventory()
+    assert len(items) == 3 and all(i["details"] is None for i in items)
+    assert all(i["sha256"] for i in items)
+    await ex.inventory()
+    await ex.inventory()
+    assert calls == ["/api/tags"]                   # one attempt, then backed off
+    # Window elapsed -> exactly one more attempt.
+    ex._details_api_failed_at -= ex.DETAILS_RETRY_SECONDS + 1
+    await ex.inventory()
+    assert calls == ["/api/tags", "/api/tags"]
+
+
+@pytest.mark.asyncio
+async def test_details_lookups_capped_per_beat(tmp_path):
+    """N models converge over ceil(N/cap) beats instead of one beat paying
+    N x show-timeout on a slow server."""
+    models = {}
+    for i in range(6):
+        _write_manifest(tmp_path, "registry.ollama.ai", "library", f"cap{i}", "1b",
+                        [_model_layer(chr(ord("a") + i) * 64, 10)])
+        models[f"cap{i}:1b"] = {"quantization_level": "Q4_0", "parameter_size": "1B",
+                                "family": "x", "context_length": 100 + i}
+    show_calls = []
+    ex = OllamaExecutor(models_dir=str(tmp_path))
+    ex._client = _api_client(models, show_calls)
+    items = await ex.inventory()
+    assert len(show_calls) == ex.DETAILS_LOOKUPS_PER_BEAT
+    assert sum(i["details"] is not None for i in items) == ex.DETAILS_LOOKUPS_PER_BEAT
+    items = await ex.inventory()
+    assert len(show_calls) == 6 and all(i["details"] for i in items)
+    await ex.inventory()
+    assert len(show_calls) == 6
+
+
+@pytest.mark.asyncio
+async def test_details_unknown_to_api_retried_only_after_window(tmp_path):
+    """On-disk model the API does not know (desync): not a /api/show per beat."""
+    _write_manifest(tmp_path, "registry.ollama.ai", "library", "ghost", "1b",
+                    [_model_layer(MMPROJ_SHA, 10)])
+    show_calls = []
+    ex = OllamaExecutor(models_dir=str(tmp_path))
+    ex._client = _api_client({"other:1b": {"quantization_level": "Q4_0", "parameter_size": "1B",
+                                            "family": "x", "context_length": 1}}, show_calls)
+    await ex.inventory()
+    await ex.inventory()
+    assert show_calls == ["ghost:1b"]
+
+
+@pytest.mark.asyncio
+async def test_details_no_hash_path_keyed_by_artifact_not_name(tmp_path, monkeypatch):
+    """Fallback path: re-pulling `qwen3:4b` with different weights changes
+    /api/tags' digest, so cached details must NOT survive under the name."""
+    ex = OllamaExecutor(models_dir=str(tmp_path / "nonexistent"))
+    monkeypatch.setattr(ex, "_resolve_models_dir", lambda: None)
+    first = {"qwen3:4b": {"digest": "1" * 64, "quantization_level": "Q4_K_M",
+                          "parameter_size": "4.0B", "family": "qwen3", "context_length": 4096}}
+    ex._client = _api_client(first)
+    assert (await ex.inventory())[0]["details"]["context_length"] == 4096
+    repulled = {"qwen3:4b": {"digest": "2" * 64, "quantization_level": "Q8_0",
+                             "parameter_size": "4.0B", "family": "qwen3", "context_length": 40960}}
+    ex._client = _api_client(repulled)
+    item = (await ex.inventory())[0]
+    assert item["details"]["quantization"] == "Q8_0"
+    assert item["details"]["context_length"] == 40960
