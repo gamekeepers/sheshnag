@@ -44,7 +44,15 @@ HF_HOSTS = ("hf.co", "huggingface.co")
 MODEL_MEDIA_SUFFIX = "image.model"
 MANIFEST_ACCEPT = "application/vnd.docker.distribution.manifest.v2+json"
 DEFAULT_TIMEOUT = 20.0
-DEFAULT_NEGATIVE_TTL = 15 * 60  # seconds
+DEFAULT_NEGATIVE_TTL = 15 * 60  # seconds — definitive answers (mismatch, 404)
+# Transient failures (rate limit, 5xx, network) are remembered only briefly:
+# a 429 blip must not quarantine a confirmable hash for 15 minutes.
+DEFAULT_TRANSIENT_TTL = 60.0
+_TRANSIENT_REASON_PREFIXES = ("network-error", "http-429", "http-5", "bad-json")
+
+
+def is_transient(reason: str) -> bool:
+    return str(reason).startswith(_TRANSIENT_REASON_PREFIXES)
 
 SOURCE_OLLAMA = "ollama-library"   # matches the catalogue's `source_type` vocabulary
 SOURCE_HF = "huggingface"
@@ -243,12 +251,14 @@ class IdentityResolver:
         client: Optional[httpx.Client] = None,
         negative_ttl: float = DEFAULT_NEGATIVE_TTL,
         clock: Callable[[], float] = time.monotonic,
+        transient_ttl: float = DEFAULT_TRANSIENT_TTL,
     ):
         # Only a client this resolver created is closed by close(); an
         # injected one belongs to the caller (mirrors registry_file_digest).
         self._owns_client = client is None
         self._client = client or _default_client()
         self._negative_ttl = negative_ttl
+        self._transient_ttl = transient_ttl
         self._clock = clock
         self._lock = threading.Lock()
         self._confirmed: dict = {}    # (name, sha256) -> Confirmed        (final)
@@ -304,7 +314,8 @@ class IdentityResolver:
                 self._confirmed[key] = result
                 self._unconfirmed.pop(key, None)
             else:
-                self._unconfirmed[key] = (result, self._clock() + self._negative_ttl)
+                ttl = self._transient_ttl if is_transient(result.reason) else self._negative_ttl
+                self._unconfirmed[key] = (result, self._clock() + ttl)
 
     # -- sources --------------------------------------------------------------
 

@@ -464,6 +464,11 @@ class OllamaExecutor(BaseExecutor):
         (`hf.co/user/model:tag`). Matching /api/tags exactly matters — the
         heartbeat's `loaded` flag and the catalogue's runtime_model_id both
         join on this string.
+
+        Deliberate copy of backend/identity_resolver.manifest_model_name:
+        the daemon ships to provider boxes without the backend package, so
+        it cannot import it. Both are pinned by tests to the same renderings;
+        change them together.
         """
         if len(rel_parts) != 4:
             return None

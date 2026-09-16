@@ -294,3 +294,34 @@ def test_registry_file_digest_reports_why_not():
 def test_model_layer_digest_is_bare_hex():
     assert model_layer_digest(ollama_manifest()) == SHA
     assert model_layer_digest({"layers": []}) is None
+
+
+# ─── transient vs definitive negative caching ────────────────────────────────
+
+MANIFEST = "/v2/library/gemma3/manifests/1b"
+
+
+def test_rate_limit_is_retried_after_short_ttl_not_the_full_negative_ttl(clock):
+    """A 429 (or 5xx / network blip) must not quarantine a confirmable hash
+    for the full 15-minute negative TTL — it is remembered for
+    transient_ttl only, then re-asked."""
+    reg = Registry({MANIFEST: (429, {"errors": [{"code": "TOOMANYREQUESTS"}]})})
+    resolver = IdentityResolver(client=reg.client(), negative_ttl=900, transient_ttl=60, clock=clock)
+
+    assert resolver.resolve("gemma3:1b", SHA) == Unconfirmed("http-429")
+    reg.routes[MANIFEST] = (200, ollama_manifest())     # registry recovers
+    clock.t += 30
+    assert resolver.resolve("gemma3:1b", SHA) == Unconfirmed("http-429")   # still within 60s
+    clock.t += 31
+    assert isinstance(resolver.resolve("gemma3:1b", SHA), Confirmed)      # re-asked after 60s
+    assert len(reg.requests) == 2
+
+
+def test_definitive_mismatch_keeps_the_full_negative_ttl(clock):
+    reg = Registry({MANIFEST: (200, ollama_manifest(model_digest=OTHER))})
+    resolver = IdentityResolver(client=reg.client(), negative_ttl=900, transient_ttl=60, clock=clock)
+    assert resolver.resolve("gemma3:1b", SHA) == Unconfirmed("digest-mismatch")
+    reg.routes[MANIFEST] = (200, ollama_manifest())
+    clock.t += 61
+    assert resolver.resolve("gemma3:1b", SHA) == Unconfirmed("digest-mismatch")  # not transient: cached
+    assert len(reg.requests) == 1
