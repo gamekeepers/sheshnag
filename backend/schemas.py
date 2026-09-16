@@ -247,8 +247,9 @@ class WorkerHeartbeatRequest(BaseModel):
     # None = unknown (unified memory has no machine-wide "in use" counter).
     vram_available_gb: Optional[float] = None
     loaded_models: List[str] = []
-    # Optional name → digest map for the loaded models (additive; older
-    # daemons omit it and fall back to name matching).
+    # Legacy name → /api/tags MANIFEST digest map. Accepted for wire
+    # compatibility, ignored by the backend (not an artifact identity);
+    # file hashes travel in `inventory`.
     loaded_model_digests: dict = {}
     # Full on-disk inventory, resent whole every beat (additive). Richer
     # than loaded_models: covers unloaded artifacts and carries file
@@ -315,7 +316,9 @@ class RuntimeInfo(BaseModel):
     type: str                   # "ollama", "vllm", etc.
     endpoint: str
     models: List[str] = []
-    # Optional name → digest map (additive; older daemons omit it).
+    # Legacy name → /api/tags MANIFEST digest map. Accepted for wire
+    # compatibility, ignored by the backend: it is not an artifact identity
+    # (see InventoryItem.sha256). Remove once all daemons send `inventory`.
     model_digests: dict = {}
     # Full on-disk inventory with file hashes (additive; older daemons
     # omit it and rows fall back to model_digests / name matching).

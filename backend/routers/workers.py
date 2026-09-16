@@ -116,9 +116,12 @@ def register_worker(
         rows = []
         for r in req.runtimes:
             # Availability rows come from the configured models list plus
-            # the on-disk inventory; the inventory's FILE hash outranks the
-            # legacy model_digests manifest digest, so rows are born
-            # carrying registry identity (#116).
+            # the on-disk inventory. Only the inventory's FILE hash is stored
+            # as `digest`: the legacy `model_digests` map carries /api/tags
+            # MANIFEST digests, which never equal a catalogue pin — storing
+            # them would make the picker's guard reject every pinned model
+            # on a not-yet-upgraded daemon. Old daemons therefore keep a
+            # null digest and name-match, exactly as before pins existed.
             inv_by_name = {i.local_name: i for i in r.inventory}
             names = list(dict.fromkeys(list(r.models) + list(inv_by_name)))
             rows.append(WorkerRuntime(
@@ -127,11 +130,7 @@ def register_worker(
                 models=[
                     RuntimeModel(
                         name=m, runtime_model_id=m,
-                        digest=(
-                            inv_by_name[m].sha256
-                            if m in inv_by_name and inv_by_name[m].sha256
-                            else (r.model_digests or {}).get(m)
-                        ),
+                        digest=inv_by_name[m].sha256 if m in inv_by_name else None,
                     )
                     for m in names
                 ],
@@ -207,17 +206,17 @@ def worker_heartbeat(
     worker.vram_total_gb = req.vram_total_gb
     worker.vram_available_gb = req.vram_available_gb
 
-    # Map reported loaded models onto runtime_models.loaded flags, and
-    # record the digest of each loaded model (the reproducibility pin).
+    # Map reported loaded models onto runtime_models.loaded flags. The
+    # legacy `loaded_model_digests` map is accepted but ignored: it carries
+    # /api/tags MANIFEST digests, which never equal a catalogue file-hash
+    # pin, so writing them into `digest` would starve every pinned model on
+    # a not-yet-upgraded daemon. File hashes arrive via `inventory` below.
     reported = set(req.loaded_models)
-    digests = req.loaded_model_digests or {}
     known = set()
     for runtime in worker.runtimes:
         for model in runtime.models:
             was_loaded = model.loaded
             model.loaded = model.name in reported
-            if model.name in digests and digests[model.name]:
-                model.digest = digests[model.name]
             if model.loaded != was_loaded:
                 model.updated_at = unix_now()
             known.add(model.name)
@@ -227,10 +226,7 @@ def worker_heartbeat(
     if missing and worker.runtimes:
         for name in missing:
             worker.runtimes[0].models.append(
-                RuntimeModel(
-                    name=name, runtime_model_id=name,
-                    digest=digests.get(name), loaded=True,
-                )
+                RuntimeModel(name=name, runtime_model_id=name, loaded=True)
             )
 
     # Full on-disk inventory (additive; older daemons send none): refresh

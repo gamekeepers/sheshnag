@@ -50,7 +50,10 @@ def test_register_persists_inventory_hashes(auth_client, db_session):
 
 
 def test_register_without_inventory_still_works(auth_client, db_session):
-    """Older daemons omit `inventory`; the field is additive."""
+    """Older daemons omit `inventory`; the field is additive — and their
+    legacy `model_digests` (/api/tags MANIFEST digests) must NOT be stored
+    as identity, or the picker's guard would reject every pinned model on
+    a not-yet-upgraded daemon. They stay on name matching (digest null)."""
     key = _worker_key(auth_client, "Inv Org Legacy")
     payload = {
         "hostname": "old-daemon-box",
@@ -65,7 +68,7 @@ def test_register_without_inventory_still_works(auth_client, db_session):
     )
     assert resp.status_code == 200, resp.text
     rows = _rows(db_session, resp.json()["worker_id"])
-    assert rows["qwen3:4b"].digest == "legacy-digest"
+    assert rows["qwen3:4b"].digest is None
 
 
 def test_heartbeat_inventory_refreshes_digests_and_adds_rows(auth_client, db_session):
