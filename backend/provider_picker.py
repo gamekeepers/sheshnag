@@ -15,6 +15,7 @@ entry when the artifact is byte-identical.
 """
 import logging
 
+from identity_resolver import bare_digest
 from models import ModelCatalog
 
 logger = logging.getLogger(__name__)
@@ -46,15 +47,9 @@ def get_model_vram(db, model_id: str):
     return entry.vram_gb if entry else None
 
 
-def _norm_digest(d):
-    """Canonicalise a digest for comparison. Ollama reports a bare hex digest
-    via /api/tags while curated catalogue entries may carry a `sha256:`
-    prefix — strip it (and lowercase) so the same artifact compares equal
-    regardless of which path wrote it."""
-    if not d:
-        return None
-    d = str(d).strip().lower()
-    return d.split(":", 1)[1] if ":" in d else d
+# One digest normaliser for the whole backend (identity_resolver.bare_digest):
+# Ollama reports bare hex, curated entries may carry a `sha256:` prefix.
+_norm_digest = bare_digest
 
 
 def _hosts(worker_models, runtime_model_ids, catalog_digest) -> bool:

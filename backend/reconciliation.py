@@ -25,6 +25,7 @@ Nothing here trusts a name as identity when a hash is available.
 import logging
 from typing import Optional, Tuple
 
+from identity_resolver import bare_digest
 from models import CatalogArtifactFile, ModelCatalog, RuntimeModel, ServingProfile, unix_now
 
 logger = logging.getLogger(__name__)
@@ -35,11 +36,10 @@ DRIFT = "drift"
 MISSING = "missing"
 
 
-def _norm(digest) -> Optional[str]:
-    if not digest:
-        return None
-    d = str(digest).strip().lower()
-    return d.split(":", 1)[1] if ":" in d else d
+# Digest normalisation lives in identity_resolver.bare_digest — one copy for
+# the backend so worker rows, catalogue pins and registry answers all compare
+# the same way.
+_norm = bare_digest
 
 
 def find_entry_by_hash(db, sha256) -> Optional[ModelCatalog]:
