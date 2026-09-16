@@ -84,6 +84,9 @@ MIGRATIONS = [
                "runtime_models", "size_bytes", BigInteger()),
     _Migration("model_catalog.adopted_by",
                "model_catalog", "adopted_by", String()),
+    # vLLM identity (#116 step 4): shard list per worker model row.
+    _Migration("runtime_models.files",
+               "runtime_models", "files", JSON()),
 ]
 
 

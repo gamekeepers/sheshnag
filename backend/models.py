@@ -338,6 +338,7 @@ class RuntimeModel(Base):
     # family) — pre-fills adopt / auto-adopt; descriptive only.
     details    = Column(JSON, nullable=True)
     size_bytes = Column(BigInteger, nullable=True)   # artifact size as reported; feeds vram estimates
+    files      = Column(JSON, nullable=True)         # [{file, sha256, size_bytes}] for multi-shard artifacts
     last_used_at = Column(Integer, nullable=True)
     created_at = Column(Integer, default=unix_now)
     updated_at = Column(Integer, default=unix_now)

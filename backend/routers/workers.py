@@ -137,6 +137,10 @@ def register_worker(
                     loaded=inv_by_name[m].loaded if m in inv_by_name else False,
                     details=inv_by_name[m].details if m in inv_by_name else None,
                     size_bytes=inv_by_name[m].size_bytes if m in inv_by_name else None,
+                    files=(
+                        [f.model_dump() for f in inv_by_name[m].files]
+                        if m in inv_by_name and inv_by_name[m].files else None
+                    ),
                 ))
             rows.append(WorkerRuntime(engine=r.type, base_url=r.endpoint, models=models))
         return rows

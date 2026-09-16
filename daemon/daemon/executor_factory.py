@@ -31,6 +31,7 @@ def create_executor(config: DaemonConfig) -> BaseExecutor:
     elif config.runtime == "vllm":
         return VLLMExecutor(
             base_url=config.vllm_url,
+            hf_hub_cache=config.hf_hub_cache,
             timeout=config.inference_timeout,
             supported_models=config.models if config.models else None,
             max_concurrent=config.max_concurrent_prompts,

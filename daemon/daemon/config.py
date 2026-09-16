@@ -47,6 +47,7 @@ _ENV_MAP: Dict[str, str] = {
     "worker_id": "DAEMON_WORKER_ID",
     "backend_url": "DAEMON_BACKEND_URL",
     "vllm_url": "DAEMON_VLLM_URL",
+    "hf_hub_cache": "DAEMON_HF_HUB_CACHE",
     "ollama_url": "DAEMON_OLLAMA_URL",
     "ollama_models_dir": "DAEMON_OLLAMA_MODELS_DIR",
     "poll_interval": "DAEMON_POLL_INTERVAL",
@@ -129,6 +130,10 @@ class DaemonConfig(BaseModel):
     worker_id: str = Field(default_factory=_generate_worker_id)
     backend_url: str = "http://localhost:8000"
     vllm_url: str = "http://localhost:8100"
+    # HF hub cache vLLM serves from, for on-disk identity (shard hashes,
+    # repo + revision). None = auto-detect ($HF_HUB_CACHE, $HF_HOME/hub,
+    # ~/.cache/huggingface/hub). Read-only.
+    hf_hub_cache: Optional[str] = None
     ollama_url: str = "http://localhost:11434"
     # Ollama models dir for on-disk inventory (manifest layer hashes).
     # None = auto-detect ($OLLAMA_MODELS, ~/.ollama/models, the systemd

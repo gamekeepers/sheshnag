@@ -162,6 +162,14 @@ class HfName:
         return f"https://huggingface.co/{self.repo_id}"
 
 
+def _hf_from_repo_id(repo_id: str) -> Optional[HfName]:
+    """`Org/Repo` (a daemon-supplied hint, not a runtime name) -> HfName."""
+    parts = [p for p in str(repo_id or "").strip().split("/") if p]
+    if len(parts) != 2:
+        return None
+    return HfName(user=parts[0], repo=parts[1], tag=None)
+
+
 def parse_local_name(local_name: str) -> Union[OllamaName, HfName, None]:
     """Classify a runtime model name by where its manifest lives.
 
@@ -256,23 +264,50 @@ class IdentityResolver:
 
     # -- public ---------------------------------------------------------------
 
-    def resolve(self, local_name: str, sha256: Optional[str]) -> Resolution:
+    def resolve(
+        self,
+        local_name: str,
+        sha256: Optional[str],
+        *,
+        source_ref: Optional[str] = None,
+        source_revision: Optional[str] = None,
+        files: Optional[list] = None,
+    ) -> Resolution:
+        """Confirm `(local_name, sha256)`.
+
+        The optional hints come from a daemon that already knows where the
+        bytes came from (vLLM's HF hub cache): `source_ref` is the HF repo
+        id — used instead of parsing `local_name`, which for vLLM is a
+        served alias or a bare `Org/Repo` that would otherwise look like an
+        Ollama community name — `source_revision` the commit to check at,
+        and `files` every shard's sha256. With `files`, confirmation
+        requires EVERY shard to be present in the repo at that revision,
+        not just the identity shard.
+        """
         digest = bare_digest(sha256)
         if not digest:
             return Unconfirmed("no-hash")
-        key = (local_name, digest)
+        digests = tuple(sorted({bare_digest(f) for f in (files or []) if bare_digest(f)} | {digest}))
+        key = (local_name, digests, source_ref, source_revision)
 
         cached = self._cached(key)
         if cached is not None:
             return cached
 
-        parsed = parse_local_name(local_name)
-        if isinstance(parsed, OllamaName):
-            result = self._resolve_ollama(parsed, digest)
-        elif isinstance(parsed, HfName):
-            result = self._resolve_hf(parsed, digest)
+        if source_ref:
+            parsed = _hf_from_repo_id(source_ref)
+            if parsed is None:
+                result = Unconfirmed("unsupported-registry")
+            else:
+                result = self._resolve_hf(parsed, digest, digests=digests, revision=source_revision)
         else:
-            result = Unconfirmed("unsupported-registry")
+            parsed = parse_local_name(local_name)
+            if isinstance(parsed, OllamaName):
+                result = self._resolve_ollama(parsed, digest)
+            elif isinstance(parsed, HfName):
+                result = self._resolve_hf(parsed, digest, digests=digests)
+            else:
+                result = Unconfirmed("unsupported-registry")
 
         self._remember(key, result)
         return result
@@ -341,11 +376,19 @@ class IdentityResolver:
             homepage_url=name.homepage_url,
         )
 
-    def _resolve_hf(self, name: HfName, digest: str) -> Resolution:
-        info, err = self._get_json(name.api_url)
-        if err:
-            return err
-        revision = (info or {}).get("sha") if isinstance(info, dict) else None
+    def _resolve_hf(
+        self, name: HfName, digest: str, digests: Optional[tuple] = None,
+        revision: Optional[str] = None,
+    ) -> Resolution:
+        """Confirm at `revision` when the caller knows it (the cached commit
+        vLLM serves), else at the repo's current commit. Every hash in
+        `digests` (default: just `digest`) must be an LFS file in the tree.
+        """
+        if not revision:
+            info, err = self._get_json(name.api_url)
+            if err:
+                return err
+            revision = (info or {}).get("sha") if isinstance(info, dict) else None
         tree, err = self._get_json(
             f"{name.api_url}/tree/{revision or 'main'}", params={"recursive": "true"}
         )
@@ -353,15 +396,20 @@ class IdentityResolver:
             return err
         if not isinstance(tree, list):
             return Unconfirmed("bad-json")
+        paths_by_oid = {}
         for entry in tree:
             lfs = entry.get("lfs") if isinstance(entry, dict) else None
-            if lfs and bare_digest(lfs.get("oid")) == digest:
-                return Confirmed(
-                    source_type=SOURCE_HF,
-                    source_ref=name.repo_id,
-                    source_revision=revision,
-                    digest=digest,
-                    homepage_url=name.homepage_url,
-                    source_file=entry.get("path"),
-                )
-        return Unconfirmed("digest-mismatch")
+            oid = bare_digest(lfs.get("oid")) if lfs else None
+            if oid:
+                paths_by_oid.setdefault(oid, entry.get("path"))
+        required = set(digests or (digest,))
+        if not required.issubset(paths_by_oid):
+            return Unconfirmed("digest-mismatch")
+        return Confirmed(
+            source_type=SOURCE_HF,
+            source_ref=name.repo_id,
+            source_revision=revision,
+            digest=digest,
+            homepage_url=name.homepage_url,
+            source_file=paths_by_oid.get(digest),
+        )

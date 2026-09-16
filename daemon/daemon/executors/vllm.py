@@ -13,10 +13,12 @@ Architecture note:
 
 from __future__ import annotations
 
+import asyncio
 from typing import List, Optional, Set, Union
 
 import httpx
 
+from daemon import hf_cache
 from daemon.executors.base import BaseExecutor
 from daemon.log import get_logger
 from daemon.models import CompletionResult, PromptRequest
@@ -44,10 +46,12 @@ class VLLMExecutor(BaseExecutor):
         timeout: float = 300.0,
         supported_models: Optional[list[str]] = None,
         max_concurrent: int = 8,
+        hf_hub_cache: Optional[str] = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._max_concurrent = max_concurrent
+        self._hf_hub_cache = hf_hub_cache
         self._supported_models: Set[str] = set(supported_models) if supported_models else set()
         self._client: httpx.AsyncClient | None = None
         self.version: Optional[str] = None   # populated by health_check()
@@ -235,16 +239,46 @@ class VLLMExecutor(BaseExecutor):
 
         return True
 
+    def _identify(self, root: Optional[str]) -> dict:
+        """Blocking: hub-cache identity for a served model's `root`.
+
+        Returns the fields to merge into the model's inventory rows —
+        shard hashes, `files`, `details` (family/quant/ctx/params from
+        config.json) and the pull reference as `details.source_ref` /
+        `source_revision` — or {} when `root` is not a cached HF repo
+        (local path, cache unreadable): those rows stay hash-less and
+        name-matched, exactly as before.
+        """
+        try:
+            cache = hf_cache.resolve_hub_cache(self._hf_hub_cache)
+            found = hf_cache.locate(cache, root or "")
+            if not found:
+                return {}
+            repo_id, revision, snapshot = found
+            info = hf_cache.describe(snapshot)
+            files = [f for f in info["files"] if f["sha256"]]
+            details = dict(info["details"], source_ref=repo_id, source_revision=revision)
+            return {
+                "sha256": files[0]["sha256"] if files else None,
+                "size_bytes": files[0]["size_bytes"] if files else None,
+                "files": files or None,
+                "details": details if any(v is not None for v in details.values()) else None,
+            }
+        except Exception as exc:
+            logger.debug(f"hub-cache identity unavailable for {root!r}: {exc}")
+            return {}
+
     async def inventory(self) -> List[dict]:
-        """Models this vLLM server serves.
+        """Models this vLLM server serves, with hub-cache identity.
 
         The served name (`id`) is the join key: it is what a serving
         profile's runtime_model_id pins and what dispatch sends as
         body.model. Under --served-model-name it differs from `root` (the
-        underlying HF path), so both are reported as rows and either
-        convention matches. vLLM exposes no per-file hash over HTTP, so
-        sha256 stays None and the backend matches these rows by name only.
-        Never raises.
+        HF repo id / path), so both are reported as rows and either
+        convention matches. Identity comes from the HF hub cache, which is
+        content-addressed: `sha256` is shard 1's blob hash, `files` every
+        shard, `details.source_ref`/`source_revision` the repo + commit.
+        Models not in the cache stay hash-less. Never raises.
         """
         try:
             client = self._get_client()
@@ -252,10 +286,14 @@ class VLLMExecutor(BaseExecutor):
             resp.raise_for_status()
             items, seen = [], set()
             for m in resp.json().get("data", []):
+                identity = await asyncio.to_thread(self._identify, m.get("root") or m.get("id"))
                 for name in (m.get("id"), m.get("root")):
                     if name and name not in seen:
                         seen.add(name)
-                        items.append({"local_name": name, "sha256": None, "size_bytes": None})
+                        items.append({
+                            "local_name": name, "sha256": None, "size_bytes": None,
+                            **identity,
+                        })
             return items
         except Exception as exc:
             logger.warning(f"vLLM inventory failed: {exc}")

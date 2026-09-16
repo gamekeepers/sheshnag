@@ -214,6 +214,13 @@ class TokenOut(BaseModel):
     must_change_password: bool = False
 
 
+class InventoryFile(BaseModel):
+    """One file of a multi-file artifact (safetensors shard) with its hash."""
+    file: str
+    sha256: Optional[str] = None
+    size_bytes: Optional[int] = None
+
+
 class InventoryItem(BaseModel):
     """One on-disk artifact a worker's runtime holds (#116 identity join).
 
@@ -233,6 +240,9 @@ class InventoryItem(BaseModel):
     # parameter_size, context_length, family) — what auto-adopt needs to
     # register a discovered model without a human. Null for vLLM.
     details: Optional[dict] = None
+    # Every weight file of a multi-file artifact (vLLM safetensors shards);
+    # `sha256` above is shard 1. Pinned into catalog_artifact_files on adopt.
+    files: Optional[List[InventoryFile]] = None
 
 
 class WorkerHeartbeatRequest(BaseModel):

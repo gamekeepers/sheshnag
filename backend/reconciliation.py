@@ -120,6 +120,13 @@ def local_names_for_hash(db, sha256) -> set:
     }
 
 
+def _files_payload(item) -> Optional[list]:
+    files = getattr(item, "files", None)
+    if not files:
+        return None
+    return [f.model_dump() if hasattr(f, "model_dump") else dict(f) for f in files]
+
+
 def _set_state(row: RuntimeModel, status: str, entry, worker_id: str) -> bool:
     """Apply (status, entry) to a row. True if anything changed."""
     catalog_id = entry.id if entry is not None else None
@@ -178,6 +185,7 @@ def apply_inventory(db, worker, items) -> None:
                 digest=item.sha256, loaded=item.loaded,
                 details=getattr(item, "details", None),
                 size_bytes=getattr(item, "size_bytes", None),
+                files=_files_payload(item),
             )
             rt.models.append(row)
             rows[key] = row
@@ -191,6 +199,9 @@ def apply_inventory(db, worker, items) -> None:
         size = getattr(item, "size_bytes", None)
         if size and row.size_bytes != size:
             row.size_bytes = size
+        files = _files_payload(item)
+        if files and row.files != files:
+            row.files = files
         status, entry = classify_entry(db, item.local_name, row.digest)
         _set_state(row, status, entry, worker.id)
     for (rt_id, name), row in rows.items():

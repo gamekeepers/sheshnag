@@ -215,11 +215,14 @@ list with FILE hashes — Ollama manifest-layer digests, which equal the GGUF
 file's sha256 and join against `model_catalog.digest` (#116). It is resent
 whole every beat, so a model pulled manually on the box surfaces on the
 next heartbeat. Registration's `runtimes[].inventory` carries the same
-shape, so availability rows are born identity-carrying. `details` (Ollama
-only; null for vLLM) is what the runtime knows about the artifact — it
-pre-fills adopt and lets auto-adopt register a discovered model without a
-human; the daemon caches it per hash so `/api/show` is called once per
-model, not per beat.
+shape, so availability rows are born identity-carrying. `details` is what the runtime knows about the artifact — it pre-fills adopt
+and lets auto-adopt register a discovered model without a human. Ollama
+fills it from `/api/tags` + `/api/show` (cached per hash, one call per
+model, not per beat). vLLM fills it from the HF hub cache's `config.json`
+and adds `source_ref` / `source_revision` (repo + commit) — the cache is
+content-addressed, so `sha256` is shard 1's blob hash and `files` lists
+every shard (`[{file, sha256, size_bytes}]`); models served from a path
+outside the cache stay hash-less.
 
 Consequence: a worker advertises **everything its runtime holds**, not only
 `DAEMON_MODELS` — every on-disk Ollama model, every model vLLM serves — so a

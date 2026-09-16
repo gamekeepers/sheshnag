@@ -206,6 +206,7 @@ class _Candidate:
     runtime: str
     details: Optional[dict]
     size_bytes: Optional[int]
+    files: Optional[list] = None   # [{file, sha256, size_bytes}] for multi-shard artifacts
 
 
 def _candidates(db) -> list:
@@ -226,6 +227,8 @@ def _candidates(db) -> list:
             c.details = row.details
         if c.size_bytes is None and row.size_bytes:
             c.size_bytes = row.size_bytes
+        if c.files is None and row.files:
+            c.files = row.files
     return list(by_digest.values())
 
 
@@ -237,9 +240,19 @@ def auto_adopt_pass(db, resolver: IdentityResolver, *, enabled: Optional[bool] =
         enabled = auto_adopt_enabled_default()
     adopted = 0
     for cand in _candidates(db):
+        details = cand.details or {}
+        # vLLM daemons know where the bytes came from (HF hub cache): repo,
+        # commit and every shard hash travel as hints; the resolver then
+        # confirms ALL shards at that commit instead of parsing a served
+        # alias that has no public meaning.
+        hints = {
+            "source_ref": details.get("source_ref"),
+            "source_revision": details.get("source_revision"),
+            "files": [f.get("sha256") for f in (cand.files or []) if f.get("sha256")] or None,
+        }
         confirmed = None
         for name in cand.names:
-            result = resolver.resolve(name, cand.digest)
+            result = resolver.resolve(name, cand.digest, **hints)
             if isinstance(result, Confirmed):
                 confirmed = (name, result)
                 break
@@ -247,18 +260,27 @@ def auto_adopt_pass(db, resolver: IdentityResolver, *, enabled: Optional[bool] =
         if confirmed is None:
             continue
         name, res = confirmed
-        details = cand.details or {}
+        # The serving profile must pin the name dispatch will send. For vLLM
+        # that is the served alias, not the HF repo path also reported as a
+        # row — prefer a reported name that is not the repo id.
+        served = name
+        if cand.runtime == "vllm":
+            aliases = [n for n in cand.names if n != res.source_ref]
+            served = aliases[0] if aliases else name
         quant = details.get("quantization")
-        task_type, capabilities = infer_task_and_capabilities(name, details)
+        task_type, capabilities = infer_task_and_capabilities(served, details)
         size_gb = round(cand.size_bytes / (1024 ** 3), 2) if cand.size_bytes else None
+        # Slug from the public identity when we have it (Org/Repo), else the
+        # runtime name — `served-alias-bf16` would name a deployment, not a model.
+        slug_base = res.source_ref if (cand.runtime == "vllm" and res.source_type == "huggingface") else served
         try:
             entry, verified = adopt(
                 db,
                 sha256=cand.digest,
-                entry_id=unique_slug(db, draft_slug(name, quant), quant),
-                display_name=name,
+                entry_id=unique_slug(db, draft_slug(slug_base, quant), quant),
+                display_name=served,
                 runtime=cand.runtime,
-                runtime_model_id=name,
+                runtime_model_id=served,
                 vram_gb=estimate_vram_gb(cand.size_bytes),
                 quantization=quant,
                 task_type=task_type,
@@ -273,7 +295,16 @@ def auto_adopt_pass(db, resolver: IdentityResolver, *, enabled: Optional[bool] =
                 adopted_by="auto",
                 enabled=enabled,
             )
-            if res.source_file:
+            if cand.files:
+                # Multi-shard artifact (vLLM safetensors): pin every shard so
+                # "artifact present" means complete, not just shard 1.
+                for i, f in enumerate(cand.files):
+                    db.add(CatalogArtifactFile(
+                        catalog_id=entry.id, file=f["file"],
+                        role="weights" if i == 0 else "shard",
+                        sha256=f.get("sha256"), size_bytes=f.get("size_bytes"),
+                    ))
+            elif res.source_file:
                 # HF confirmation is file-agnostic (the hash is the identity,
                 # the :tag may lie) — pin the file that actually matched so the
                 # pull reference is complete: repo + revision + this path.

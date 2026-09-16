@@ -28,8 +28,8 @@ class StubResolver:
         self.confirmed = confirmed or {}
         self.calls = []
 
-    def resolve(self, name, sha256):
-        self.calls.append((name, sha256))
+    def resolve(self, name, sha256, **hints):
+        self.calls.append((name, sha256, hints))
         return self.confirmed.get((name, sha256), Unconfirmed("digest-mismatch"))
 
 

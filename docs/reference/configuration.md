@@ -54,6 +54,7 @@ Configured via a three-layer system: CLI > env (`DAEMON_*` prefix) > YAML file >
 | `DAEMON_RUNTIME` | `ollama` | Inference runtime: `ollama` or `vllm` |
 | `DAEMON_OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
 | `DAEMON_VLLM_URL` | `http://localhost:8100` | vLLM server URL |
+| `DAEMON_HF_HUB_CACHE` | auto-detect | HF hub cache vLLM serves from, for on-disk model identity (shard hashes, repo + commit). Auto-detect order: `$HF_HUB_CACHE`, `$HF_HOME/hub`, `~/.cache/huggingface/hub`. Read-only. |
 | `DAEMON_POLL_INTERVAL` | 5 | Seconds between job polls |
 | `DAEMON_HEARTBEAT_INTERVAL` | 30 | Seconds between heartbeats |
 | `DAEMON_PROGRESS_INTERVAL_SECONDS` | 5.0 | Minimum seconds between progress reports. Completion is always reported regardless |

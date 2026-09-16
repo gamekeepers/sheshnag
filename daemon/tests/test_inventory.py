@@ -362,3 +362,87 @@ async def test_details_no_hash_path_keyed_by_artifact_not_name(tmp_path, monkeyp
     item = (await ex.inventory())[0]
     assert item["details"]["quantization"] == "Q8_0"
     assert item["details"]["context_length"] == 40960
+
+
+# ─── vLLM identity from the HF hub cache ─────────────────────
+
+SHARD1 = "1" * 64
+SHARD2 = "2" * 64
+REV = "0a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3"
+
+
+def _hub_cache(tmp_path, repo="Org/Name", quantized=False):
+    """models--Org--Name/{refs/main, blobs/<sha>, snapshots/<rev>/...} exactly
+    as huggingface_hub lays it out: weight files are symlinks into blobs/."""
+    hub = tmp_path / "hub"
+    repo_dir = hub / ("models--" + repo.replace("/", "--"))
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text(REV + "\n")
+    blobs = repo_dir / "blobs"
+    blobs.mkdir()
+    (blobs / SHARD1).write_bytes(b"x" * 1000)
+    (blobs / SHARD2).write_bytes(b"y" * 500)
+    snap = repo_dir / "snapshots" / REV
+    snap.mkdir(parents=True)
+    (snap / "model-00001-of-00002.safetensors").symlink_to(f"../../blobs/{SHARD1}")
+    (snap / "model-00002-of-00002.safetensors").symlink_to(f"../../blobs/{SHARD2}")
+    config = {"model_type": "llama", "torch_dtype": "bfloat16", "max_position_embeddings": 8192}
+    if quantized:
+        config["quantization_config"] = {"quant_method": "awq", "bits": 4}
+    (snap / "config.json").write_text(json.dumps(config))
+    (snap / "model.safetensors.index.json").write_text(json.dumps(
+        {"metadata": {"total_size": 2_400_000_000}}))
+    return hub, snap
+
+
+def _vllm_client(models):
+    def handler(request):
+        assert request.url.path == "/v1/models"
+        return httpx.Response(200, json={"data": models})
+    return httpx.AsyncClient(base_url="http://vllm.test", transport=httpx.MockTransport(handler))
+
+
+@pytest.mark.asyncio
+async def test_vllm_identity_from_hub_cache(tmp_path):
+    """root = HF repo id -> shard hashes from the content-addressed cache,
+    details from config.json, repo + commit as the pull reference; the
+    served alias row carries the same identity (same artifact, two names)."""
+    hub, _ = _hub_cache(tmp_path)
+    ex = VLLMExecutor(base_url="http://vllm.test", hf_hub_cache=str(hub))
+    ex._client = _vllm_client([{"id": "served-alias", "root": "Org/Name"}])
+    items = {i["local_name"]: i for i in await ex.inventory()}
+    assert set(items) == {"served-alias", "Org/Name"}
+    for item in items.values():
+        assert item["sha256"] == SHARD1 and item["size_bytes"] == 1000
+        assert [(f["file"], f["sha256"], f["size_bytes"]) for f in item["files"]] == [
+            ("model-00001-of-00002.safetensors", SHARD1, 1000),
+            ("model-00002-of-00002.safetensors", SHARD2, 500),
+        ]
+        assert item["details"] == {
+            "quantization": "bf16", "parameter_size": "1.2B", "family": "llama",
+            "context_length": 8192, "source_ref": "Org/Name", "source_revision": REV,
+        }
+
+
+@pytest.mark.asyncio
+async def test_vllm_identity_from_snapshot_path_and_quantized(tmp_path):
+    """root as a filesystem path inside the cache maps back to its repo;
+    a quantization_config wins over torch_dtype and params are not guessed."""
+    hub, snap = _hub_cache(tmp_path, quantized=True)
+    ex = VLLMExecutor(base_url="http://vllm.test", hf_hub_cache=str(hub))
+    ex._client = _vllm_client([{"id": str(snap), "root": str(snap)}])
+    item = (await ex.inventory())[0]
+    assert item["sha256"] == SHARD1
+    assert item["details"]["quantization"] == "awq-4bit"
+    assert item["details"]["parameter_size"] is None
+    assert (item["details"]["source_ref"], item["details"]["source_revision"]) == ("Org/Name", REV)
+
+
+@pytest.mark.asyncio
+async def test_vllm_uncached_model_stays_hashless(tmp_path):
+    hub, _ = _hub_cache(tmp_path)
+    ex = VLLMExecutor(base_url="http://vllm.test", hf_hub_cache=str(hub))
+    ex._client = _vllm_client([{"id": "Other/NotCached", "root": "Other/NotCached"},
+                               {"id": "local", "root": "/opt/models/local"}])
+    for item in await ex.inventory():
+        assert item["sha256"] is None and "files" not in item
