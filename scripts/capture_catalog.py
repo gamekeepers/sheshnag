@@ -51,38 +51,30 @@ from pathlib import Path
 import httpx
 import yaml
 
+try:
+    from backend.identity_resolver import (
+        DEFAULT_REGISTRY, bare_digest, manifest_model_name, model_layer_digest,
+        registry_file_digest,
+    )
+except ImportError:  # run as a plain file (python scripts/capture_catalog.py)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from backend.identity_resolver import (
+        DEFAULT_REGISTRY, bare_digest, manifest_model_name, model_layer_digest,
+        registry_file_digest,
+    )
+
 
 def _bytes_to_gb(n):
     return round(n / (1024 ** 3), 2) if n else None
 
 
-def _bare_digest(d):
-    """Canonical stored form: bare lowercase hex, no `sha256:` prefix.
-    (The picker normalizes on read, but we keep the manifest consistent.)"""
-    if not d:
-        return None
-    d = str(d).strip().lower()
-    return d.split(":", 1)[1] if ":" in d else d
-
-
-_DEFAULT_REGISTRY = "registry.ollama.ai"
-_MODEL_MEDIA_SUFFIX = "image.model"
-
-
-def _manifest_model_name(host: str, namespace: str, model: str, tag: str) -> str:
-    """Ollama's rendered name for a manifest path (mirrors DisplayShortest):
-    the default registry drops its host; its `library` namespace also drops
-    the namespace. Other hosts keep the full prefix (hf.co/user/model:tag)."""
-    if host == _DEFAULT_REGISTRY:
-        return f"{model}:{tag}" if namespace == "library" else f"{namespace}/{model}:{tag}"
-    return f"{host}/{namespace}/{model}:{tag}"
-
-
-def _model_layer_digest(manifest: dict):
-    for layer in manifest.get("layers", []):
-        if str(layer.get("mediaType", "")).endswith(_MODEL_MEDIA_SUFFIX):
-            return _bare_digest(layer.get("digest"))
-    return None
+# Digest / name helpers live in backend/identity_resolver.py — the same
+# lookup the auto-adopt pass uses to confirm quarantined hashes, so the two
+# cannot drift apart.
+_DEFAULT_REGISTRY = DEFAULT_REGISTRY
+_bare_digest = bare_digest
+_manifest_model_name = manifest_model_name
+_model_layer_digest = model_layer_digest
 
 
 def _resolve_models_dir(explicit):
@@ -116,24 +108,13 @@ def fetch_local_file_digests(models_dir) -> dict:
 
 def fetch_registry_file_digest(runtime_model_id: str):
     """File sha256 for a default-registry model via its manifest API — no
-    blob download. `library/` is assumed for bare names (`gemma3:12b`)."""
-    name, _, tag = runtime_model_id.partition(":")
-    parts = name.split("/")
-    if len(parts) > 2 or (len(parts) == 2 and "." in parts[0]):
-        # hf.co/user/model or some.host/ns/model — not on the default
-        # registry; only the local manifests tree can hash those.
-        print(f"  {runtime_model_id}: non-default registry name, no registry fallback")
-        return None
-    namespace, model = (parts[0], parts[1]) if len(parts) == 2 else ("library", parts[0])
-    url = f"https://{_DEFAULT_REGISTRY}/v2/{namespace}/{model}/manifests/{tag or 'latest'}"
-    try:
-        r = httpx.get(url, timeout=20.0,
-                      headers={"Accept": "application/vnd.docker.distribution.manifest.v2+json"})
-        r.raise_for_status()
-        return _model_layer_digest(r.json())
-    except Exception as exc:
-        print(f"  registry manifest unavailable for {runtime_model_id}: {exc}")
-        return None
+    blob download. `library/` is assumed for bare names (`gemma3:12b`).
+    The lookup itself is `identity_resolver.registry_file_digest`; this
+    wrapper keeps the script's stdout narration."""
+    digest, reason = registry_file_digest(runtime_model_id)
+    if digest is None:
+        print(f"  {runtime_model_id}: {reason}")
+    return digest
 
 
 def fetch_tags(base_url: str) -> dict:
