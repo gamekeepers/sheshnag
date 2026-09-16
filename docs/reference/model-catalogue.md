@@ -97,6 +97,24 @@ not in the catalogue (`unsupported_model`).
 `GET /v1/models` lists selectable entries (public + the caller's org) with
 their descriptive + provenance fields, so users know valid ids.
 
+## Reconciliation — worker rows vs catalogue pins
+
+Every artifact a worker reports lands in one state on its `runtime_models`
+row (`backend/reconciliation.py`); the picker routes **only** to `available`:
+
+| State | Meaning | How it clears |
+| --- | --- | --- |
+| `available` | hash matches a pin (`catalog_id` set) — or the row has **no hash** and name-matches (old daemon, vLLM; `catalog_id` null) | — |
+| `unregistered` | hash matches no entry, name matches no entry | admin **adopts** it (`POST /v1/models/adopt`) or the blob is replaced |
+| `drift` | name claims a pinned entry, bytes differ from every pin under that name | re-provision the worker, or add the quant as a **new** entry |
+| `missing` | dropped from a full inventory (`ollama rm` on the box) | reappears in a later inventory → re-classified |
+
+Rows without a hash are never quarantined: there is nothing to adopt and the
+picker already requires a catalogue entry for the name. A hash-bearing row
+registered before its entry existed self-heals on the next heartbeat
+(re-classified every beat). Adopted entries carry `status: unverified` —
+selectable and schedulable like `active`, provenance unconfirmed.
+
 ## Curation workflow
 
 Source of truth: `backend/catalog/models.yaml` (version-controlled). At

@@ -257,12 +257,20 @@ class Worker(Base):
         return {m.name for rt in self.runtimes for m in rt.models}
 
     def advertised_models(self) -> list:
-        """(name, digest) pairs this worker's runtimes host."""
-        return [(m.name, m.digest) for rt in self.runtimes for m in rt.models]
+        """(name, digest) pairs this worker's runtimes host AND may be
+        scheduled: quarantined (unregistered), drifted, and missing rows are
+        excluded here so every picker/capacity path shares the rule."""
+        return [
+            (m.name, m.digest)
+            for rt in self.runtimes for m in rt.models if m.schedulable
+        ]
 
     def loaded_models(self) -> list:
-        """(name, digest) pairs currently loaded in VRAM."""
-        return [(m.name, m.digest) for rt in self.runtimes for m in rt.models if m.loaded]
+        """(name, digest) pairs currently loaded in VRAM (schedulable only)."""
+        return [
+            (m.name, m.digest)
+            for rt in self.runtimes for m in rt.models if m.loaded and m.schedulable
+        ]
 
 
 class WorkerRuntime(Base):
@@ -312,14 +320,32 @@ class RuntimeModel(Base):
     )
     name             = Column(String, nullable=False)
     runtime_model_id = Column(String, nullable=True)  # exact id the runtime expects
-    digest           = Column(String, nullable=True)  # artifact digest (reproducibility join key)
-    status     = Column(String, default="available")  # available | downloading | not_downloaded | error
+    digest           = Column(String, nullable=True)  # artifact FILE sha256 (identity join key)
+    # Catalogue entry this row's hash was verified against (#116 reconcile).
+    # NULL = not hash-verified: either an unverifiable row (no hash reported)
+    # that name-matches, or a row in one of the NON_SCHEDULABLE states.
+    catalog_id = Column(
+        String, ForeignKey("model_catalog.id", ondelete="SET NULL"), nullable=True,
+    )
+    # available | downloading | not_downloaded | error — plus the reconcile
+    # states: unregistered (hash matches no entry; quarantined), drift (name
+    # claims a pinned entry, bytes differ), missing (dropped from a full
+    # inventory — e.g. `ollama rm` on the box). The picker never routes to
+    # NON_SCHEDULABLE rows; see reconciliation.py.
+    status     = Column(String, default="available")
     loaded     = Column(Boolean, default=False)
     last_used_at = Column(Integer, nullable=True)
     created_at = Column(Integer, default=unix_now)
     updated_at = Column(Integer, default=unix_now)
 
     runtime = relationship("WorkerRuntime", back_populates="models")
+    catalog_entry = relationship("ModelCatalog", foreign_keys=[catalog_id])
+
+    NON_SCHEDULABLE_STATUSES = frozenset({"unregistered", "drift", "missing"})
+
+    @property
+    def schedulable(self) -> bool:
+        return self.status not in self.NON_SCHEDULABLE_STATUSES
 
 
 class WorkerGpu(Base):
@@ -400,9 +426,14 @@ class ModelCatalog(Base):
     source_revision  = Column(String, nullable=True)    # HF commit/tag; NULL for ollama
     homepage_url     = Column(String, nullable=True)    # model-card link for the dashboard
     org_id           = Column(String, ForeignKey("organizations.id"), nullable=True)  # NULL = public
-    status           = Column(String, default="active")  # active | requested | deprecated | unverified
+    # active | requested | deprecated | unverified. `unverified` = adopted
+    # from a worker's quarantined hash: selectable and schedulable like
+    # active, but provenance (upstream/lineage) is unconfirmed.
+    status           = Column(String, default="active")
     enabled          = Column(Boolean, default=True)
     created_at       = Column(Integer, default=unix_now)
+
+    SELECTABLE_STATUSES = ("active", "unverified")
 
     profiles = relationship(
         "ServingProfile", back_populates="entry",

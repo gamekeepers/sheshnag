@@ -31,7 +31,7 @@ def get_catalog_entry(db, model_id: str):
     return db.query(ModelCatalog).filter(
         ModelCatalog.id == model_id,
         ModelCatalog.enabled.is_(True),
-        ModelCatalog.status == "active",
+        ModelCatalog.status.in_(ModelCatalog.SELECTABLE_STATUSES),
     ).first()
 
 

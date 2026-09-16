@@ -71,6 +71,11 @@ MIGRATIONS = [
                "model_catalog", "capabilities", JSON()),
     _Migration("model_catalog.lineage",
                "model_catalog", "lineage", String()),
+    # Reconciliation (#116): which catalogue entry a worker row's hash
+    # verified against. Added without the FK constraint on existing
+    # databases (pure-ADD); create_all builds it with the FK on fresh ones.
+    _Migration("runtime_models.catalog_id",
+               "runtime_models", "catalog_id", String()),
 ]
 
 

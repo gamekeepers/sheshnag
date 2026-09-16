@@ -1,0 +1,163 @@
+"""
+Reconcile what workers report they hold against what the registry pins (#116).
+
+The catalogue is desired state ("this slug means exactly these bytes");
+a worker's inventory is observed state ("this box holds these bytes").
+Every reported artifact lands in one of four states on its `runtime_models`
+row, and the picker routes only to the first:
+
+  available     hash matches a catalogue pin (catalog_id set), or the row
+                is unverifiable (no hash reported: old daemon, vLLM) and its
+                name matches an entry — today's behaviour, unchanged
+  unregistered  a reported HASH matches no entry (and the name matches no
+                entry either): quarantined until an admin adopts it
+                (POST /v1/models/adopt) or the blob is replaced. Rows with
+                no hash at all are never quarantined — there is no identity
+                to adopt, and the picker already requires a catalogue entry
+                for the name, so nothing unknown can be scheduled anyway
+  drift         name claims a pinned entry but the bytes differ from every
+                pin under that name — never served; the picker also logs it
+  missing       present in the DB but absent from a full inventory the
+                worker just sent (e.g. `ollama rm`) — never served
+
+Nothing here trusts a name as identity when a hash is available.
+"""
+import logging
+from typing import Optional, Tuple
+
+from models import CatalogArtifactFile, ModelCatalog, RuntimeModel, ServingProfile, unix_now
+
+logger = logging.getLogger(__name__)
+
+AVAILABLE = "available"
+UNREGISTERED = "unregistered"
+DRIFT = "drift"
+MISSING = "missing"
+
+
+def _norm(digest) -> Optional[str]:
+    if not digest:
+        return None
+    d = str(digest).strip().lower()
+    return d.split(":", 1)[1] if ":" in d else d
+
+
+def find_entry_by_hash(db, sha256) -> Optional[ModelCatalog]:
+    """Catalogue entry whose weights digest or any artifact file matches."""
+    d = _norm(sha256)
+    if not d:
+        return None
+    entry = db.query(ModelCatalog).filter(
+        ModelCatalog.digest.in_([d, f"sha256:{d}"])
+    ).first()
+    if entry is not None:
+        return entry
+    f = db.query(CatalogArtifactFile).filter(
+        CatalogArtifactFile.sha256.in_([d, f"sha256:{d}"])
+    ).first()
+    return f.entry if f is not None else None
+
+
+def find_entries_by_name(db, runtime_model_id: str) -> list:
+    """Catalogue entries that answer to this runtime id (profiles or legacy)."""
+    ids = {
+        p.catalog_id for p in
+        db.query(ServingProfile.catalog_id).filter(
+            ServingProfile.runtime_model_id == runtime_model_id
+        )
+    }
+    ids |= {
+        e.id for e in
+        db.query(ModelCatalog.id).filter(ModelCatalog.runtime_model_id == runtime_model_id)
+    }
+    if not ids:
+        return []
+    return db.query(ModelCatalog).filter(ModelCatalog.id.in_(ids)).all()
+
+
+def classify(db, name: str, sha256) -> Tuple[str, Optional[str]]:
+    """(status, catalog_id) for one reported artifact.
+
+    Hash first, always. With no hash the row is unverifiable: it stays
+    `available` and name-matches exactly as before #116 (old daemons, vLLM,
+    a worker registered before the catalogue entry landed), and is never
+    quarantined — quarantine is for bytes we can identify but don't know.
+    With a hash that matches nothing: an unknown name is unregistered; a
+    name that claims only pinned entries is drift; a name that matches an
+    unpinned entry still name-matches.
+    """
+    if not sha256:
+        return AVAILABLE, None
+    by_hash = find_entry_by_hash(db, sha256)
+    if by_hash is not None:
+        return AVAILABLE, by_hash.id
+    by_name = find_entries_by_name(db, name)
+    if not by_name:
+        return UNREGISTERED, None
+    if all(_norm(e.digest) for e in by_name):
+        return DRIFT, None
+    return AVAILABLE, None
+
+
+def _set_state(row: RuntimeModel, status: str, catalog_id, worker_id: str) -> None:
+    if row.status == status and row.catalog_id == catalog_id:
+        return
+    if status in (DRIFT, UNREGISTERED) and row.status != status:
+        logger.warning(
+            "Worker %s: model %r (sha256 %s) is %s — not schedulable",
+            worker_id, row.name, (row.digest or "none")[:12], status,
+        )
+    row.status = status
+    row.catalog_id = catalog_id
+    row.updated_at = unix_now()
+
+
+def apply_inventory(db, worker, items) -> None:
+    """Upsert a worker's runtime_models rows from a full inventory report.
+
+    `items` are InventoryItem-shaped (local_name, sha256, loaded). Rows the
+    inventory no longer lists are marked `missing`; an empty report (old
+    daemon, runtime unreachable) changes nothing.
+    """
+    if not items or not worker.runtimes:
+        return
+    rows_by_name = {m.name: m for rt in worker.runtimes for m in rt.models}
+    seen = set()
+    for item in items:
+        seen.add(item.local_name)
+        row = rows_by_name.get(item.local_name)
+        if row is None:
+            row = RuntimeModel(
+                name=item.local_name, runtime_model_id=item.local_name,
+                digest=item.sha256, loaded=item.loaded,
+            )
+            worker.runtimes[0].models.append(row)
+            rows_by_name[item.local_name] = row
+        elif item.sha256 and row.digest != item.sha256:
+            row.digest = item.sha256
+            row.updated_at = unix_now()
+        status, catalog_id = classify(db, item.local_name, row.digest)
+        _set_state(row, status, catalog_id, worker.id)
+    for name, row in rows_by_name.items():
+        if name not in seen and row.status != MISSING:
+            logger.info("Worker %s: model %r no longer on disk — marked missing", worker.id, name)
+            row.status = MISSING
+            row.catalog_id = None
+            row.loaded = False
+            row.updated_at = unix_now()
+
+
+def reclassify_hash(db, sha256: str) -> int:
+    """Re-run classification for every worker row carrying `sha256` (after
+    an adopt). Returns the number of rows that changed."""
+    d = _norm(sha256)
+    changed = 0
+    rows = db.query(RuntimeModel).filter(
+        RuntimeModel.digest.in_([d, f"sha256:{d}"])
+    ).all()
+    for row in rows:
+        status, catalog_id = classify(db, row.name, row.digest)
+        before = (row.status, row.catalog_id)
+        _set_state(row, status, catalog_id, row.runtime.worker_id if row.runtime else "?")
+        changed += (row.status, row.catalog_id) != before
+    return changed

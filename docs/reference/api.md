@@ -175,6 +175,8 @@ whose. Per-worker rows stay on the superadmin `GET /v1/admin/workers`.
 |---|---|---|
 | `POST` | `/workers/register` | Register/re-register; backend assigns `worker_id` |
 | `POST` | `/workers/{worker_id}/heartbeat` | Unified heartbeat: liveness + activity + dynamic capabilities |
+| `GET` | `/v1/models/quarantine` | superadmin — worker-reported hashes the platform won't schedule (`unregistered` / `drift`), grouped by hash |
+| `POST` | `/v1/models/adopt` | superadmin — promote a quarantined hash into a catalogue entry (`status: unverified`); its worker rows become schedulable at once |
 | `POST` | `/workers/poll` | Claim the best-matching validated batch |
 | `POST` | `/workers/progress` | Live prompt counts (time-throttled — see `DAEMON_PROGRESS_INTERVAL_SECONDS`) |
 | `POST` | `/workers/model-progress` | Model download progress (logged; liveness) |

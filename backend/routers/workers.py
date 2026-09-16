@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from typing import Optional
 from auth import get_worker_context
 from provider_picker import picker, get_catalog_entry, resolve_runtime_model_id
+from reconciliation import apply_inventory, classify
 from sweeper import MAX_BATCH_ATTEMPTS, requeue_or_fail_batch
 from services.usage_ingest import ingest_usage_records
 import shutil, os, logging
@@ -124,17 +125,18 @@ def register_worker(
             # null digest and name-match, exactly as before pins existed.
             inv_by_name = {i.local_name: i for i in r.inventory}
             names = list(dict.fromkeys(list(r.models) + list(inv_by_name)))
-            rows.append(WorkerRuntime(
-                engine=r.type,
-                base_url=r.endpoint,
-                models=[
-                    RuntimeModel(
-                        name=m, runtime_model_id=m,
-                        digest=inv_by_name[m].sha256 if m in inv_by_name else None,
-                    )
-                    for m in names
-                ],
-            ))
+            models = []
+            for m in names:
+                sha = inv_by_name[m].sha256 if m in inv_by_name else None
+                # Classify at birth: hash-verified rows link to their
+                # catalogue entry; unknown hashes are quarantined, not trusted.
+                status, catalog_id = classify(db, m, sha)
+                models.append(RuntimeModel(
+                    name=m, runtime_model_id=m, digest=sha,
+                    status=status, catalog_id=catalog_id,
+                    loaded=inv_by_name[m].loaded if m in inv_by_name else False,
+                ))
+            rows.append(WorkerRuntime(engine=r.type, base_url=r.endpoint, models=models))
         return rows
 
     if existing:
@@ -221,43 +223,26 @@ def worker_heartbeat(
                 model.updated_at = unix_now()
             known.add(model.name)
     # A loaded model we've never seen (e.g. pulled on the fly): record it.
+    # Old daemons report no hash here, so classify() leaves it name-matched
+    # (the picker still requires a catalogue entry for the name); the hashed
+    # inventory path below is where quarantine/drift decisions happen.
     # The daemon runs a single runtime, so attach to the first one.
     missing = reported - known
     if missing and worker.runtimes:
         for name in missing:
+            status, catalog_id = classify(db, name, None)
             worker.runtimes[0].models.append(
-                RuntimeModel(name=name, runtime_model_id=name, loaded=True)
+                RuntimeModel(
+                    name=name, runtime_model_id=name, loaded=True,
+                    status=status, catalog_id=catalog_id,
+                )
             )
 
-    # Full on-disk inventory (additive; older daemons send none): refresh
-    # digests with artifact FILE hashes and record on-disk models that were
-    # never registered, so availability tracks the disk, not just VRAM.
-    # Trust classification of these rows (verified/drift/unregistered) is
-    # the reconciliation loop's job, not the heartbeat's.
-    if req.inventory and worker.runtimes:
-        rows_by_name = {
-            m.name: m for rt in worker.runtimes for m in rt.models
-        }
-        for item in req.inventory:
-            row = rows_by_name.get(item.local_name)
-            if row is not None:
-                if item.sha256 and row.digest != item.sha256:
-                    row.digest = item.sha256
-                    row.updated_at = unix_now()
-            else:
-                row = RuntimeModel(
-                    name=item.local_name,
-                    runtime_model_id=item.local_name,
-                    digest=item.sha256,
-                    loaded=item.loaded,
-                )
-                worker.runtimes[0].models.append(row)
-                # Record it so a duplicate local_name later in the SAME
-                # report updates this row instead of appending a second one
-                # — UniqueConstraint(runtime_id, name) would otherwise fire
-                # at commit and roll back the whole heartbeat, liveness
-                # included, every 30s for as long as the client misbehaves.
-                rows_by_name[item.local_name] = row
+    # Full on-disk inventory (additive; older daemons send none): the
+    # reconciliation loop. Hash-verifies each row against the catalogue,
+    # quarantines unknown hashes, flags drift, and marks rows the box no
+    # longer holds as missing. See reconciliation.py.
+    apply_inventory(db, worker, req.inventory)
 
     db.commit()
     return {"status": "ok", "worker_id": worker_id}
