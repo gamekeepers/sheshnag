@@ -43,7 +43,11 @@ def _norm(digest) -> Optional[str]:
 
 
 def find_entry_by_hash(db, sha256) -> Optional[ModelCatalog]:
-    """Catalogue entry whose weights digest or any artifact file matches."""
+    """Catalogue entry whose weights digest or any artifact file matches.
+
+    Deliberately ignores `enabled`/`status`: a disabled or deprecated entry
+    still IDENTIFIES the bytes ("known, not offered"). Whether the entry may
+    be scheduled is the picker's `get_catalog_entry` filter, not identity."""
     d = _norm(sha256)
     if not d:
         return None
@@ -75,8 +79,8 @@ def find_entries_by_name(db, runtime_model_id: str) -> list:
     return db.query(ModelCatalog).filter(ModelCatalog.id.in_(ids)).all()
 
 
-def classify(db, name: str, sha256) -> Tuple[str, Optional[str]]:
-    """(status, catalog_id) for one reported artifact.
+def classify_entry(db, name: str, sha256) -> Tuple[str, Optional[ModelCatalog]]:
+    """(status, matched entry or None) for one reported artifact.
 
     Hash first, always. With no hash the row is unverifiable: it stays
     `available` and name-matches exactly as before #116 (old daemons, vLLM,
@@ -90,7 +94,7 @@ def classify(db, name: str, sha256) -> Tuple[str, Optional[str]]:
         return AVAILABLE, None
     by_hash = find_entry_by_hash(db, sha256)
     if by_hash is not None:
-        return AVAILABLE, by_hash.id
+        return AVAILABLE, by_hash
     by_name = find_entries_by_name(db, name)
     if not by_name:
         return UNREGISTERED, None
@@ -99,47 +103,89 @@ def classify(db, name: str, sha256) -> Tuple[str, Optional[str]]:
     return AVAILABLE, None
 
 
-def _set_state(row: RuntimeModel, status: str, catalog_id, worker_id: str) -> None:
+def classify(db, name: str, sha256) -> Tuple[str, Optional[str]]:
+    """(status, catalog_id) — see classify_entry."""
+    status, entry = classify_entry(db, name, sha256)
+    return status, (entry.id if entry is not None else None)
+
+
+def local_names_for_hash(db, sha256) -> set:
+    """Every local_name workers report for this hash (adopt validation)."""
+    d = _norm(sha256)
+    if not d:
+        return set()
+    return {
+        r.name for r in
+        db.query(RuntimeModel.name).filter(RuntimeModel.digest.in_([d, f"sha256:{d}"]))
+    }
+
+
+def _set_state(row: RuntimeModel, status: str, entry, worker_id: str) -> bool:
+    """Apply (status, entry) to a row. True if anything changed."""
+    catalog_id = entry.id if entry is not None else None
     if row.status == status and row.catalog_id == catalog_id:
-        return
+        return False
     if status in (DRIFT, UNREGISTERED) and row.status != status:
         logger.warning(
             "Worker %s: model %r (sha256 %s) is %s — not schedulable",
             worker_id, row.name, (row.digest or "none")[:12], status,
         )
+    if entry is not None:
+        # Hash-verified, but the picker matches on the entry's target ids:
+        # a row whose local name is none of them is `available` yet will
+        # never be dispatched. Say so, once, on the transition.
+        targets = {rmid for _rt, rmid in entry.serving_targets()}
+        if row.name not in targets:
+            logger.warning(
+                "Worker %s: model %r hash-matches catalogue entry %r but the "
+                "entry's runtime ids are %s — not schedulable under this "
+                "name; add a serving profile with runtime_model_id=%r",
+                worker_id, row.name, entry.id, sorted(targets), row.name,
+            )
     row.status = status
     row.catalog_id = catalog_id
     row.updated_at = unix_now()
+    return True
 
 
 def apply_inventory(db, worker, items) -> None:
     """Upsert a worker's runtime_models rows from a full inventory report.
 
-    `items` are InventoryItem-shaped (local_name, sha256, loaded). Rows the
-    inventory no longer lists are marked `missing`; an empty report (old
-    daemon, runtime unreachable) changes nothing.
+    `items` are InventoryItem-shaped (local_name, sha256, loaded, runtime).
+    Rows are scoped per runtime: an item lands on the WorkerRuntime whose
+    engine matches `item.runtime` (the worker's first runtime when unset,
+    the single-runtime daemon case), and `missing` is applied only to rows
+    of runtimes that appear in THIS report — a daemon only inventories its
+    own runtime, so a second runtime's rows must not be marked gone every
+    beat. An empty report (old daemon, runtime unreachable) changes nothing.
     """
     if not items or not worker.runtimes:
         return
-    rows_by_name = {m.name: m for rt in worker.runtimes for m in rt.models}
+    by_engine = {rt.engine: rt for rt in worker.runtimes}
+    default_rt = worker.runtimes[0]
+    rows = {(rt.id, m.name): m for rt in worker.runtimes for m in rt.models}
+    reported_runtime_ids = set()
     seen = set()
     for item in items:
-        seen.add(item.local_name)
-        row = rows_by_name.get(item.local_name)
+        rt = by_engine.get(getattr(item, "runtime", None)) or default_rt
+        reported_runtime_ids.add(rt.id)
+        key = (rt.id, item.local_name)
+        seen.add(key)
+        row = rows.get(key)
         if row is None:
             row = RuntimeModel(
                 name=item.local_name, runtime_model_id=item.local_name,
                 digest=item.sha256, loaded=item.loaded,
             )
-            worker.runtimes[0].models.append(row)
-            rows_by_name[item.local_name] = row
+            rt.models.append(row)
+            rows[key] = row
         elif item.sha256 and row.digest != item.sha256:
             row.digest = item.sha256
             row.updated_at = unix_now()
-        status, catalog_id = classify(db, item.local_name, row.digest)
-        _set_state(row, status, catalog_id, worker.id)
-    for name, row in rows_by_name.items():
-        if name not in seen and row.status != MISSING:
+        status, entry = classify_entry(db, item.local_name, row.digest)
+        _set_state(row, status, entry, worker.id)
+    for (rt_id, name), row in rows.items():
+        if rt_id in reported_runtime_ids and (rt_id, name) not in seen and row.status != MISSING:
             logger.info("Worker %s: model %r no longer on disk — marked missing", worker.id, name)
             row.status = MISSING
             row.catalog_id = None
@@ -156,8 +202,6 @@ def reclassify_hash(db, sha256: str) -> int:
         RuntimeModel.digest.in_([d, f"sha256:{d}"])
     ).all()
     for row in rows:
-        status, catalog_id = classify(db, row.name, row.digest)
-        before = (row.status, row.catalog_id)
-        _set_state(row, status, catalog_id, row.runtime.worker_id if row.runtime else "?")
-        changed += (row.status, row.catalog_id) != before
+        status, entry = classify_entry(db, row.name, row.digest)
+        changed += _set_state(row, status, entry, row.runtime.worker_id if row.runtime else "?")
     return changed

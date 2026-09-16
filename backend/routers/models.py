@@ -18,7 +18,11 @@ from models import (
 )
 from auth import get_human_context, require_role
 from catalog_seed import validate_entry_id
-from reconciliation import DRIFT, UNREGISTERED, find_entries_by_name, find_entry_by_hash, reclassify_hash
+from models import Organization
+from reconciliation import (
+    DRIFT, UNREGISTERED, find_entries_by_name, find_entry_by_hash,
+    local_names_for_hash, reclassify_hash,
+)
 
 router = APIRouter()
 
@@ -62,6 +66,8 @@ def list_models(
             "parameter_size": e.parameter_size,
             "context_length": e.context_length,
             "task_type": e.task_type,
+            # active | unverified (adopted from a worker hash; provenance unconfirmed)
+            "status": e.status,
             "capabilities": e.capabilities,
             "lineage": e.lineage,
             "vram_gb": e.vram_gb,
@@ -96,7 +102,9 @@ def list_quarantine(
     )
     groups = {}
     for m, rt, w in rows:
-        key = m.digest or f"name:{m.name}"
+        # One hash can be unregistered on one box and drift on another
+        # (different local names); keep the states apart.
+        key = (m.digest or f"name:{m.name}", m.status)
         g = groups.setdefault(key, {
             "sha256": m.digest,
             "status": m.status,
@@ -159,8 +167,26 @@ def adopt_model(
     if existing is not None:
         raise HTTPException(
             status_code=409,
-            detail=f"sha256 already pinned by catalogue entry {existing.id!r}",
+            detail=(
+                f"sha256 already pinned by catalogue entry {existing.id!r} "
+                f"(status={existing.status}, enabled={existing.enabled}) — "
+                "enable/activate that entry instead of adopting again"
+            ),
         )
+    # The picker matches worker rows on the entry's runtime ids, so an
+    # adopted id that no worker reports for this hash would flip the rows
+    # to available yet never dispatch — a false success.
+    names = local_names_for_hash(db, req.sha256)
+    if names and req.runtime_model_id not in names:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"runtime_model_id {req.runtime_model_id!r} is not what any worker "
+                f"reports for this hash; workers call it {sorted(names)}"
+            ),
+        )
+    if req.org_id is not None and db.get(Organization, req.org_id) is None:
+        raise HTTPException(status_code=400, detail=f"unknown org_id {req.org_id!r}")
 
     digest = req.sha256.strip().lower().split(":", 1)[-1]
     entry = ModelCatalog(

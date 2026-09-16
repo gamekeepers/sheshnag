@@ -110,7 +110,13 @@ row (`backend/reconciliation.py`); the picker routes **only** to `available`:
 | `missing` | dropped from a full inventory (`ollama rm` on the box) | reappears in a later inventory → re-classified |
 
 Rows without a hash are never quarantined: there is nothing to adopt and the
-picker already requires a catalogue entry for the name. A hash-bearing row
+picker already requires a catalogue entry for the name. `missing` is scoped
+to the runtimes present in a report — a daemon inventories only its own
+runtime, so a second runtime's rows are left alone. A hash-verified row
+whose local name is none of the entry's runtime ids is logged: it is
+`available` but the picker will not dispatch it under that name (add a
+serving profile for the name, or adopt with the name workers actually use —
+`POST /v1/models/adopt` rejects a `runtime_model_id` no worker reports). A hash-bearing row
 registered before its entry existed self-heals on the next heartbeat
 (re-classified every beat). Adopted entries carry `status: unverified` —
 selectable and schedulable like `active`, provenance unconfirmed.

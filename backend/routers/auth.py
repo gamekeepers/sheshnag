@@ -359,6 +359,14 @@ def list_all_workers(
                     {
                         "type": rt.engine, "endpoint": rt.base_url,
                         "models": [m.name for m in rt.models],
+                        # Reconciliation state per model (#116): available |
+                        # unregistered | drift | missing. `models` above stays
+                        # a plain name list for the existing dashboard column.
+                        "model_states": [
+                            {"name": m.name, "status": m.status,
+                             "catalog_id": m.catalog_id, "loaded": m.loaded}
+                            for m in rt.models
+                        ],
                     }
                     for rt in w.runtimes
                 ],

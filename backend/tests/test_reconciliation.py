@@ -83,8 +83,8 @@ def _rows(db, worker_id):
     }
 
 
-def _item(name, sha, loaded=False):
-    return {"local_name": name, "sha256": sha, "size_bytes": 1, "loaded": loaded, "runtime": "ollama"}
+def _item(name, sha, loaded=False, runtime="ollama"):
+    return {"local_name": name, "sha256": sha, "size_bytes": 1, "loaded": loaded, "runtime": runtime}
 
 
 # ─── classify() ──────────────────────────────────────────────
@@ -194,3 +194,71 @@ def test_quarantine_listing_and_adopt_flow(auth_client, superadmin_client, db):
     assert superadmin_client.post("/v1/models/adopt", json=dup).status_code == 409
     # Quarantine is empty for that hash now.
     assert all(g["sha256"] != H_ADOPT for g in superadmin_client.get("/v1/models/quarantine").json()["data"])
+
+
+# ─── multi-runtime workers ───────────────────────────────────
+
+def test_missing_is_scoped_to_reported_runtimes(auth_client, db):
+    """A daemon inventories only its own runtime. A worker registered with
+    two runtimes must not have the other runtime's rows marked missing on
+    every beat (silently dead capacity, invisible to quarantine)."""
+    _entry(db, "zztest-mr-q4km", "mr:4b", H_KNOWN)
+    key = _worker_key(auth_client, "Recon Org MR")
+    resp = auth_client.post(
+        "/workers/register",
+        json={"hostname": "zzrecon-mr", "runtimes": [
+            {"type": "ollama", "endpoint": "localhost", "models": ["mr:4b"]},
+            {"type": "vllm", "endpoint": "localhost:8000", "models": ["Org/Served-Model"]},
+        ]},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    wid = resp.json()["worker_id"]
+
+    # Ollama-only report: vllm's row is untouched; a new ollama item lands
+    # on the ollama runtime, not the first runtime by accident.
+    _heartbeat(auth_client, key, wid, [
+        _item("mr:4b", H_KNOWN, runtime="ollama"),
+        _item("other:1b", H_UNKNOWN, runtime="ollama"),
+    ])
+    db.expire_all()
+    runtimes = {rt.engine: rt for rt in db.query(WorkerRuntime).filter_by(worker_id=wid)}
+    vllm_rows = {m.name: m for m in runtimes["vllm"].models}
+    ollama_rows = {m.name: m for m in runtimes["ollama"].models}
+    assert vllm_rows["Org/Served-Model"].status == AVAILABLE
+    assert ollama_rows["mr:4b"].status == AVAILABLE
+    assert ollama_rows["other:1b"].status == UNREGISTERED
+    assert "other:1b" not in vllm_rows
+
+    # Now the ollama model really is gone from an ollama report -> missing;
+    # vllm still untouched.
+    _heartbeat(auth_client, key, wid, [_item("mr:4b", H_KNOWN, runtime="ollama")])
+    db.expire_all()
+    runtimes = {rt.engine: rt for rt in db.query(WorkerRuntime).filter_by(worker_id=wid)}
+    assert {m.name: m.status for m in runtimes["ollama"].models}["other:1b"] == MISSING
+    assert {m.name: m.status for m in runtimes["vllm"].models}["Org/Served-Model"] == AVAILABLE
+
+
+# ─── adopt validation ────────────────────────────────────────
+
+def test_adopt_rejects_unreported_name_and_unknown_org(auth_client, superadmin_client, db):
+    key = _worker_key(auth_client, "Recon Org V")
+    wid = _register(auth_client, key, "zzrecon-v", [_item("realname:3b", "5" * 64)])
+    base = {
+        "sha256": "5" * 64, "id": "zztest-realname-3b-q4km", "display_name": "Real",
+        "runtime": "ollama", "runtime_model_id": "realname:3b", "vram_gb": 3.0,
+        "quantization": "Q4_K_M",
+    }
+    # A runtime id no worker reports would flip the row yet never dispatch.
+    r = superadmin_client.post("/v1/models/adopt", json=dict(base, runtime_model_id="othername:3b"))
+    assert r.status_code == 400 and "realname:3b" in r.json()["detail"]
+    # Unknown org -> 400, not an FK 500 at commit.
+    r = superadmin_client.post("/v1/models/adopt", json=dict(base, org_id="org-doesnotexist"))
+    assert r.status_code == 400
+    # Valid adopt still works and the entry advertises its status.
+    r = superadmin_client.post("/v1/models/adopt", json=base)
+    assert r.status_code == 201, r.text
+    entry = next(m for m in auth_client.get("/v1/models").json()["data"]
+                 if m["id"] == "zztest-realname-3b-q4km")
+    assert entry["status"] == "unverified"
+    assert _rows(db, wid)["realname:3b"].status == AVAILABLE
