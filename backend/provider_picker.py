@@ -13,7 +13,15 @@ reports per-model digests, tighten to a digest match (the catalogue's
 `digest` column is the intended join key) so two workers only satisfy an
 entry when the artifact is byte-identical.
 """
+import logging
+
 from models import ModelCatalog
+
+logger = logging.getLogger(__name__)
+
+# (runtime_model_id, worker digest, catalogue digest) tuples already warned
+# about — a mismatch repeats on every poll, the warning should not.
+_warned_mismatches = set()
 
 
 def get_catalog_entry(db, model_id: str):
@@ -67,7 +75,20 @@ def _hosts(worker_models, runtime_model_ids, catalog_digest) -> bool:
             continue
         wd = _norm_digest(digest)
         if cat and wd and cat != wd:
-            continue  # same tag, different artifact — reject
+            # Same tag, different artifact — reject. Say so once: a silent
+            # rejection here starves the model with nothing in the logs,
+            # e.g. a catalogue pinned to a manifest digest while the daemon
+            # reports the file hash (#118 review).
+            key = (name, wd, cat)
+            if key not in _warned_mismatches:
+                _warned_mismatches.add(key)
+                logger.warning(
+                    "Digest mismatch for %r: worker reports %s…, catalogue "
+                    "pins %s… — not scheduling here. Re-pin the catalogue "
+                    "(scripts/capture_catalog) if the worker's artifact is "
+                    "the intended one.", name, wd[:12], cat[:12],
+                )
+            continue
         return True
     return False
 

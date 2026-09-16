@@ -108,3 +108,23 @@ def test_heartbeat_inventory_refreshes_digests_and_adds_rows(auth_client, db_ses
     assert rows["qwen3:4b"].loaded is True
     assert rows["deepseek-r1:1.5b"].digest == "d" * 64
     assert rows["deepseek-r1:1.5b"].loaded is False
+
+
+def test_digest_mismatch_rejects_and_warns_once(caplog):
+    """A worker whose artifact differs from the catalogue pin is never
+    scheduled — and the rejection is logged (once per distinct mismatch),
+    so a silent starve is discoverable without reading the code."""
+    import logging
+    import provider_picker
+    from provider_picker import _hosts
+
+    provider_picker._warned_mismatches.clear()
+    with caplog.at_level(logging.WARNING, logger="provider_picker"):
+        assert not _hosts([("qwen3:4b", "a" * 64)], ["qwen3:4b"], "b" * 64)
+        assert not _hosts([("qwen3:4b", "a" * 64)], ["qwen3:4b"], "b" * 64)
+    mismatch_logs = [r for r in caplog.records if "Digest mismatch" in r.getMessage()]
+    assert len(mismatch_logs) == 1
+    assert "qwen3:4b" in mismatch_logs[0].getMessage()
+    # Matching digests, or a missing one on either side, still schedule.
+    assert _hosts([("qwen3:4b", "b" * 64)], ["qwen3:4b"], "b" * 64)
+    assert _hosts([("qwen3:4b", None)], ["qwen3:4b"], "b" * 64)

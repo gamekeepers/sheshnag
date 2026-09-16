@@ -126,10 +126,16 @@ tidy the `id`, and flip `enabled: true`.
 
 ### 2. `digest` — the reproducibility pin
 
-Only knowable after a pull. Leave it null and the scheduler **name-matches**
-(any digest under that tag). Fill it (via `capture_catalog`, which reads the
-digest from a live Ollama that has the model) to switch on the strict
-same-tag/different-digest guard.
+The artifact **file's** sha256 — for Ollama, the manifest's model-layer
+digest, which is exactly what daemons report in their inventory (#116).
+It is **not** `/api/tags`' `digest`: that hashes the manifest file itself and
+matches nothing a worker sends, so a catalogue pinned to it silently starves
+every digest-pinned model (the picker logs `Digest mismatch` once per pair).
+`capture_catalog` reads the file hash from the local manifests tree
+(`--models-dir`, auto-detected) and falls back to `registry.ollama.ai`'s
+manifest API for models not pulled locally — no blob download needed.
+Leave it null and the scheduler **name-matches** (any digest under that tag);
+fill it to switch on the strict same-tag/different-digest guard.
 
 ### 3. `vram_gb` — not derivable from Ollama
 

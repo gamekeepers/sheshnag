@@ -224,6 +224,8 @@ class InventoryItem(BaseModel):
     """
     local_name: str
     sha256: Optional[str] = None
+    # Not persisted yet (runtime_models has no size column); carried for the
+    # reconciliation loop / provider dashboard so the wire shape is stable.
     size_bytes: Optional[int] = None
     loaded: bool = False
     runtime: Optional[str] = None

@@ -236,26 +236,27 @@ class VLLMExecutor(BaseExecutor):
         return True
 
     async def inventory(self) -> List[dict]:
-        """Models this vLLM server serves, identified by their HF path.
+        """Models this vLLM server serves.
 
-        `root` is the real model path even when --served-model-name
-        aliases the public id. vLLM exposes no per-file hash over HTTP, so
-        sha256 stays None — the backend identifies these entries by the
-        catalogue's pinned HF repo+revision instead. Never raises.
+        The served name (`id`) is the join key: it is what a serving
+        profile's runtime_model_id pins and what dispatch sends as
+        body.model. Under --served-model-name it differs from `root` (the
+        underlying HF path), so both are reported as rows and either
+        convention matches. vLLM exposes no per-file hash over HTTP, so
+        sha256 stays None and the backend matches these rows by name only.
+        Never raises.
         """
         try:
             client = self._get_client()
             resp = await client.get("/v1/models", timeout=10.0)
             resp.raise_for_status()
-            return [
-                {
-                    "local_name": m.get("root") or m.get("id"),
-                    "sha256": None,
-                    "size_bytes": None,
-                }
-                for m in resp.json().get("data", [])
-                if m.get("root") or m.get("id")
-            ]
+            items, seen = [], set()
+            for m in resp.json().get("data", []):
+                for name in (m.get("id"), m.get("root")):
+                    if name and name not in seen:
+                        seen.add(name)
+                        items.append({"local_name": name, "sha256": None, "size_bytes": None})
+            return items
         except Exception as exc:
             logger.warning(f"vLLM inventory failed: {exc}")
             return []

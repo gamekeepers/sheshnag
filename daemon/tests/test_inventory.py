@@ -68,10 +68,20 @@ async def test_ollama_inventory_namespaced_and_multiple(tmp_path):
         tmp_path, "hf.co", "unsloth", "qwen3-gguf", "Q4_K_M",
         [_model_layer(MMPROJ_SHA, 20)],
     )
+    # A community model on the default registry: Ollama renders it
+    # `user/model:tag` (host dropped) — the heartbeat's loaded flag and the
+    # catalogue's runtime_model_id both join on that exact string.
+    _write_manifest(
+        tmp_path, "registry.ollama.ai", "someuser", "mymodel", "latest",
+        [_model_layer("e" * 64, 30)],
+    )
     ex = OllamaExecutor(models_dir=str(tmp_path))
     names = {i["local_name"] for i in await ex.inventory()}
-    # Default-registry library models render bare; other hosts keep their prefix.
-    assert names == {"gemma3:4b", "hf.co/unsloth/qwen3-gguf:Q4_K_M"}
+    assert names == {
+        "gemma3:4b",
+        "someuser/mymodel:latest",
+        "hf.co/unsloth/qwen3-gguf:Q4_K_M",
+    }
 
 
 @pytest.mark.asyncio
@@ -114,11 +124,15 @@ def _async(value):
 # ─── vLLM ────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_vllm_inventory_prefers_root_over_id():
+async def test_vllm_inventory_reports_served_name_and_root():
+    """Under --served-model-name the served id (what profiles pin and
+    dispatch sends) differs from root (the HF path); both rows are
+    reported so either convention joins. Identical id/root -> one row."""
     def handler(request):
         assert request.url.path == "/v1/models"
         return httpx.Response(200, json={"data": [
             {"id": "served-alias", "root": "Qwen/Qwen3-4B-Instruct"},
+            {"id": "Qwen/Qwen3-8B", "root": "Qwen/Qwen3-8B"},
             {"id": "no-root-model"},
         ]})
 
@@ -128,7 +142,7 @@ async def test_vllm_inventory_prefers_root_over_id():
     )
     items = await ex.inventory()
     assert [i["local_name"] for i in items] == [
-        "Qwen/Qwen3-4B-Instruct", "no-root-model",
+        "served-alias", "Qwen/Qwen3-4B-Instruct", "Qwen/Qwen3-8B", "no-root-model",
     ]
     assert all(i["sha256"] is None for i in items)
 

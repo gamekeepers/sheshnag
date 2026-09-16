@@ -23,9 +23,10 @@ Naming rules (#116) are enforced on every manifest id: lowercase
 `quantization` — the id must end in that quant's slug (`Q4_K_M` → `-q4km`).
 A violating entry is skipped with an error rather than failing the boot.
 
-`digest` is intentionally often null in the manifest — fill it via
-`python -m scripts.capture_catalog` (reads a live Ollama) to switch an
-entry from name-matching to the strict digest reproducibility guard.
+`digest` is the artifact FILE's sha256 (what daemons report in their
+inventory) — fill it via `python -m scripts.capture_catalog`, which reads
+it from Ollama manifests (local tree or registry), never from /api/tags.
+A null digest leaves the entry on name matching.
 """
 import logging
 import os

@@ -451,15 +451,21 @@ class OllamaExecutor(BaseExecutor):
     def _manifest_model_name(rel_parts: tuple) -> Optional[str]:
         """Manifest path -> Ollama model name.
 
-        manifests/<host>/<namespace>/<model>/<tag>: the default registry's
-        `library` namespace renders as `model:tag`; anything else keeps its
-        full prefix (`hf.co/user/model:tag`).
+        manifests/<host>/<namespace>/<model>/<tag>, rendered the way Ollama
+        itself does (Name.DisplayShortest): the default registry drops its
+        host (`user/model:tag`) and its `library` namespace also drops the
+        namespace (`model:tag`); other hosts keep the full prefix
+        (`hf.co/user/model:tag`). Matching /api/tags exactly matters — the
+        heartbeat's `loaded` flag and the catalogue's runtime_model_id both
+        join on this string.
         """
         if len(rel_parts) != 4:
             return None
         host, namespace, model, tag = rel_parts
-        if host == "registry.ollama.ai" and namespace == "library":
-            return f"{model}:{tag}"
+        if host == "registry.ollama.ai":
+            if namespace == "library":
+                return f"{model}:{tag}"
+            return f"{namespace}/{model}:{tag}"
         return f"{host}/{namespace}/{model}:{tag}"
 
     def _scan_manifests(self, models_dir: Path) -> List[dict]:
@@ -484,6 +490,10 @@ class OllamaExecutor(BaseExecutor):
                 if not str(layer.get("mediaType", "")).endswith("image.model"):
                     continue
                 digest = str(layer.get("digest", ""))
+                # Split GGUFs carry several image.model layers; the first
+                # is the artifact's identity (same convention as the
+                # catalogue's digest = weights file), so size_bytes is
+                # shard 1's size, not the whole artifact.
                 items.append({
                     "local_name": name,
                     # The layer digest IS the GGUF file's sha256 (unlike
