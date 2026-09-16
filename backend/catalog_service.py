@@ -22,7 +22,8 @@ from typing import Optional
 from catalog_seed import validate_entry_id
 from identity_resolver import Confirmed, IdentityResolver
 from models import (
-    ModelCatalog, Organization, RuntimeModel, ServingProfile, WorkerRuntime,
+    CatalogArtifactFile, ModelCatalog, Organization, RuntimeModel, ServingProfile,
+    WorkerRuntime,
 )
 from reconciliation import UNREGISTERED, find_entry_by_hash, local_names_for_hash, reclassify_hash
 
@@ -272,6 +273,14 @@ def auto_adopt_pass(db, resolver: IdentityResolver, *, enabled: Optional[bool] =
                 adopted_by="auto",
                 enabled=enabled,
             )
+            if res.source_file:
+                # HF confirmation is file-agnostic (the hash is the identity,
+                # the :tag may lie) — pin the file that actually matched so the
+                # pull reference is complete: repo + revision + this path.
+                db.add(CatalogArtifactFile(
+                    catalog_id=entry.id, file=res.source_file, role="weights",
+                    sha256=cand.digest, size_bytes=cand.size_bytes,
+                ))
             db.commit()
         except AdoptError as exc:
             db.rollback()

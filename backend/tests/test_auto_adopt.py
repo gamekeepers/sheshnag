@@ -13,7 +13,7 @@ from catalog_service import (
     run_auto_adopt_once,
 )
 from identity_resolver import Confirmed, Unconfirmed
-from models import ModelCatalog, RuntimeModel, WorkerRuntime
+from models import CatalogArtifactFile, ModelCatalog, RuntimeModel, WorkerRuntime
 from reconciliation import AVAILABLE, UNREGISTERED
 
 H1 = "a1" * 32
@@ -44,7 +44,7 @@ def db(_engine):
     session = sessionmaker(bind=_engine)()
     yield session
     session.rollback()
-    ids = [r.id for r in session.query(ModelCatalog).filter(ModelCatalog.id.like("zzauto%"))]
+    ids = [r.id for r in session.query(ModelCatalog).filter(ModelCatalog.id.like("%zzauto%"))]
     if ids:
         session.query(ModelCatalog).filter(ModelCatalog.id.in_(ids)).delete(synchronize_session=False)
         session.commit()
@@ -185,3 +185,26 @@ def test_admin_adopt_records_adopter(auth_client, superadmin_client, db):
     assert r.status_code == 201, r.text
     entry = db.query(ModelCatalog).filter_by(id="zzauto-manual-3b-q4km").one()
     assert entry.adopted_by not in (None, "auto")
+
+
+def test_hf_confirmation_pins_the_matched_file(auth_client, db):
+    """HF confirmation matches bytes, not the :tag — the file that matched is
+    pinned in catalog_artifact_files so the reference is re-pullable even
+    when the worker's tag lies about the quant."""
+    key = _worker_key(auth_client, "Auto Org 6")
+    name = "hf.co/zzauto/Model-GGUF:Q4_K_M"
+    _register(auth_client, key, "zzauto-box6", [_item(name, "a7" * 32)])
+    resolver = StubResolver({(name, "a7" * 32): Confirmed(
+        source_type="huggingface", source_ref="zzauto/Model-GGUF",
+        source_revision="0a1b2c3d", digest="a7" * 32,
+        homepage_url="https://huggingface.co/zzauto/Model-GGUF",
+        source_file="Model-IQ3_M.gguf",           # the tag said Q4_K_M; bytes are IQ3_M
+    )})
+    assert auto_adopt_pass(db, resolver, enabled=True) == 1
+    entry = db.query(ModelCatalog).filter_by(digest="a7" * 32).one()
+    assert entry.id == "hf-co-zzauto-model-gguf-q4km"
+    assert (entry.source_type, entry.source_ref, entry.source_revision) == (
+        "huggingface", "zzauto/Model-GGUF", "0a1b2c3d")
+    files = db.query(CatalogArtifactFile).filter_by(catalog_id=entry.id).all()
+    assert [(f.file, f.role, f.sha256, f.size_bytes) for f in files] == [
+        ("Model-IQ3_M.gguf", "weights", "a7" * 32, SIZE)]
