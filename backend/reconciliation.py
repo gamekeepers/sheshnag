@@ -127,28 +127,60 @@ def _files_payload(item) -> Optional[list]:
     return [f.model_dump() if hasattr(f, "model_dump") else dict(f) for f in files]
 
 
+def _ensure_serving_name(entry, name: str, runtime_engine: str) -> bool:
+    """Make `entry` answer to `name` on `runtime_engine`.
+
+    The row's digest already matched this entry — proof the artifact is the
+    pinned one — so `name` (another box's served alias) is a valid serving
+    id for it. Appended to the entry's profile for that runtime so the box
+    dispatches instead of sitting `available`-forever. Only extends a profile
+    the entry already has for the runtime: a first profile for a new runtime
+    is a curation decision (launch knobs and all), not something a heartbeat
+    should invent. Returns True when the entry changed."""
+    profile = next((p for p in entry.profiles if p.runtime == runtime_engine), None)
+    if profile is None:
+        return False
+    extras = list(profile.runtime_model_ids or [])
+    if name in extras:
+        return False
+    profile.runtime_model_ids = extras + [name]
+    profile.updated_at = unix_now()
+    logger.info("Entry %r: added serving name %r to %s profile from a worker row",
+                entry.id, name, runtime_engine)
+    return True
+
+
 def _set_state(row: RuntimeModel, status: str, entry, worker_id: str) -> bool:
     """Apply (status, entry) to a row. True if anything changed."""
     catalog_id = entry.id if entry is not None else None
-    if row.status == status and row.catalog_id == catalog_id:
+    transitioning = not (row.status == status and row.catalog_id == catalog_id)
+    if entry is not None:
+        # Hash-verified, but the picker matches on the entry's target ids.
+        # A row whose local name is none of them is `available` yet would
+        # never be dispatched — self-heal by extending the entry's profile
+        # for the row's runtime with the name (the digest match proves the
+        # artifact, the name is just what this box calls it). Checked before
+        # the early return: rows are classified at birth, so a first report
+        # never "transitions". A runtime the entry has no profile for is a
+        # curation gap, not a heartbeat's call — warn once, on the transition.
+        targets = {rmid for _rt, rmid in entry.serving_targets()}
+        if row.name not in targets:
+            engine = row.runtime.engine if row.runtime else None
+            healed = engine is not None and _ensure_serving_name(entry, row.name, engine)
+            if not healed and transitioning:
+                logger.warning(
+                    "Worker %s: model %r hash-matches catalogue entry %r but the "
+                    "entry's runtime ids are %s — not schedulable under this "
+                    "name; add a serving profile with runtime_model_id=%r",
+                    worker_id, row.name, entry.id, sorted(targets), row.name,
+                )
+    if not transitioning:
         return False
     if status in (DRIFT, UNREGISTERED) and row.status != status:
         logger.warning(
             "Worker %s: model %r (sha256 %s) is %s — not schedulable",
             worker_id, row.name, (row.digest or "none")[:12], status,
         )
-    if entry is not None:
-        # Hash-verified, but the picker matches on the entry's target ids:
-        # a row whose local name is none of them is `available` yet will
-        # never be dispatched. Say so, once, on the transition.
-        targets = {rmid for _rt, rmid in entry.serving_targets()}
-        if row.name not in targets:
-            logger.warning(
-                "Worker %s: model %r hash-matches catalogue entry %r but the "
-                "entry's runtime ids are %s — not schedulable under this "
-                "name; add a serving profile with runtime_model_id=%r",
-                worker_id, row.name, entry.id, sorted(targets), row.name,
-            )
     row.status = status
     row.catalog_id = catalog_id
     row.updated_at = unix_now()

@@ -9,7 +9,9 @@ from sqlalchemy.orm import sessionmaker
 
 from catalog_service import auto_adopt_pass
 from identity_resolver import Confirmed, IdentityResolver, Unconfirmed
-from models import CatalogArtifactFile, ModelCatalog, RuntimeModel, WorkerRuntime
+from models import (CatalogArtifactFile, ModelCatalog, RuntimeModel,
+                    ServingProfile, WorkerRuntime)
+from provider_picker import can_serve, resolve_runtime_model_id
 from reconciliation import AVAILABLE, UNREGISTERED
 
 SHARD1 = "1" * 64
@@ -163,3 +165,126 @@ def test_auto_adopt_builds_vllm_entry_from_hints(auth_client, db):
     rows = _rows(db, wid)
     assert rows["served-alias"].status == AVAILABLE and rows["served-alias"].catalog_id == entry.id
     assert rows["zzauto/Model"].status == AVAILABLE
+
+
+# ─── Multi-name serving (#124 review) ───────────────────────
+# One artifact, several boxes, several --served-model-name aliases: one entry
+# whose profile answers to every reported name, and a picker that follows the
+# digest, not just the profiled ids.
+
+MSHARD = "9f" * 32
+MREV = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"
+MFILES = [{"file": "model-00001-of-00001.safetensors", "sha256": MSHARD, "size_bytes": 1000}]
+MDETAILS = {"quantization": "bf16", "parameter_size": "1.2B", "family": "llama",
+            "context_length": 8192, "source_ref": "zzauto/Multi", "source_revision": MREV}
+
+
+def _mitem(name):
+    return {"local_name": name, "sha256": MSHARD, "size_bytes": 1000, "loaded": False,
+            "runtime": "vllm", "details": MDETAILS, "files": MFILES}
+
+
+def _heartbeat(auth_client, key, worker_id, inventory):
+    resp = auth_client.post(
+        f"/workers/{worker_id}/heartbeat",
+        json={"worker_id": worker_id, "activity": "idle",
+              "loaded_models": [], "inventory": inventory},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+class MultiResolver:
+    def resolve(self, name, sha256, **hints):
+        if sha256 != MSHARD:
+            return Unconfirmed("digest-mismatch")
+        return Confirmed(source_type="huggingface", source_ref="zzauto/Multi",
+                         source_revision=MREV, digest=MSHARD,
+                         homepage_url="https://huggingface.co/zzauto/Multi",
+                         source_file="model-00001-of-00001.safetensors")
+
+
+def test_auto_adopt_pins_every_reported_alias(auth_client, db):
+    """Two boxes, two aliases, one artifact: the entry pins the shortest
+    alias as primary and every other reported name as an extra — all of them
+    stay dispatch targets on the single entry."""
+    key1 = _worker_key(auth_client, "vLLM Org 3")
+    _register_vllm(auth_client, key1, "zzvllm-m1", [_mitem("zeta-alias"), _mitem("zzauto/Multi")])
+    key2 = _worker_key(auth_client, "vLLM Org 4")
+    wid2 = _register_vllm(auth_client, key2, "zzvllm-m2", [_mitem("ab"), _mitem("zzauto/Multi")])
+    assert auto_adopt_pass(db, MultiResolver(), enabled=True) == 1
+
+    entry = db.query(ModelCatalog).filter_by(digest=MSHARD).one()
+    assert len(entry.profiles) == 1
+    profile = entry.profiles[0]
+    assert profile.runtime == "vllm"
+    assert profile.runtime_model_id == "ab"      # shortest alias wins, deterministically
+    assert profile.runtime_model_ids == ["zeta-alias", "zzauto/Multi"]
+    assert {rmid for _rt, rmid in entry.serving_targets()} >= {"ab", "zeta-alias", "zzauto/Multi"}
+    rows = _rows(db, wid2)
+    assert rows["ab"].status == AVAILABLE and rows["ab"].catalog_id == entry.id
+
+
+def test_picker_digest_join_for_unprofiled_alias(auth_client, db):
+    """A box hosting the byte-identical artifact under a name the entry does
+    not profile is still a host (digest IS the identity), and dispatch sends
+    the name that box actually answers to — never a profiled id it doesn't
+    have. The same-tag-different-digest guard stays intact."""
+    e = ModelCatalog(id="zzauto-pick-bf16", display_name="Pick", runtime="vllm",
+                     runtime_model_id="alpha", digest=MSHARD, vram_gb=1.0,
+                     enabled=True, status="active")
+    db.add(e)
+    db.flush()
+    db.add(ServingProfile(catalog_id=e.id, runtime="vllm", runtime_model_id="alpha"))
+    db.commit()
+    other = "ee" * 32
+    assert can_serve(e, [("beta", MSHARD)], 16)
+    assert resolve_runtime_model_id(e, [("beta", MSHARD)]) == "beta"
+    assert not can_serve(e, [("beta", other)], 16)
+    assert resolve_runtime_model_id(e, [("beta", other), ("alpha", MSHARD)]) == "alpha"
+    assert not can_serve(e, [("alpha", other)], 16)     # same tag, different digest
+    assert can_serve(e, [("alpha", None)], 16)          # old daemon: name fallback
+
+
+def test_heartbeat_extends_profile_with_new_alias(auth_client, db):
+    """A box that reports the pinned hash under an unprofiled alias extends
+    the entry's profile for its own runtime — and only for that runtime: a
+    first profile for a new runtime is a curation decision, not a heartbeat's
+    call."""
+    e = ModelCatalog(id="zzauto-hb-bf16", display_name="HB", runtime="vllm",
+                     runtime_model_id="alpha", digest=MSHARD, vram_gb=1.0,
+                     enabled=True, status="active")
+    db.add(e)
+    db.flush()
+    db.add(ServingProfile(catalog_id=e.id, runtime="vllm", runtime_model_id="alpha"))
+    db.commit()
+    key = _worker_key(auth_client, "vLLM Org 5")
+    wid = _register_vllm(auth_client, key, "zzvllm-hb", [_mitem("beta")])
+    rows = _rows(db, wid)
+    assert rows["beta"].status == AVAILABLE and rows["beta"].catalog_id == e.id
+    # The reconciliation loop runs on the heartbeat, not registration.
+    _heartbeat(auth_client, key, wid, [_mitem("beta")])
+    profile = db.query(ServingProfile).filter_by(catalog_id=e.id, runtime="vllm").one()
+    assert profile.runtime_model_ids == ["beta"]
+
+    org = auth_client.post("/v1/me/organizations", json={"name": "vLLM Org 6"}).json()
+    key_o = auth_client.post(f"/v1/orgs/{org['id']}/api-keys",
+                             json={"name": "k", "key_type": "worker"}).json()["api_key"]
+    wid_o = auth_client.post(
+        "/workers/register",
+        json={"hostname": "zzollama-hb",
+              "runtimes": [{"type": "ollama", "endpoint": "localhost", "models": [],
+                            "inventory": [{"local_name": "gamma", "sha256": MSHARD,
+                                           "size_bytes": 1, "loaded": False,
+                                           "runtime": "ollama", "details": None}]}]},
+        headers={"Authorization": f"Bearer {key_o}"}).json()["worker_id"]
+    rows_o = _rows(db, wid_o)
+    assert rows_o["gamma"].status == AVAILABLE and rows_o["gamma"].catalog_id == e.id
+    r_o = auth_client.post(
+        f"/workers/{wid_o}/heartbeat",
+        json={"worker_id": wid_o, "activity": "idle", "loaded_models": [],
+              "inventory": [{"local_name": "gamma", "sha256": MSHARD, "size_bytes": 1,
+                             "loaded": False, "runtime": "ollama", "details": None}]},
+        headers={"Authorization": f"Bearer {key_o}"})
+    assert r_o.status_code == 200, r_o.text
+    assert db.query(ServingProfile).filter_by(catalog_id=e.id, runtime="ollama").first() is None

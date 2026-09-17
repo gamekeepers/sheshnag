@@ -62,13 +62,18 @@ def _hosts(worker_models, runtime_model_ids, catalog_digest) -> bool:
     guard: same tag + different digest ⇒ not a match). If either digest is
     missing (older daemon, un-pinned catalogue entry, non-Ollama runtime),
     fall back to name equality so mixed-version fleets keep scheduling.
+    A name the entry does not profile still matches when its digest equals
+    the catalogue's — byte-identical artifact, different served alias: the
+    digest IS the identity, the name is just what that box calls it.
     """
     cat = _norm_digest(catalog_digest)
     ids = set(runtime_model_ids)
     for name, digest in worker_models:
-        if name not in ids:
-            continue
         wd = _norm_digest(digest)
+        if name not in ids:
+            if cat and wd and cat == wd:
+                return True
+            continue
         if cat and wd and cat != wd:
             # Same tag, different artifact — reject. Say so once: a silent
             # rejection here starves the model with nothing in the logs,
@@ -97,17 +102,31 @@ def resolve_runtime_model_id(entry, worker_models) -> str:
     """The runtime_model_id to hand THIS worker for `entry` at dispatch.
 
     A multi-profile entry answers to several ids (`qwen3:4b` to Ollama, an
-    HF repo path to vLLM); the picker matched the worker on ANY of them, so
-    dispatch must send the one this worker actually hosts — not the legacy
-    column. Falls back to the legacy column when nothing matches (entry
-    with no profiles yet, or the pre-heartbeat worker whose model list is
-    empty: the daemon resolves its own runtime's id there).
+    HF repo path to vLLM, an extra alias per box); the picker matched the
+    worker on ANY of them, so dispatch must send the one this worker
+    actually hosts — not the legacy column. Three ways, in order:
+
+    1. a profiled name the worker advertises (digest-checked);
+    2. a name the worker advertises with the entry's exact digest — the
+       same artifact under a name the entry does not profile yet;
+    3. the legacy column (entry with no profiles yet, or the pre-heartbeat
+       worker whose model list is empty: the daemon resolves its own
+       runtime's id there).
     """
     if entry is None:
         return None
-    for _runtime, rmid in entry.serving_targets():
-        if _hosts(worker_models, [rmid], entry.digest):
-            return rmid
+    cat = _norm_digest(entry.digest)
+    ids = set(rmid for _runtime, rmid in entry.serving_targets())
+    for name, digest in worker_models:
+        if name not in ids:
+            continue
+        wd = _norm_digest(digest)
+        if not (cat and wd and cat != wd):
+            return name
+    if cat:
+        for name, digest in worker_models:
+            if _norm_digest(digest) == cat:
+                return name
     return entry.runtime_model_id
 
 

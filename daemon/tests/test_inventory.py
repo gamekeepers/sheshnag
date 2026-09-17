@@ -1,10 +1,13 @@
 """On-disk inventory reporting (#116): manifest-layer file hashes, name
 derivation, the /api/tags fallback, and the heartbeat payload."""
 import json
+import os
+import time
 
 import httpx
 import pytest
 
+from daemon import hf_cache
 from daemon.executors.ollama import OllamaExecutor
 from daemon.executors.vllm import VLLMExecutor
 from daemon.heartbeat import HeartbeatManager
@@ -413,7 +416,7 @@ async def test_vllm_identity_from_hub_cache(tmp_path):
     items = {i["local_name"]: i for i in await ex.inventory()}
     assert set(items) == {"served-alias", "Org/Name"}
     for item in items.values():
-        assert item["sha256"] == SHARD1 and item["size_bytes"] == 1000
+        assert item["sha256"] == SHARD1 and item["size_bytes"] == 1500  # total, not shard 1
         assert [(f["file"], f["sha256"], f["size_bytes"]) for f in item["files"]] == [
             ("model-00001-of-00002.safetensors", SHARD1, 1000),
             ("model-00002-of-00002.safetensors", SHARD2, 500),
@@ -446,3 +449,263 @@ async def test_vllm_uncached_model_stays_hashless(tmp_path):
                                {"id": "local", "root": "/opt/models/local"}])
     for item in await ex.inventory():
         assert item["sha256"] is None and "files" not in item
+
+
+# ─── vLLM: LoRA adapters ─────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_vllm_inventory_skips_lora_adapters():
+    """/v1/models lists every --enable-lora adapter as a ModelCard with
+    `parent` set; an adapter is not a standalone model, so it is never
+    inventoried (its PEFT weights would otherwise get the base model's
+    hash and be adopted as a chat model)."""
+    def handler(request):
+        assert request.url.path == "/v1/models"
+        return httpx.Response(200, json={"data": [
+            {"id": "Qwen/Qwen2.5-7B-Instruct", "root": "Qwen/Qwen2.5-7B-Instruct"},
+            {"id": "finance-lora",
+             "root": "/root/.cache/huggingface/hub/models--acme--finance-lora/snapshots/c0ffe12",
+             "parent": "Qwen/Qwen2.5-7B-Instruct"},
+        ]})
+
+    ex = VLLMExecutor(base_url="http://vllm.test")
+    ex._client = httpx.AsyncClient(
+        base_url="http://vllm.test", transport=httpx.MockTransport(handler))
+    items = await ex.inventory()
+    assert [i["local_name"] for i in items] == ["Qwen/Qwen2.5-7B-Instruct"]
+
+
+def _adapter_cache(tmp_path, repo="acme/finance-lora"):
+    """A cached PEFT adapter: adapter_config.json + adapter weights, no
+    base-model config/index."""
+    hub = tmp_path / "hub"
+    repo_dir = hub / ("models--" + repo.replace("/", "--"))
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text(REV + "\n")
+    blobs = repo_dir / "blobs"
+    blobs.mkdir()
+    (blobs / SHARD1).write_bytes(b"l" * 100)
+    snap = repo_dir / "snapshots" / REV
+    snap.mkdir(parents=True)
+    (snap / "adapter_config.json").write_text(json.dumps(
+        {"base_model_name_or_path": "Qwen/Qwen2.5-7B-Instruct"}))
+    (snap / "adapter_model.safetensors").symlink_to(f"../../blobs/{SHARD1}")
+    return hub, snap
+
+
+@pytest.mark.asyncio
+async def test_vllm_standalone_adapter_reports_no_identity(tmp_path):
+    """Defense in depth: an adapter snapshot served on its own (no `parent`
+    in the card) still has no base-model identity — describe() refuses to
+    read adapter weights as model shards, so the row stays hash-less."""
+    hub, _ = _adapter_cache(tmp_path)
+    ex = VLLMExecutor(base_url="http://vllm.test", hf_hub_cache=str(hub))
+    ex._client = _vllm_client([{"id": "acme/finance-lora", "root": "acme/finance-lora"}])
+    items = await ex.inventory()
+    assert len(items) == 1
+    item = items[0]
+    assert item["sha256"] is None and item["files"] is None
+    assert item["details"].get("family") is None
+    assert item["details"]["source_ref"] == "acme/finance-lora"
+
+
+# ─── vLLM: local paths, dangling blobs, identity cache ───────
+
+def test_local_dir_named_like_repo_id_is_never_public(tmp_path):
+    """The daemon's CWD holds ./Qwen/Qwen2.5-7B-Instruct/ — a local AWQ
+    quant vLLM loads by path. Before the fix its name matched _REPO_ID, so
+    identity was read from the PUBLIC cache snapshot: the public bf16's
+    hashes adopted for different bytes. A real directory is a local
+    checkout — no public identity — unless it IS a cache snapshot."""
+    hub, _ = _hub_cache(tmp_path)
+    local = tmp_path / "Qwen" / "Qwen2.5-7B-Instruct"
+    local.mkdir(parents=True)
+    assert hf_cache.locate(hub, str(local)) is None
+    # A bare repo id (not a directory) still resolves through the cache.
+    assert hf_cache.locate(hub, "Org/Name") is not None
+    # ...and a repo-id-named dir that IS a cache snapshot still maps back.
+    hub2, snap2 = _hub_cache(tmp_path / "h2")
+    assert hf_cache.locate(hub2, str(snap2)) is not None
+
+
+@pytest.mark.asyncio
+async def test_dangling_blobs_carry_no_identity(tmp_path):
+    """After `hf cache gc` the symlinks survive but the blobs are gone.
+    _blob_sha256 still reads the link NAME, so describe() lists files with
+    a sha but a failed stat; _identify must require the blob to be intact,
+    so all-blobs-gone falls back to hash-less (name-matched)."""
+    hub, _ = _hub_cache(tmp_path)
+    for b in (hub / "models--Org--Name" / "blobs").iterdir():
+        b.unlink()
+    ex = VLLMExecutor(base_url="http://vllm.test", hf_hub_cache=str(hub))
+    ex._client = _vllm_client([{"id": "served-alias", "root": "Org/Name"}])
+    for item in await ex.inventory():
+        assert item["sha256"] is None and item["files"] is None
+
+
+@pytest.mark.asyncio
+async def test_identity_describe_cached_per_snapshot_mtime(tmp_path, monkeypatch):
+    """Steady-state heartbeat: the mtime cache makes the second beat a
+    single stat — describe() (all symlinks + config + full index) runs
+    exactly once across both beats."""
+    hub, _ = _hub_cache(tmp_path)
+    ex = VLLMExecutor(base_url="http://vllm.test", hf_hub_cache=str(hub))
+    ex._client = _vllm_client([{"id": "served-alias", "root": "Org/Name"}])
+    calls, real = [], hf_cache.describe
+    monkeypatch.setattr(hf_cache, "describe", lambda s: (calls.append(s), real(s))[1])
+    await ex.inventory()
+    await ex.inventory()
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_identity_cache_invalidates_on_mtime_change(tmp_path, monkeypatch):
+    """A new snapshot landing (files added) bumps the dir mtime, so the
+    cache misses and describe() runs again."""
+    hub, snap = _hub_cache(tmp_path)
+    ex = VLLMExecutor(base_url="http://vllm.test", hf_hub_cache=str(hub))
+    ex._client = _vllm_client([{"id": "served-alias", "root": "Org/Name"}])
+    calls, real = [], hf_cache.describe
+    monkeypatch.setattr(hf_cache, "describe", lambda s: (calls.append(s), real(s))[1])
+    await ex.inventory()
+    assert len(calls) == 1
+    os.utime(snap, (time.time() + 10, time.time() + 10))
+    await ex.inventory()
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_inventory_identifies_each_distinct_root_once(tmp_path):
+    """Three cards sharing one root (served alias + repo id + another
+    alias) identify the snapshot once, and every row carries the same
+    identity."""
+    hub, _ = _hub_cache(tmp_path)
+    ex = VLLMExecutor(base_url="http://vllm.test", hf_hub_cache=str(hub))
+    ex._client = _vllm_client([
+        {"id": "alias-a", "root": "Org/Name"},
+        {"id": "Org/Name", "root": "Org/Name"},
+        {"id": "alias-b", "root": "Org/Name"},
+    ])
+    calls, real = [], ex._identify
+    ex._identify = lambda root: (calls.append(root), real(root))[1]
+    items = await ex.inventory()
+    assert calls == ["Org/Name"]
+    assert {i["local_name"] for i in items} == {"alias-a", "Org/Name", "alias-b"}
+    assert all(i["sha256"] == SHARD1 for i in items)
+
+
+# ─── hf_cache.snapshot_for: revision choice ──────────────────
+
+def _repo_with_snapshots(tmp_path, revs, main_ref=None):
+    repo = tmp_path / "models--Org--Name"
+    for rev in revs:
+        (repo / "snapshots" / rev).mkdir(parents=True)
+    if main_ref is not None:
+        (repo / "refs").mkdir(parents=True, exist_ok=True)
+        (repo / "refs" / "main").write_text(main_ref + "\n")
+    return repo
+
+
+def test_snapshot_single_dir_is_unambiguous_without_any_ref(tmp_path):
+    """vLLM can only serve what is in its cache: one snapshot dir IS the
+    commit, regardless of refs (tags live under refs/tags, commit pulls
+    write no ref at all)."""
+    repo = _repo_with_snapshots(tmp_path, ["0a1b2c3d"])
+    rev, snap = hf_cache.snapshot_for(repo)
+    assert rev == "0a1b2c3d" and snap == repo / "snapshots" / "0a1b2c3d"
+
+
+def test_snapshot_single_dir_ignores_stale_main_ref(tmp_path):
+    """refs/main dangling (pull interrupted) must not shadow the only
+    snapshot — the box is serving it."""
+    repo = _repo_with_snapshots(tmp_path, ["0a1b2c3d"], main_ref="deadbeef")
+    assert hf_cache.snapshot_for(repo)[0] == "0a1b2c3d"
+
+
+def test_snapshot_multiple_dirs_honours_valid_main_ref(tmp_path):
+    repo = _repo_with_snapshots(tmp_path, ["0a1b2c3d", "9f9f9f9f"], main_ref="9f9f9f9f")
+    assert hf_cache.snapshot_for(repo)[0] == "9f9f9f9f"
+
+
+def test_snapshot_multiple_dirs_without_ref_refuses_to_guess(tmp_path):
+    """--revision v0.5.0 and a later main pull: two dirs, no ref pointing
+    at an existing snapshot. Picking by mtime would pin the wrong commit
+    and digest-mismatch into permanent quarantine — None instead."""
+    repo = _repo_with_snapshots(tmp_path, ["0a1b2c3d", "9f9f9f9f"])
+    assert hf_cache.snapshot_for(repo) is None
+
+
+def test_snapshot_multiple_dirs_with_stale_ref_refuses_to_guess(tmp_path):
+    repo = _repo_with_snapshots(tmp_path, ["0a1b2c3d", "9f9f9f9f"], main_ref="deadbeef")
+    assert hf_cache.snapshot_for(repo) is None
+
+
+def test_snapshot_no_dirs_is_none(tmp_path):
+    repo = tmp_path / "models--Org--Name"
+    (repo / "snapshots").mkdir(parents=True)
+    assert hf_cache.snapshot_for(repo) is None
+    assert hf_cache.snapshot_for(tmp_path / "missing") is None
+
+
+# ─── hf_cache._weight_files: identity shard choice ───────────
+
+def _file_snapshot(tmp_path, entries):
+    """A snapshot dir; entries is {filename: blob_sha or None} — a sha makes
+    the file a symlink into blobs/ (as the hub lays it out), None a plain
+    file."""
+    repo = tmp_path / "models--Org--Name"
+    blobs = repo / "blobs"
+    blobs.mkdir(parents=True)
+    snap = repo / "snapshots" / REV
+    snap.mkdir(parents=True)
+    for name, sha in entries.items():
+        if sha:
+            (blobs / sha).write_bytes(b"z" * (10 + len(name)))
+            (snap / name).symlink_to(f"../../blobs/{sha}")
+        else:
+            (snap / name).write_bytes(b"q" * len(name))
+    return snap
+
+
+def test_weight_selection_follows_the_repo_index(tmp_path):
+    """consolidated.safetensors sorts before model-*, but the repo's own
+    weight_map says the shards are the weights: identity = shard 1, only
+    index-listed shards reported, consolidated ignored."""
+    W1, W2, W3 = "a1" * 32, "a2" * 32, "a3" * 32
+    snap = _file_snapshot(tmp_path, {
+        "consolidated.safetensors": W3,
+        "model-00001-of-00002.safetensors": W1,
+        "model-00002-of-00002.safetensors": W2,
+    })
+    (snap / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {
+        "model.embed_tokens.weight": "model-00001-of-00002.safetensors",
+        "model.layers.0.weight": "model-00001-of-00002.safetensors",
+        "lm_head.weight": "model-00002-of-00002.safetensors",
+    }}))
+    files = hf_cache.describe(snap)["files"]
+    assert [f["file"] for f in files] == [
+        "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+    assert files[0]["sha256"] == W1
+
+
+def test_weight_selection_never_crows_optimizer_bin(tmp_path):
+    """Legacy sharded bin: a filename sort puts optimizer.bin (o < p) first
+    and would crown the trainer's optimizer state as the model's identity —
+    shard NUMBER orders the real weights instead."""
+    P1, P2 = "c1" * 32, "c2" * 32
+    snap = _file_snapshot(tmp_path, {
+        "optimizer.bin": "c0" * 32,
+        "pytorch_model-00001-of-00002.bin": P1,
+        "pytorch_model-00002-of-00002.bin": P2,
+    })
+    files = hf_cache.describe(snap)["files"]
+    assert [f["file"] for f in files] == [
+        "pytorch_model-00001-of-00002.bin", "pytorch_model-00002-of-00002.bin"]
+    assert files[0]["sha256"] == P1
+
+
+def test_weight_selection_single_file_ignores_other_bins(tmp_path):
+    M, O = "d1" * 32, "d2" * 32
+    snap = _file_snapshot(tmp_path, {"model.safetensors": M, "optimizer.bin": O})
+    files = hf_cache.describe(snap)["files"]
+    assert [(f["file"], f["sha256"]) for f in files] == [("model.safetensors", M)]

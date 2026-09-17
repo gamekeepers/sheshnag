@@ -460,10 +460,16 @@ class ModelCatalog(Base):
 
         Serving profiles are the source of truth; entries whose profiles have
         not been seeded yet fall back to the legacy columns, so mixed states
-        keep scheduling.
+        keep scheduling. A profile's `runtime_model_ids` are extra names the
+        same artifact answers to (e.g. vLLM --served-model-name aliases on
+        different boxes) — each expands to its own target.
         """
         if self.profiles:
-            return [(p.runtime, p.runtime_model_id) for p in self.profiles]
+            targets = []
+            for p in self.profiles:
+                targets.append((p.runtime, p.runtime_model_id))
+                targets.extend((p.runtime, extra) for extra in (p.runtime_model_ids or []))
+            return targets
         return [(self.runtime, self.runtime_model_id)]
 
 
@@ -489,6 +495,7 @@ class ServingProfile(Base):
     )
     runtime          = Column(String, nullable=False)  # ollama | vllm | llamacpp
     runtime_model_id = Column(String, nullable=False)  # exact id this runtime expects
+    runtime_model_ids = Column(JSON, nullable=True)    # extra names the artifact answers to (vLLM aliases)
     params           = Column(JSON, nullable=True)     # server-launch knobs
     created_at = Column(Integer, default=unix_now)
     updated_at = Column(Integer, default=unix_now)
