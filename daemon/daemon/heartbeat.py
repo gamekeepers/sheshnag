@@ -66,6 +66,15 @@ class HeartbeatManager:
         self._current_job_id = job_id
         self._progress = progress
 
+    def update_worker_id(self, worker_id: str):
+        """Adopt the backend-assigned worker id after registration.
+
+        The constructor value is only the local placeholder — the
+        control plane assigns the real id at register time, after this
+        manager is built.
+        """
+        self._worker_id = worker_id
+
     async def _loop(self):
         while self._running:
             try:

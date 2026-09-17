@@ -246,6 +246,12 @@ class Worker(Base):
     runtimes = relationship(
         "WorkerRuntime", back_populates="worker",
         cascade="all, delete-orphan",
+        # `runtimes[0]` is the fallback target for a heartbeat item that carries
+        # no runtime tag, so it has to name the runtime the daemon lists first —
+        # the one an untagged item most likely came from. Neither uuid4 ids nor a
+        # second-granularity created_at shared by every row of one registration
+        # call can express that, hence `position`.
+        order_by="WorkerRuntime.position",
     )
 
     def loaded_model_names(self) -> list:
@@ -288,6 +294,11 @@ class WorkerRuntime(Base):
     base_url   = Column(String, nullable=False, default="")
     api_protocol = Column(String, default="openai-compatible")
     status     = Column(String, default="ready")  # ready | draining | unavailable
+    # Index into the daemon's configured runtime list, assigned at registration.
+    # Rows predating the column are NULL and tie, which costs nothing: a worker
+    # registered before it existed has one runtime, and replace-all registration
+    # rewrites every row with a position on the daemon's next start.
+    position   = Column(Integer, nullable=False, default=0)
     max_concurrent_requests = Column(Integer, nullable=True)
     request_timeout_seconds = Column(Integer, nullable=True)
     created_at = Column(Integer, default=unix_now)

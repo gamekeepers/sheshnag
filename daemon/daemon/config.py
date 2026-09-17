@@ -126,8 +126,11 @@ def _read_env() -> Dict[str, Any]:
     if models_env:
         result["models"] = [m.strip() for m in models_env.split(",") if m.strip()]
 
+    # `is not None`, not truthiness: a set-but-empty DAEMON_RUNTIME
+    # (e.g. a blanked EnvironmentFile entry) must reach the validator
+    # and fail at startup, not fall through to the default runtime.
     runtime_env = os.getenv("DAEMON_RUNTIME")
-    if runtime_env:
+    if runtime_env is not None:
         result["runtime"] = [r.strip() for r in runtime_env.split(",") if r.strip()]
 
     return result

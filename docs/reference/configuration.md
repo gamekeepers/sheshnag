@@ -51,7 +51,7 @@ Configured via a three-layer system: CLI > env (`DAEMON_*` prefix) > YAML file >
 | `DAEMON_BACKEND_URL` | `http://localhost:8000` | Control plane API URL |
 | `DAEMON_API_KEY` | _(required)_ | Org worker API key (created in dashboard) |
 | `DAEMON_WORKER_ID` | auto-generated | Unique worker ID with hostname prefix |
-| `DAEMON_RUNTIME` | `ollama` | Inference runtime: `ollama` or `vllm` |
+| `DAEMON_RUNTIME` | `ollama` | Inference runtime(s) to drive: `ollama` or `vllm`, or a comma-separated pair (`vllm,ollama`) to run both on one worker |
 | `DAEMON_OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
 | `DAEMON_VLLM_URL` | `http://localhost:8100` | vLLM server URL |
 | `DAEMON_HF_HUB_CACHE` | auto-detect | HF hub cache vLLM serves from, for on-disk model identity (shard hashes, repo + commit). Auto-detect order: `$HF_HUB_CACHE`, `$HF_HOME/hub`, `~/.cache/huggingface/hub`. Read-only. |

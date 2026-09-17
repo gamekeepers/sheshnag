@@ -115,7 +115,7 @@ def register_worker(
 
     def _runtime_rows():
         rows = []
-        for r in req.runtimes:
+        for position, r in enumerate(req.runtimes):
             # Availability rows come from the configured models list plus
             # the on-disk inventory. Only the inventory's FILE hash is stored
             # as `digest`: the legacy `model_digests` map carries /api/tags
@@ -142,7 +142,9 @@ def register_worker(
                         if m in inv_by_name and inv_by_name[m].files else None
                     ),
                 ))
-            rows.append(WorkerRuntime(engine=r.type, base_url=r.endpoint, models=models))
+            rows.append(WorkerRuntime(
+                engine=r.type, base_url=r.endpoint, models=models, position=position,
+            ))
         return rows
 
     if existing:

@@ -160,9 +160,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--runtime",
         type=str,
         nargs="+",
+        action="append",
         default=None,
         help="Inference runtime(s) to drive, e.g. --runtime ollama --runtime vllm "
-             "or --runtime vllm ollama (default: ollama)",
+              "or --runtime vllm ollama (default: ollama)",
     )
 
     # ── Executor tuning ──────────────────────────────────────────
@@ -192,6 +193,17 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
     This dict is passed to DaemonConfig.load(cli_overrides=...)
     so all precedence logic lives in one place.
     """
+    # --runtime is action="append" + nargs="+": args.runtime holds one
+    # group per flag occurrence. Flatten it so `--runtime vllm ollama`
+    # and `--runtime vllm --runtime ollama` both land on the same plain
+    # list (the repeated form used to be silently clobbered by the
+    # store action).
+    runtime = (
+        [r for group in args.runtime for r in group]
+        if args.runtime is not None
+        else None
+    )
+
     mapping = {
         "backend_url": args.backend_url,
         "vllm_url": args.vllm_url,
@@ -205,7 +217,7 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
         "gpu_name": args.gpu_name,
         "vram_gb": args.vram_gb,
         "models": args.models,
-        "runtime": args.runtime,
+        "runtime": runtime,
         "inference_timeout": args.inference_timeout,
         "max_concurrent_prompts": args.max_concurrent_prompts,
     }
@@ -218,23 +230,41 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
 async def _collect_runtime_bundles(
     config: DaemonConfig,
     executors: Dict[str, BaseExecutor],
-    ready: List[str],
 ) -> List[WorkerRuntimeBundle]:
-    """One WorkerRuntimeBundle per runtime to advertise at registration.
+    """One WorkerRuntimeBundle per configured runtime, unconditionally.
 
-    `ready` is the set of runtimes that passed startup health checks.
-    When at least one is ready, only the ready ones are advertised — a
-    down runtime's models would just fail at dispatch time. When none
-    is ready (a cold node whose runtimes are still loading), advertise
-    everything: registering and waiting is the old behavior, and it is
-    better than registering nothing.
+    Readiness never drops a runtime from the payload: the backend's
+    replace-all register deletes any worker_runtimes row missing from
+    it (and every runtime_models row under it), and nothing re-registers
+    a dropped runtime. A runtime that is still loading is advertised
+    with whatever it can report — empty models/inventory when it can't
+    be queried — and heartbeats fill its row in once it recovers.
+
+    On a mixed node the flat config.models list is split per bundle:
+    each entry is advertised by the runtime that reports it in
+    list_models() — the same source the routing map uses — and entries
+    no runtime claims are logged, never discarded silently.
     """
-    if ready:
-        targets = [name for name in executors if name in ready]
-    else:
-        targets = list(executors)
+    targets = list(executors)
 
     logger = get_logger(__name__)
+
+    # Which runtime reports which configured model (mixed nodes only —
+    # a single runtime's list is unambiguous and advertised whole).
+    # A failed query counts as reporting nothing: its entries surface
+    # in the unclaimed warning below rather than vanishing silently.
+    reported: Dict[str, set] = {}
+    if len(config.runtime) > 1 and config.models:
+        for name in targets:
+            executor = executors[name]
+            if not hasattr(executor, "list_models"):
+                continue
+            try:
+                reported[name] = set(await executor.list_models())
+            except Exception as exc:
+                logger.debug(f"Could not list models from runtime '{name}': {exc}")
+                reported[name] = set()
+
     bundles: List[WorkerRuntimeBundle] = []
     for name in targets:
         executor = executors[name]
@@ -266,10 +296,14 @@ async def _collect_runtime_bundles(
             # unambiguous and was always advertised alongside the
             # dynamic list — keep it, deduped.
             names = list(dict.fromkeys(list(config.models) + names))
-        # Multi-runtime: config.models is a flat list with no runtime
-        # attribution, so it can't be split per bundle. The dynamic
-        # lists (tags / served models) carry the names instead; the
-        # backend unions them with each bundle's inventory names.
+        else:
+            # Mixed node: advertise the configured entries this
+            # runtime reports, deduped against the dynamic names.
+            mine = reported.get(name)
+            if mine:
+                names = list(dict.fromkeys(
+                    [m for m in config.models if m in mine] + names
+                ))
 
         bundles.append(WorkerRuntimeBundle(
             runtime=name,
@@ -277,6 +311,17 @@ async def _collect_runtime_bundles(
             model_digests=digests,
             inventory=inventory,
         ))
+
+    if len(config.runtime) > 1 and config.models:
+        claimed: set = set()
+        for models in reported.values():
+            claimed |= models
+        unclaimed = [m for m in dict.fromkeys(config.models) if m not in claimed]
+        if unclaimed:
+            logger.warning(
+                "config.models entries not advertised — no configured "
+                "runtime reports them: " + ", ".join(unclaimed)
+            )
     return bundles
 
 
@@ -291,7 +336,7 @@ async def _run(config: DaemonConfig) -> None:
     Startup sequence:
         1. Create components (one executor per configured runtime)
         2. Wait for the runtimes to become healthy (concurrently)
-        3. Register the ready runtimes with the control plane (spec §8)
+        3. Register the configured runtimes with the control plane (spec §8)
         4. Start the poll-execute loop
     """
     # ── Resolve the org worker API key  ───────────
@@ -329,15 +374,17 @@ async def _run(config: DaemonConfig) -> None:
 
     # ── Wait for the runtimes to be ready ─────────────────────────
     # Concurrently, 60s max per runtime. Down runtimes are not fatal —
-    # registration below decides what to advertise.
-    ready = await worker.wait_for_runtimes()
+    # they are registered too, and heartbeats fill their rows in once
+    # they recover.
+    await worker.wait_for_runtimes()
 
     # ── Register with platform ───────────────────────────────────
-    bundles = await _collect_runtime_bundles(config, executors, ready)
+    bundles = await _collect_runtime_bundles(config, executors)
     try:
         assigned_worker_id = await reg_manager.register(client, config, bundles)
         config.worker_id = assigned_worker_id
         client.update_worker_id(assigned_worker_id)
+        worker.update_worker_id(assigned_worker_id)
         logger.info(f"Worker registered: {assigned_worker_id}")
     except Exception as exc:
         logger.error(f"Failed to register with platform: {exc}")
@@ -347,6 +394,7 @@ async def _run(config: DaemonConfig) -> None:
             sys.exit(1)
         config.worker_id = saved_worker_id
         client.update_worker_id(saved_worker_id)
+        worker.update_worker_id(saved_worker_id)
         logger.warning(
             f"Continuing as previously registered worker "
             f"'{saved_worker_id}' despite registration failure."

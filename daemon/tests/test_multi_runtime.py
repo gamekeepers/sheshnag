@@ -8,6 +8,8 @@ readiness, and per-bundle registration payloads.
 """
 
 import asyncio
+import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -17,7 +19,7 @@ from daemon.executors.base import BaseExecutor
 from daemon.executors.ollama import OllamaExecutor
 from daemon.executors.vllm import VLLMExecutor
 from daemon.executor_factory import create_executors
-from daemon.main import _build_parser, _collect_runtime_bundles
+from daemon.main import _build_cli_overrides, _build_parser, _collect_runtime_bundles
 from daemon.models import (
     CompletionResult,
     Job,
@@ -86,10 +88,45 @@ class BareExecutor(BaseExecutor):
         return True
 
 
+class FakeOllama(OllamaExecutor):
+    """OllamaExecutor that fakes pulls: a successful pull adds the model
+    to its list, like the real runtime serves what it has pulled."""
+
+    def __init__(self, names, pull_ok=True):
+        super().__init__(base_url="http://ollama.test")
+        self._names = list(names)
+        self._pull_ok = pull_ok
+        self.pulled = []
+
+    async def execute(self, prompt: PromptRequest) -> CompletionResult:
+        return CompletionResult(
+            custom_id=prompt.custom_id,
+            response={"choices": [{"message": {"content": "ollama ok"}}]},
+        )
+
+    async def health_check(self) -> bool:
+        return True
+
+    async def list_models(self):
+        return list(self._names)
+
+    async def pull_model(self, model_name, progress_callback=None):
+        self.pulled.append(model_name)
+        if self._pull_ok:
+            self._names.append(model_name)
+        return self._pull_ok
+
+    async def close(self):
+        pass
+
+
 class MockClient:
-    def __init__(self):
+    def __init__(self, input_lines=None):
         self.progress_calls = []
         self.failure_calls = []
+        self.upload_calls = []
+        self.download_calls = []
+        self._input_lines = list(input_lines or [])
 
     async def report_progress(self, job_id, completed, failed, total):
         self.progress_calls.append((job_id, completed, failed, total))
@@ -97,10 +134,20 @@ class MockClient:
     async def report_failure(self, job_id, reason):
         self.failure_calls.append((job_id, reason))
 
+    async def download_input(self, job_id, input_path, dest_path):
+        self.download_calls.append(job_id)
+        dest = Path(dest_path)
+        dest.write_text(
+            "".join(json.dumps(line) + "\n" for line in self._input_lines)
+        )
 
-def _worker(executors, tmp_path, **cfg):
+    async def upload_results(self, job_id, path, completed, failed):
+        self.upload_calls.append((job_id, completed, failed))
+
+
+def _worker(executors, tmp_path, client=None, **cfg):
     config = DaemonConfig(work_dir=str(tmp_path / "jobs"), **cfg)
-    worker = Worker(config, MockClient(), executors)
+    worker = Worker(config, client or MockClient(), executors)
     worker._running = True
     return worker
 
@@ -138,11 +185,26 @@ class TestRuntimeConfig:
         assert DaemonConfig.from_env().runtime == ["vllm", "ollama"]
 
     def test_cli_multiple(self):
+        # --runtime is nargs="+" with action="append", so the raw parse
+        # is one list per flag occurrence; _build_cli_overrides
+        # flattens it back to the plain list the config layer takes.
         args = _build_parser().parse_args(["--runtime", "vllm", "ollama"])
-        assert args.runtime == ["vllm", "ollama"]
+        assert args.runtime == [["vllm", "ollama"]]
+        assert _build_cli_overrides(args)["runtime"] == ["vllm", "ollama"]
 
         args = _build_parser().parse_args(["--runtime", "vllm"])
-        assert args.runtime == ["vllm"]
+        assert _build_cli_overrides(args)["runtime"] == ["vllm"]
+
+    def test_cli_repeated_runtime_flags(self):
+        # The repeated-flag form the help text advertises: every
+        # occurrence must survive, in order, instead of the last
+        # silently clobbering the rest (the store action used to do
+        # exactly that).
+        args = _build_parser().parse_args(
+            ["--runtime", "ollama", "--runtime", "vllm"],
+        )
+        assert args.runtime == [["ollama"], ["vllm"]]
+        assert _build_cli_overrides(args)["runtime"] == ["ollama", "vllm"]
 
     def test_env_overrides_yaml(self, monkeypatch, tmp_path):
         path = tmp_path / "cfg.yaml"
@@ -154,11 +216,17 @@ class TestRuntimeConfig:
         with pytest.raises(ValueError, match="unknown runtime"):
             DaemonConfig(runtime="sparks")
 
-    def test_empty_runtime_rejected(self):
+    def test_empty_runtime_rejected(self, monkeypatch):
         with pytest.raises(ValueError, match="empty"):
             DaemonConfig(runtime="   ")
         with pytest.raises(ValueError, match="empty"):
             DaemonConfig(runtime=[])
+        # The env layer too: a set-but-empty DAEMON_RUNTIME (e.g. a
+        # blanked EnvironmentFile entry) must fail at startup like the
+        # other empty forms, not silently drive the default runtime.
+        monkeypatch.setenv("DAEMON_RUNTIME", "")
+        with pytest.raises(ValueError, match="empty"):
+            DaemonConfig.from_env()
 
 
 # -- Factory: one executor per runtime ---------------------------------
@@ -282,6 +350,64 @@ class TestModelRouting:
         assert await worker._executor_for("dup") is vllm
 
     @pytest.mark.asyncio
+    async def test_refresh_keeps_entries_of_failing_runtime(self, tmp_path):
+        # A runtime whose list_models() raised is a FAILED QUERY, not an
+        # empty model set: its previous entries must survive the rebuild,
+        # or its models would be unroutable for the whole outage window.
+        async def raise_list():
+            raise RuntimeError("ollama api down")
+
+        ollama = FakeExecutor("ollama", ["a", "mistral:7b"])
+        vllm = FakeExecutor("vllm", ["b"])
+        worker = _worker({"vllm": vllm, "ollama": ollama}, tmp_path)
+        await worker._refresh_model_map()
+        assert worker._model_runtimes == {
+            "a": "ollama", "mistral:7b": "ollama", "b": "vllm",
+        }
+
+        ollama.list_models = raise_list
+        await worker._refresh_model_map()
+        # vllm's entries rebuilt from the healthy runtime; ollama's
+        # carried over from the previous map, so a job for one of them
+        # still routes instead of failing as unroutable.
+        assert worker._model_runtimes == {
+            "a": "ollama", "mistral:7b": "ollama", "b": "vllm",
+        }
+        assert await worker._executor_for("mistral:7b") is ollama
+
+        # A healthy EMPTY list still clears entries — that is a real
+        # "no models" state (e.g. models deleted from the box), not an
+        # outage, and must keep working as before.
+        ollama.set_names([])
+        del ollama.list_models  # back to the class method (a healthy query)
+        await worker._refresh_model_map()
+        assert worker._model_runtimes == {"b": "vllm"}
+
+    @pytest.mark.asyncio
+    async def test_refresh_live_claim_beats_stale_carry_over(self, tmp_path):
+        # The failing runtime iterates FIRST here. When the loop used to
+        # seed its carry-over entries into the mapping as it went, the
+        # stale claim won the setdefault and the healthy runtime's live
+        # claim was rejected as a duplicate — routing to the runtime that
+        # is down.
+        async def raise_list():
+            raise RuntimeError("ollama api down")
+
+        ollama = FakeExecutor("ollama", ["qwen3:4b"])
+        vllm = FakeExecutor("vllm", ["b"])
+        worker = _worker({"ollama": ollama, "vllm": vllm}, tmp_path)
+        await worker._refresh_model_map()
+        assert worker._model_runtimes == {"qwen3:4b": "ollama", "b": "vllm"}
+
+        # qwen3:4b left ollama and is now served by vllm, but ollama's
+        # model list is transiently unreachable during the refresh.
+        vllm.set_names(["b", "qwen3:4b"])
+        ollama.list_models = raise_list
+        await worker._refresh_model_map()
+        assert worker._model_runtimes == {"qwen3:4b": "vllm", "b": "vllm"}
+        assert await worker._executor_for("qwen3:4b") is vllm
+
+    @pytest.mark.asyncio
     async def test_prompts_run_on_routed_executor(self, tmp_path):
         ollama = FakeExecutor("ollama", ["a"])
         vllm = FakeExecutor("vllm", ["b"])
@@ -321,6 +447,85 @@ class TestModelRouting:
         assert len(worker._client.failure_calls) == 1
         assert "ghost" in worker._client.failure_calls[0][1]
         assert ollama.calls == [] and vllm.calls == []
+
+    @pytest.mark.asyncio
+    async def test_mixed_worker_pulls_model_not_yet_on_box(self, tmp_path):
+        # The picker dispatched a catalogue model this worker registered
+        # but Ollama has not pulled yet: absent from every runtime's
+        # list, hence absent from the routing map. A single-runtime
+        # Ollama worker always reached ensure_model and pulled it; the
+        # mixed worker must take the same path instead of failing the
+        # job as unroutable.
+        client = MockClient(input_lines=[
+            {"custom_id": "p1", "url": "/v1/chat/completions",
+             "body": {"messages": [{"role": "user", "content": "hi"}]}},
+        ])
+        ollama = FakeOllama(["a"])
+        vllm = FakeExecutor("vllm", ["b"])
+        worker = _worker({"vllm": vllm, "ollama": ollama}, tmp_path, client=client)
+        await worker._refresh_model_map()
+        assert "mistral:7b" not in worker._model_runtimes
+
+        job = Job(job_id="j1", model="mistral:7b", input_path="/x")
+        await worker._execute_job(job)
+
+        assert ollama.pulled == ["mistral:7b"]
+        assert client.failure_calls == []
+        assert client.upload_calls == [("j1", 1, 0)]
+        # The re-resolve after the pull left the map current.
+        assert worker._model_runtimes["mistral:7b"] == "ollama"
+
+    @pytest.mark.asyncio
+    async def test_mixed_worker_pull_failure_still_fails_job(self, tmp_path):
+        # A routing miss that the Ollama pull cannot fix (bad name,
+        # registry unreachable) still fails the job — the worker never
+        # guesses at a target for it.
+        ollama = FakeOllama(["a"], pull_ok=False)
+        vllm = FakeExecutor("vllm", ["b"])
+        worker = _worker({"vllm": vllm, "ollama": ollama}, tmp_path)
+        await worker._refresh_model_map()
+
+        job = Job(job_id="j1", model="ghost", input_path="/x")
+        await worker._execute_job(job)
+
+        assert ollama.pulled == ["ghost"]
+        assert len(worker._client.failure_calls) == 1
+        assert "ghost" in worker._client.failure_calls[0][1]
+        assert worker._client.upload_calls == []
+
+
+# -- Worker id adoption after registration -----------------------------
+
+
+class TestWorkerIdAdoption:
+    def test_update_worker_id_reaches_heartbeat_and_model_manager(self, tmp_path):
+        # The backend assigns the worker id at register time — after
+        # the Worker is constructed — so the heartbeat and model
+        # manager snapshots taken in __init__ stay at the local
+        # placeholder until adoption. Before the fix,
+        # ModelManager.report_model_download carried the placeholder
+        # and /workers/model-progress 404'd, swallowed as a non-fatal
+        # debug line.
+        ollama = FakeOllama(["a"])
+        vllm = FakeExecutor("vllm", ["b"])
+        worker = _worker({"vllm": vllm, "ollama": ollama}, tmp_path)
+        placeholder = worker._config.worker_id
+        assert worker._heartbeat._worker_id == placeholder
+        assert worker._model_manager._worker_id == placeholder
+
+        worker.update_worker_id("worker-assigned-123")
+
+        assert worker._heartbeat._worker_id == "worker-assigned-123"
+        assert worker._model_manager._worker_id == "worker-assigned-123"
+
+    def test_update_worker_id_without_ollama(self, tmp_path):
+        # A vLLM-only node has no ModelManager — adoption must not
+        # trip over the missing manager.
+        vllm = FakeExecutor("vllm", ["b"])
+        worker = _worker({"vllm": vllm}, tmp_path)
+        assert worker._model_manager is None
+        worker.update_worker_id("worker-assigned-456")
+        assert worker._heartbeat._worker_id == "worker-assigned-456"
 
 
 # -- Heartbeat views: union, per-runtime loaded scope ------------------
@@ -450,18 +655,31 @@ class TestReadiness:
 
 class TestRuntimeBundles:
     @pytest.mark.asyncio
-    async def test_partial_readiness_drops_down_runtime(self):
+    async def test_partial_readiness_keeps_down_runtime(self):
+        # The payload must carry one bundle per CONFIGURED runtime,
+        # regardless of readiness: the backend's replace-all register
+        # deletes any worker_runtimes row missing from the payload (and
+        # every runtime_models row under it), and nothing re-registers a
+        # dropped runtime. A runtime still loading is advertised with
+        # whatever it can report — empty when it can't be queried — and
+        # heartbeats fill its row in once it recovers.
         ollama = FakeExecutor("ollama", ["a"])
-        vllm = FakeExecutor("vllm", ["b"])
+        vllm = FakeExecutor("vllm", ["b"], healthy=False, detailed=False,
+                            inventory=[])
         config = DaemonConfig(runtime=["vllm", "ollama"], models=["static"])
         bundles = await _collect_runtime_bundles(
-            config, {"vllm": vllm, "ollama": ollama}, ["ollama"],
+            config, {"vllm": vllm, "ollama": ollama},
         )
-        assert [b.runtime for b in bundles] == ["ollama"]
-        # Mixed node: bundle models are the dynamic names, not the
-        # ambiguous static list.
-        assert bundles[0].models == ["a"]
-        assert bundles[0].model_digests == {"a": "digest-a"}
+        assert [b.runtime for b in bundles] == ["vllm", "ollama"]
+        by_runtime = {b.runtime: b for b in bundles}
+        # The down runtime is advertised but reports nothing yet.
+        assert by_runtime["vllm"].models == []
+        assert by_runtime["vllm"].model_digests == {}
+        assert by_runtime["vllm"].inventory == []
+        # The ready runtime is unchanged: on a mixed node the bundle
+        # models are the dynamic names, not the ambiguous static list.
+        assert by_runtime["ollama"].models == ["a"]
+        assert by_runtime["ollama"].model_digests == {"a": "digest-a"}
 
     @pytest.mark.asyncio
     async def test_none_ready_advertises_everything(self):
@@ -469,7 +687,7 @@ class TestRuntimeBundles:
         vllm = FakeExecutor("vllm", ["b"])
         config = DaemonConfig(runtime=["vllm", "ollama"])
         bundles = await _collect_runtime_bundles(
-            config, {"vllm": vllm, "ollama": ollama}, [],
+            config, {"vllm": vllm, "ollama": ollama},
         )
         assert [b.runtime for b in bundles] == ["vllm", "ollama"]
 
@@ -478,10 +696,60 @@ class TestRuntimeBundles:
         ollama = FakeExecutor("ollama", ["dyn"])
         config = DaemonConfig(runtime=["ollama"], models=["static"])
         bundles = await _collect_runtime_bundles(
-            config, {"ollama": ollama}, ["ollama"],
+            config, {"ollama": ollama},
         )
         assert bundles[0].models == ["static", "dyn"]
         assert bundles[0].runtime == "ollama"
+
+    @pytest.mark.asyncio
+    async def test_mixed_node_splits_static_models_by_claiming_runtime(self):
+        # A flat config.models list on a mixed node is attributed per
+        # bundle: each entry is advertised by the runtime that reports
+        # it in list_models() — the same source the routing map uses.
+        # Before the fix the whole list was silently dropped here; the
+        # vLLM bundle below has no digests (like the real
+        # VLLMExecutor), so without the fix its models stay empty and
+        # the configured entry vanishes from the payload.
+        ollama = FakeExecutor("ollama", ["a", "mistral:7b"])
+        vllm = FakeExecutor("vllm", ["my-model"], detailed=False)
+        config = DaemonConfig(
+            runtime=["vllm", "ollama"], models=["my-model", "mistral:7b"],
+        )
+        bundles = await _collect_runtime_bundles(
+            config, {"vllm": vllm, "ollama": ollama},
+        )
+        by_runtime = {b.runtime: b for b in bundles}
+        # my-model is reported by vllm only → vllm's bundle.
+        assert by_runtime["vllm"].models == ["my-model"]
+        assert "my-model" not in by_runtime["ollama"].models
+        # mistral:7b is reported by ollama only → ollama's bundle,
+        # deduped against the dynamic name, not cross-posted to vllm.
+        assert by_runtime["ollama"].models.count("mistral:7b") == 1
+        assert "mistral:7b" not in by_runtime["vllm"].models
+
+    @pytest.mark.asyncio
+    async def test_mixed_node_logs_unclaimed_static_models(self, caplog):
+        # A configured model no runtime reports cannot be attributed to
+        # a bundle, so it is not advertised — but the operator is told
+        # rather than left guessing (the old code discarded it with no
+        # log line at all).
+        import logging
+
+        ollama = FakeExecutor("ollama", ["a"])
+        vllm = FakeExecutor("vllm", ["b"])
+        config = DaemonConfig(runtime=["vllm", "ollama"], models=["ghost"])
+        with caplog.at_level(logging.WARNING, logger="daemon.main"):
+            bundles = await _collect_runtime_bundles(
+                config, {"vllm": vllm, "ollama": ollama},
+            )
+        by_runtime = {b.runtime: b for b in bundles}
+        assert "ghost" not in by_runtime["ollama"].models
+        assert "ghost" not in by_runtime["vllm"].models
+        assert any(
+            "ghost" in record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        )
 
     @pytest.mark.asyncio
     async def test_inventory_carried_per_bundle(self):
@@ -495,7 +763,7 @@ class TestRuntimeBundles:
         ])
         config = DaemonConfig(runtime=["vllm", "ollama"])
         bundles = await _collect_runtime_bundles(
-            config, {"vllm": vllm, "ollama": ollama}, ["vllm", "ollama"],
+            config, {"vllm": vllm, "ollama": ollama},
         )
         by_runtime = {b.runtime: b for b in bundles}
         assert by_runtime["ollama"].models == []

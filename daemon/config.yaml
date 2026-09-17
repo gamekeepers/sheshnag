@@ -53,8 +53,10 @@ log_level: "INFO"
 #   - "mistralai/Mistral-7B-Instruct-v0.2"
 #   - "meta-llama/Llama-3-8b-instruct"
 
-# Inference runtime type
-# runtime: "ollama"   # or "vllm"
+# Inference runtime(s) to drive. A single runtime as a scalar, or a list
+# to run both on one worker (a mixed node).
+# runtime: "ollama"            # or "vllm"
+# runtime: [vllm, ollama]      # drive both on one worker
 
 # ─────────────────────────────────────────────────────────────
 # Advanced Tuning

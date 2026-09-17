@@ -91,6 +91,12 @@ MIGRATIONS = [
     # so one entry can be scheduled on boxes under different --served-model-name.
     _Migration("serving_profiles.runtime_model_ids",
                "serving_profiles", "runtime_model_ids", JSON()),
+    # Multi-runtime workers (#126): which runtime `worker.runtimes[0]` names.
+    # Modelled NOT NULL, added nullable here — rows predating it have no bundle
+    # order to backfill from, and replace-all registration supplies one on the
+    # daemon's next start.
+    _Migration("worker_runtimes.position",
+               "worker_runtimes", "position", Integer()),
 ]
 
 

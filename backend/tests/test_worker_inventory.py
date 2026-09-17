@@ -1,7 +1,7 @@
 """Worker inventory reporting (#116): registration and heartbeats carry
 on-disk artifact file hashes; availability rows track the disk."""
 
-from models import RuntimeModel, WorkerRuntime
+from models import RuntimeModel, Worker, WorkerRuntime
 
 
 def _worker_key(auth_client, org_name):
@@ -285,22 +285,24 @@ def test_heartbeat_routes_loaded_model_by_runtime_tag(auth_client, db_session):
 
 
 def test_heartbeat_untagged_loaded_model_falls_back_to_first_runtime(auth_client, db_session):
-    """Legacy daemon: a loaded model with no inventory tag anywhere keeps
-    the pre-multi-runtime behavior — one row, filed under the first
-    runtime — and no duplicate rows on repeated beats."""
-    key = _worker_key(auth_client, "Multi Org Legacy")
-    resp = auth_client.post(
-        "/workers/register",
-        json=_mixed_registration(key, "mixed-legacy-box", [
-            ("vllm", ["vllm-only:7b"], []),
-            ("ollama", ["ollama-only:8b"], []),
-        ]),
-        headers={"Authorization": f"Bearer {key}"},
-    )
-    assert resp.status_code == 200, resp.text
-    worker_id = resp.json()["worker_id"]
+    """An untagged loaded model lands on the runtime the daemon listed first.
 
-    for _ in range(2):
+    Two workers register the same pair in opposite order. Each files the untagged
+    model under its own first-registered runtime, so the target tracks the bundle
+    order rather than the engine name or whatever order the database returns.
+    """
+    key = _worker_key(auth_client, "Multi Org Legacy")
+
+    def _register(hostname, bundles):
+        resp = auth_client.post(
+            "/workers/register",
+            json=_mixed_registration(key, hostname, bundles),
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        assert resp.status_code == 200, resp.text
+        return resp.json()["worker_id"]
+
+    def _beat(worker_id):
         hb = auth_client.post(
             f"/workers/{worker_id}/heartbeat",
             json={
@@ -313,7 +315,54 @@ def test_heartbeat_untagged_loaded_model_falls_back_to_first_runtime(auth_client
         )
         assert hb.status_code == 200, hb.text
 
-    rows = _rows_by_runtime(db_session, worker_id)
-    hosts = [engine for engine, names in rows.items() if "mystery:1b" in names]
-    assert hosts == ["vllm"]          # first runtime registered
-    assert rows["vllm"]["mystery:1b"].loaded is True
+    vllm_bundle = ("vllm", ["vllm-only:7b"], [])
+    ollama_bundle = ("ollama", ["ollama-only:8b"], [])
+    workers = {
+        "vllm": _register("vllm-first-box", [vllm_bundle, ollama_bundle]),
+        "ollama": _register("ollama-first-box", [ollama_bundle, vllm_bundle]),
+    }
+
+    for first, worker_id in workers.items():
+        for _ in range(2):          # repeated beats must not duplicate the row
+            _beat(worker_id)
+        db_session.expire_all()
+        rows = _rows_by_runtime(db_session, worker_id)
+        owning = [e for e, names in rows.items() if "mystery:1b" in names]
+        assert owning == [first], f"{first}-first worker filed it under {owning}"
+        assert rows[first]["mystery:1b"].loaded is True
+
+
+def test_runtimes_are_ordered_by_position_not_insertion(auth_client, db_session):
+    """`worker.runtimes[0]` follows `position`, not the order rows were inserted.
+
+    Registration inserts in bundle order, so physical order and position agree and
+    an unordered relationship would look correct. Swapping the two positions in
+    place separates them: the row inserted second now holds position 0 and must
+    load first.
+    """
+    key = _worker_key(auth_client, "Multi Org Ordering")
+    resp = auth_client.post(
+        "/workers/register",
+        json=_mixed_registration(key, "ordering-box", [
+            ("vllm", ["vllm-only:7b"], []),
+            ("ollama", ["ollama-only:8b"], []),
+        ]),
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    worker_id = resp.json()["worker_id"]
+
+    runtimes = db_session.query(WorkerRuntime).filter_by(worker_id=worker_id).all()
+    by_engine = {rt.engine: rt for rt in runtimes}
+    assert by_engine["vllm"].position == 0      # bundle order, as registered
+    assert by_engine["ollama"].position == 1
+
+    by_engine["vllm"].position = 1
+    by_engine["ollama"].position = 0
+    db_session.commit()
+    db_session.expire_all()
+
+    worker = db_session.query(Worker).filter_by(id=worker_id).one()
+    assert [rt.engine for rt in worker.runtimes] == ["ollama", "vllm"]
+    assert worker.runtimes[0].position == 0
+

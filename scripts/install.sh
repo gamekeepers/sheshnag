@@ -235,6 +235,7 @@ PY
     echo "backend_url: \"$BACKEND_URL\""
     echo "api_key: \"$API_KEY\""
     [ -n "${WORKER_ID:-}" ] && echo "worker_id: \"$WORKER_ID\""
+    echo "# runtime: ollama or vllm, or a list to drive both on one worker"
     echo "runtime: \"ollama\""
     echo "credentials_path: \"$DAEMON_DIR/credentials\""
     echo "work_dir: \"$DAEMON_DIR/jobs\""

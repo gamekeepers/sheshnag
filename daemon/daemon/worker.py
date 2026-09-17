@@ -29,7 +29,7 @@ import random
 import signal
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import httpx
 
@@ -171,6 +171,18 @@ class Worker:
 
     # ── Public API ───────────────────────────────────────────────
 
+    def update_worker_id(self, worker_id: str) -> None:
+        """Adopt the backend-assigned worker id after registration.
+
+        Registration happens after the Worker is constructed, so the
+        heartbeat and model-manager ids snapshotted in __init__ are
+        local placeholders until this runs. Call it alongside
+        client.update_worker_id().
+        """
+        self._heartbeat.update_worker_id(worker_id)
+        if self._model_manager is not None:
+            self._model_manager.update_worker_id(worker_id)
+
     async def start(self) -> None:
         """
         Start the main poll-execute loop.
@@ -292,10 +304,16 @@ class Worker:
         # what the job says.
         executor = await self._executor_for(job.model)
         if job.model and executor is None:
-            # A model no runtime here hosts (stale dispatch, or a runtime
-            # that stopped serving it). Never guess at a target — failing
-            # the job lets the backend requeue it onto a worker that does
-            # host the model.
+            # A model no runtime's list currently reports. Ollama can
+            # pull it on demand (a single-runtime Ollama worker always
+            # takes the Step 0b path below) — try the pull before
+            # failing, then re-resolve.
+            executor = await self._pull_unrouted_model(job)
+        if job.model and executor is None:
+            # A model no runtime here hosts (stale dispatch, or a
+            # runtime that stopped serving it — and a failed pull).
+            # Never guess at a target — failing the job lets the
+            # backend requeue it onto a worker that does host the model.
             logger.error(
                 f"[{job.job_id}] No runtime on this worker hosts model "
                 f"'{job.model}' — failing the job"
@@ -745,8 +763,16 @@ class Worker:
         First-writer-wins in config order: if two runtimes both claim a
         name, that is a misconfiguration — we log it and route to the
         first, rather than silently flip-flopping per job.
+
+        A runtime whose list_models() raised keeps its previous entries:
+        a failed query is not an empty model set, and dropping them would
+        leave its models unroutable for the whole outage window. The
+        carry-over is applied in a second pass after the loop, so a live
+        claim always wins: a stale entry must not keep routing a model to
+        a runtime that is down when a healthy runtime now serves it.
         """
         mapping: Dict[str, str] = {}
+        carried: List[Tuple[str, str]] = []
         for name, executor in self._executors.items():
             if not hasattr(executor, "list_models"):
                 continue
@@ -754,6 +780,11 @@ class Worker:
                 names = await executor.list_models()
             except Exception as exc:
                 logger.debug(f"Could not list models from runtime '{name}': {exc}")
+                carried.extend(
+                    (model, name)
+                    for model, owner in self._model_runtimes.items()
+                    if owner == name
+                )
                 continue
             for model in names:
                 owner = mapping.get(model)
@@ -764,7 +795,28 @@ class Worker:
                     )
                     continue
                 mapping[model] = name
+        for model, name in carried:
+            mapping.setdefault(model, name)
         self._model_runtimes = mapping
+
+    async def _pull_unrouted_model(self, job: Job) -> Optional[BaseExecutor]:
+        """Route an unrouted model by pulling it with Ollama, if possible.
+
+        A mixed worker's map only knows what is already on the box, so a
+        catalogue model dispatched here before its first pull would fail
+        outright — the case a single-runtime Ollama worker always handled
+        via the ensure_model path. Pull, then re-resolve; None when this
+        worker has no Ollama runtime, the pull fails, or the model is
+        still unroutable.
+        """
+        if self._ollama_executor is None or self._model_manager is None:
+            return None
+        self._heartbeat.update_status("downloading_model", job.job_id)
+        available = await self._model_manager.ensure_model(job.model)
+        executor = await self._executor_for(job.model) if available else None
+        if executor is None:
+            self._heartbeat.update_status("idle")
+        return executor
 
     # ── Runtime Readiness ────────────────────────────────────────
 
@@ -775,9 +827,9 @@ class Worker:
 
         Handles the case where the daemon starts before the runtimes are
         fully loaded. Returns the names of the runtimes that came up.
-        Runtimes that don't are not fatal — main() decides what to
-        advertise — but jobs for their models will fail per-row until
-        they recover and a heartbeat revives their rows.
+        Runtimes that don't are not fatal — they are registered anyway,
+        and heartbeats fill their rows in once they recover — but jobs
+        for their models will fail per-row until they do.
         """
         outcomes = await asyncio.gather(*(
             self._wait_one_runtime(name, executor)
