@@ -62,13 +62,18 @@ class Registry:
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
-        route = self.routes.get(request.url.path)
+        # A key with a query string matches that exact page; a bare path
+        # matches every page of it.
+        query = request.url.query.decode()
+        specific = request.url.path + (f"?{query}" if query else "")
+        route = self.routes.get(specific, self.routes.get(request.url.path))
         if route is None:
             return httpx.Response(404, json={"errors": [{"code": "MANIFEST_UNKNOWN"}]})
         if isinstance(route, Exception):
             raise route
-        status, body = route
-        return httpx.Response(status, json=body)
+        status, body = route[0], route[1]
+        headers = route[2] if len(route) > 2 else None
+        return httpx.Response(status, json=body, headers=headers)
 
     def client(self) -> httpx.Client:
         return httpx.Client(transport=httpx.MockTransport(self.handler))
@@ -279,6 +284,54 @@ def test_hf_adapter_repo_is_never_confirmed(clock):
     reg = Registry({HF_INFO: (200, {"sha": HF_REV}), HF_TREE: (200, tree)})
     res = make_resolver(reg, clock).resolve("hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M", SHA)
     assert res == Unconfirmed("lora-adapter")
+
+
+def test_hf_tree_is_paginated_until_every_shard_seen(clock):
+    """HF caps the tree endpoint at 1000 entries/page: a repo whose
+    non-weight files fill page 1 must not digest-mismatch forever."""
+    page1 = [{"type": "file", "oid": "b" * 8, "size": 1,
+              "path": f"corpus/sample-{i:04d}.txt"} for i in range(1000)]
+    next_url = f"https://huggingface.co{HF_TREE}?recursive=true&cursor=abc"
+    reg = Registry({
+        HF_INFO: (200, {"sha": HF_REV}),
+        f"{HF_TREE}?recursive=true": (200, page1,
+                                      {"Link": f'<{next_url}>; rel="next"'}),
+        f"{HF_TREE}?recursive=true&cursor=abc": (200, hf_tree()),
+    })
+    res = make_resolver(reg, clock).resolve("hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:IQ3_M", SHA)
+    assert isinstance(res, Confirmed)
+    assert res.source_file == "Llama-3.2-1B-Instruct-IQ3_M.gguf"
+    assert len(reg.requests) == 3          # repo info + page 1 + page 2
+    assert reg.requests[2].url.params["cursor"] == "abc"
+
+
+def test_hf_stops_following_pages_once_all_shards_seen(clock):
+    """The early exit still works: a Link header on a page that already
+    holds every required shard is ignored."""
+    next_url = f"https://huggingface.co{HF_TREE}?recursive=true&cursor=abc"
+    reg = Registry({
+        HF_INFO: (200, {"sha": HF_REV}),
+        f"{HF_TREE}?recursive=true": (200, hf_tree(),
+                                      {"Link": f'<{next_url}>; rel="next"'}),
+        f"{HF_TREE}?recursive=true&cursor=abc": (200, []),
+    })
+    res = make_resolver(reg, clock).resolve("hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:IQ3_M", SHA)
+    assert isinstance(res, Confirmed)
+    assert len(reg.requests) == 2          # page 2 never fetched
+
+
+def test_hf_digest_absent_on_all_pages_stays_unconfirmed(clock):
+    page1 = [{"type": "file", "oid": "b" * 8, "size": 1, "path": "corpus.txt"}]
+    next_url = f"https://huggingface.co{HF_TREE}?recursive=true&cursor=abc"
+    reg = Registry({
+        HF_INFO: (200, {"sha": HF_REV}),
+        f"{HF_TREE}?recursive=true": (200, page1,
+                                      {"Link": f'<{next_url}>; rel="next"'}),
+        f"{HF_TREE}?recursive=true&cursor=abc": (200, hf_tree(OTHER)),
+    })
+    res = make_resolver(reg, clock).resolve("hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:IQ3_M", SHA)
+    assert res == Unconfirmed("digest-mismatch")
+    assert len(reg.requests) == 3
 
 
 def test_hf_private_or_missing_repo_is_unconfirmed(clock):

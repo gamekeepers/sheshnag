@@ -355,21 +355,22 @@ class IdentityResolver:
     # -- sources --------------------------------------------------------------
 
     def _get_json(self, url: str, **kwargs):
-        """(payload, None) or (None, Unconfirmed). HTTP status and transport
+        """(payload, links, None) or (None, None, Unconfirmed), where links
+        is the parsed `Link` header (pagination). HTTP status and transport
         failures are both Unconfirmed — with distinguishable reasons."""
         try:
             r = self._client.get(url, **kwargs)
         except httpx.HTTPError as exc:
-            return None, Unconfirmed(f"network-error: {type(exc).__name__}")
+            return None, None, Unconfirmed(f"network-error: {type(exc).__name__}")
         if r.status_code != 200:
-            return None, Unconfirmed(f"http-{r.status_code}")
+            return None, None, Unconfirmed(f"http-{r.status_code}")
         try:
-            return r.json(), None
+            return r.json(), dict(r.links), None
         except ValueError:
-            return None, Unconfirmed("bad-json")
+            return None, None, Unconfirmed("bad-json")
 
     def _resolve_ollama(self, name: OllamaName, digest: str) -> Resolution:
-        manifest, err = self._get_json(name.manifest_url, headers={"Accept": MANIFEST_ACCEPT})
+        manifest, _links, err = self._get_json(name.manifest_url, headers={"Accept": MANIFEST_ACCEPT})
         if err:
             return err
         if not isinstance(manifest, dict):
@@ -396,26 +397,40 @@ class IdentityResolver:
         `digests` (default: just `digest`) must be an LFS file in the tree.
         """
         if not revision:
-            info, err = self._get_json(name.api_url)
+            info, _links, err = self._get_json(name.api_url)
             if err:
                 return err
             revision = (info or {}).get("sha") if isinstance(info, dict) else None
-        tree, err = self._get_json(
-            f"{name.api_url}/tree/{revision or 'main'}", params={"recursive": "true"}
-        )
-        if err:
-            return err
-        if not isinstance(tree, list):
-            return Unconfirmed("bad-json")
-        if "adapter_config.json" in {e.get("path") for e in tree if isinstance(e, dict)}:
-            return Unconfirmed("lora-adapter")
-        paths_by_oid = {}
-        for entry in tree:
-            lfs = entry.get("lfs") if isinstance(entry, dict) else None
-            oid = bare_digest(lfs.get("oid")) if lfs else None
-            if oid:
-                paths_by_oid.setdefault(oid, entry.get("path"))
+        # The tree endpoint is paginated (1000 entries/page): a repo whose
+        # non-weight files fill the early pages digest-mismatches forever
+        # unless we follow the Link header. Stop early once every required
+        # shard has been seen.
         required = set(digests or (digest,))
+        paths_by_oid = {}
+        url, params = f"{name.api_url}/tree/{revision or 'main'}", {"recursive": "true"}
+        for _page in range(100):    # 100k files: beyond any model repo
+            tree, links, err = self._get_json(url, params=params)
+            if err:
+                return err
+            if not isinstance(tree, list):
+                return Unconfirmed("bad-json")
+            for entry in tree:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("path") == "adapter_config.json":
+                    return Unconfirmed("lora-adapter")
+                lfs = entry.get("lfs")
+                oid = bare_digest(lfs.get("oid")) if lfs else None
+                if oid:
+                    paths_by_oid.setdefault(oid, entry.get("path"))
+            if required.issubset(paths_by_oid):
+                break
+            nxt = (links.get("next") or {}).get("url", "")
+            if not nxt.startswith("http"):
+                break
+            # The next URL carries its own query (the cursor): passing
+            # params here would make httpx rebuild it from scratch.
+            url, params = nxt, None
         if not required.issubset(paths_by_oid):
             return Unconfirmed("digest-mismatch")
         return Confirmed(
