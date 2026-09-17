@@ -669,7 +669,13 @@ export default function ProviderPage() {
                     ))}
                     {(worker.gpus || []).length === 0 && <div>No GPU detected</div>}
                     {(worker.runtimes || []).length > 0 && (
-                      <div className="engine-tag">Engine: {worker.runtimes[0].type}</div>
+                      /* One tag per runtime — a mixed node drives several
+                         (e.g. vLLM + Ollama), and showing only the first
+                         hid the rest. */
+                      <div className="engine-tag">
+                        Engine{worker.runtimes.length > 1 ? 's' : ''}:{' '}
+                        {worker.runtimes.map((rt) => rt.type).join(', ')}
+                      </div>
                     )}
                   </div>
                   <div className="worker-models">

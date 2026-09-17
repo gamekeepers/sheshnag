@@ -255,7 +255,7 @@ installer writes is deliberately minimal; these are the values worth knowing.
 |---|---|---|
 | `backend_url` | — | The control plane. Set at install. |
 | `api_key` | — | Your `gk-…` key. Set at install. |
-| `runtime` | `ollama` | `ollama` or `vllm`. |
+| `runtime` | `ollama` | `ollama` or `vllm`, or a list — `[vllm, ollama]` — to run both on one worker. |
 | `ollama_url` | `http://localhost:11434` | Where your Ollama is listening. |
 | `vllm_url` | `http://localhost:8100` | Only when `runtime: vllm`. |
 | `poll_interval` | `5` | Seconds between "any work?" checks. |

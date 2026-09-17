@@ -10,7 +10,7 @@ SQLite (the two dialects in the deployment matrix).
 import logging
 
 from sqlalchemy import inspect, text
-from sqlalchemy import Float, Integer, String
+from sqlalchemy import BigInteger, Float, Integer, String, JSON
 
 from database import get_engine
 from models import Base, Batch, BatchAssignment, UsageRecord  # noqa: F401 — ensure models are registered
@@ -64,6 +64,39 @@ MIGRATIONS = [
                "batch_assignments", "org_id", String()),
     _Migration("batch_assignments.worker_hostname",
                "batch_assignments", "worker_hostname", String()),
+    # Registry schema (#116): model-level capabilities and upstream lineage.
+    # The serving_profiles / catalog_artifact_files tables need no entry —
+    # new tables come from create_all().
+    _Migration("model_catalog.capabilities",
+               "model_catalog", "capabilities", JSON()),
+    _Migration("model_catalog.lineage",
+               "model_catalog", "lineage", String()),
+    # Reconciliation (#116): which catalogue entry a worker row's hash
+    # verified against. Added without the FK constraint on existing
+    # databases (pure-ADD); create_all builds it with the FK on fresh ones.
+    _Migration("runtime_models.catalog_id",
+               "runtime_models", "catalog_id", String()),
+    # Auto-adopt (#116): runtime-reported details per worker model row.
+    _Migration("runtime_models.details",
+               "runtime_models", "details", JSON()),
+    # Auto-adopt (#116): artifact size for vram estimates; who adopted an entry.
+    _Migration("runtime_models.size_bytes",
+               "runtime_models", "size_bytes", BigInteger()),
+    _Migration("model_catalog.adopted_by",
+               "model_catalog", "adopted_by", String()),
+    # vLLM identity (#116 step 4): shard list per worker model row.
+    _Migration("runtime_models.files",
+               "runtime_models", "files", JSON()),
+    # Multi-name vLLM serving (#124 review): extra served aliases per profile,
+    # so one entry can be scheduled on boxes under different --served-model-name.
+    _Migration("serving_profiles.runtime_model_ids",
+               "serving_profiles", "runtime_model_ids", JSON()),
+    # Multi-runtime workers (#126): which runtime `worker.runtimes[0]` names.
+    # Modelled NOT NULL, added nullable here — rows predating it have no bundle
+    # order to backfill from, and replace-all registration supplies one on the
+    # daemon's next start.
+    _Migration("worker_runtimes.position",
+               "worker_runtimes", "position", Integer()),
     # Free RAM, reported per heartbeat alongside the VRAM fields. Nullable
     # because "unknown" is a real state: rows predate the column, and a
     # platform with no reading reports None rather than 0.

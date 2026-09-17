@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ── Worker ID Generation ─────────────────────────────────────────
@@ -47,14 +47,15 @@ _ENV_MAP: Dict[str, str] = {
     "worker_id": "DAEMON_WORKER_ID",
     "backend_url": "DAEMON_BACKEND_URL",
     "vllm_url": "DAEMON_VLLM_URL",
+    "hf_hub_cache": "DAEMON_HF_HUB_CACHE",
     "ollama_url": "DAEMON_OLLAMA_URL",
+    "ollama_models_dir": "DAEMON_OLLAMA_MODELS_DIR",
     "poll_interval": "DAEMON_POLL_INTERVAL",
     "log_level": "DAEMON_LOG_LEVEL",
     "work_dir": "DAEMON_WORK_DIR",
     "api_key": "DAEMON_API_KEY",
     "gpu_name": "DAEMON_GPU_NAME",
     "vram_gb": "DAEMON_VRAM_GB",
-    "runtime": "DAEMON_RUNTIME",
     "inference_timeout": "DAEMON_INFERENCE_TIMEOUT",
     "heartbeat_interval": "DAEMON_HEARTBEAT_INTERVAL",
     "progress_interval_seconds": "DAEMON_PROGRESS_INTERVAL_SECONDS",
@@ -64,6 +65,37 @@ _ENV_MAP: Dict[str, str] = {
 # Fields that need type coercion from string env vars
 _INT_FIELDS = frozenset({"poll_interval", "heartbeat_interval", "max_concurrent_prompts"})
 _FLOAT_FIELDS = frozenset({"vram_gb", "inference_timeout", "progress_interval_seconds"})
+
+# Inference runtimes the daemon knows how to drive.
+_KNOWN_RUNTIMES = frozenset({"ollama", "vllm"})
+
+
+def _normalize_runtime(value: Any) -> List[str]:
+    """
+    Normalize a runtime entry into a de-duplicated, ordered list.
+
+    Accepts any of: "vllm", "vllm,ollama", ["vllm", "ollama"],
+    ["vllm,ollama"] — so YAML scalars, env strings, and CLI lists
+    all land on the same shape. Raises ValueError on empty input
+    so a mistyped DAEMON_RUNTIME fails at startup, not at first job.
+    """
+    if isinstance(value, str):
+        parts = [p.strip() for p in value.split(",")]
+    elif isinstance(value, (list, tuple)):
+        parts = [str(p).strip() for p in value]
+    else:
+        raise ValueError(
+            f"runtime must be a string or a list of strings, "
+            f"got {type(value).__name__}"
+        )
+
+    runtimes: List[str] = []
+    for part in parts:
+        if part and part not in runtimes:
+            runtimes.append(part)
+    if not runtimes:
+        raise ValueError("runtime is empty — set at least one of: " + ", ".join(sorted(_KNOWN_RUNTIMES)))
+    return runtimes
 
 
 def _read_env() -> Dict[str, Any]:
@@ -88,10 +120,18 @@ def _read_env() -> Dict[str, Any]:
         else:
             result[field_name] = value
 
-    # Special handling: DAEMON_MODELS is a comma-separated list
+    # Special handling: DAEMON_MODELS and DAEMON_RUNTIME are comma-separated
+    # lists (e.g. DAEMON_RUNTIME=vllm,ollama).
     models_env = os.getenv("DAEMON_MODELS")
     if models_env:
         result["models"] = [m.strip() for m in models_env.split(",") if m.strip()]
+
+    # `is not None`, not truthiness: a set-but-empty DAEMON_RUNTIME
+    # (e.g. a blanked EnvironmentFile entry) must reach the validator
+    # and fail at startup, not fall through to the default runtime.
+    runtime_env = os.getenv("DAEMON_RUNTIME")
+    if runtime_env is not None:
+        result["runtime"] = [r.strip() for r in runtime_env.split(",") if r.strip()]
 
     return result
 
@@ -120,7 +160,9 @@ class DaemonConfig(BaseModel):
         vram_gb:        Advertised GPU memory in GB. When > 0 it overrides
                         probing in both registration and every heartbeat.
         models:         List of model names available on this worker (spec §8).
-        runtime:        Inference runtime type — "ollama" (default) or "vllm" .
+        runtime:        Inference runtime(s) this daemon drives — "ollama"
+                        (default) and/or "vllm". A list (e.g. ["vllm", "ollama"])
+                        runs both on one worker.
         inference_timeout: Per-prompt inference timeout in seconds (any runtime).
         max_concurrent_prompts: Prompts executed concurrently per job.
     """
@@ -128,7 +170,15 @@ class DaemonConfig(BaseModel):
     worker_id: str = Field(default_factory=_generate_worker_id)
     backend_url: str = "http://localhost:8000"
     vllm_url: str = "http://localhost:8100"
+    # HF hub cache vLLM serves from, for on-disk identity (shard hashes,
+    # repo + revision). None = auto-detect ($HF_HUB_CACHE, $HF_HOME/hub,
+    # ~/.cache/huggingface/hub). Read-only.
+    hf_hub_cache: Optional[str] = None
     ollama_url: str = "http://localhost:11434"
+    # Ollama models dir for on-disk inventory (manifest layer hashes).
+    # None = auto-detect ($OLLAMA_MODELS, ~/.ollama/models, the systemd
+    # service store). Read-only; unreadable degrades to name-only.
+    ollama_models_dir: Optional[str] = None
     poll_interval: int = Field(default=5, gt=0, description="Seconds between poll attempts, must be > 0")
     log_level: str = "INFO"
     work_dir: str = Field(default_factory=lambda: str(Path.home() / ".gpu-daemon" / "jobs"))
@@ -141,7 +191,12 @@ class DaemonConfig(BaseModel):
     gpu_name: str = "unknown"
     vram_gb: float = Field(default=0.0, ge=0, description="GPU VRAM in GB, must be >= 0")
     models: List[str] = Field(default_factory=list)
-    runtime: str = "ollama"
+    # Inference runtimes this daemon drives on one node, e.g.
+    # ["ollama"] (default) or ["vllm", "ollama"] for a mixed node.
+    runtime: List[str] = Field(
+        default_factory=lambda: ["ollama"],
+        description="Inference runtime(s) to drive: any of ollama, vllm",
+    )
 
     # ── Executor tuning ──────────────────────────────────────────
     inference_timeout: float = Field(default=300.0, gt=0, description="Per-prompt timeout in seconds, must be > 0")
@@ -155,6 +210,17 @@ class DaemonConfig(BaseModel):
     progress_interval_seconds: float = Field(
         default=5.0, gt=0, description="Minimum seconds between progress reporting roundtrips"
     )
+
+    @field_validator("runtime", mode="before")
+    @classmethod
+    def _validate_runtime(cls, value: Any) -> List[str]:
+        runtimes = _normalize_runtime(value)
+        unknown = [r for r in runtimes if r not in _KNOWN_RUNTIMES]
+        if unknown:
+            raise ValueError(
+                f"unknown runtime(s) {unknown} — known runtimes: {sorted(_KNOWN_RUNTIMES)}"
+            )
+        return runtimes
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> DaemonConfig:

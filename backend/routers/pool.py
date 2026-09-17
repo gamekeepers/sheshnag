@@ -70,7 +70,7 @@ def _compute_snapshot(db: Session) -> dict:
         db.query(ModelCatalog)
         .filter(
             ModelCatalog.enabled.is_(True),
-            ModelCatalog.status == "active",
+            ModelCatalog.status.in_(ModelCatalog.SELECTABLE_STATUSES),
         )
         .order_by(ModelCatalog.id)
         .all()

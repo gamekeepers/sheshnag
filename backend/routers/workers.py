@@ -12,7 +12,8 @@ from schemas import (
 from pydantic import BaseModel
 from typing import Optional
 from auth import get_worker_context
-from provider_picker import picker, get_catalog_entry
+from provider_picker import picker, get_catalog_entry, resolve_runtime_model_id
+from reconciliation import apply_inventory, classify
 from sweeper import MAX_BATCH_ATTEMPTS, requeue_or_fail_batch
 from services.usage_ingest import ingest_usage_records
 import shutil, os, logging
@@ -113,20 +114,39 @@ def register_worker(
         ]
 
     def _runtime_rows():
-        return [
-            WorkerRuntime(
-                engine=r.type,
-                base_url=r.endpoint,
-                models=[
-                    RuntimeModel(
-                        name=m, runtime_model_id=m,
-                        digest=(r.model_digests or {}).get(m),
-                    )
-                    for m in r.models
-                ],
-            )
-            for r in req.runtimes
-        ]
+        rows = []
+        for position, r in enumerate(req.runtimes):
+            # Availability rows come from the configured models list plus
+            # the on-disk inventory. Only the inventory's FILE hash is stored
+            # as `digest`: the legacy `model_digests` map carries /api/tags
+            # MANIFEST digests, which never equal a catalogue pin — storing
+            # them would make the picker's guard reject every pinned model
+            # on a not-yet-upgraded daemon. Old daemons therefore keep a
+            # null digest and name-match, exactly as before pins existed.
+            inv_by_name = {i.local_name: i for i in r.inventory}
+            names = list(dict.fromkeys(list(r.models) + list(inv_by_name)))
+            models = []
+            for m in names:
+                sha = inv_by_name[m].sha256 if m in inv_by_name else None
+                # Classify at birth: hash-verified rows link to their
+                # catalogue entry; unknown hashes are quarantined, not trusted.
+                status, catalog_id = classify(db, m, sha)
+                models.append(RuntimeModel(
+                    name=m, runtime_model_id=m, digest=sha,
+                    status=status, catalog_id=catalog_id,
+                    loaded=inv_by_name[m].loaded if m in inv_by_name else False,
+                    details=inv_by_name[m].details if m in inv_by_name else None,
+                    size_bytes=inv_by_name[m].size_bytes if m in inv_by_name else None,
+                    files=(
+                        [f.model_dump() for f in inv_by_name[m].files]
+                        if m in inv_by_name and inv_by_name[m].files else None
+                    ),
+                ))
+            rows.append(WorkerRuntime(
+                engine=r.type, base_url=r.endpoint, models=models, position=position,
+                status=r.status,
+            ))
+        return rows
 
     if existing:
         existing.api_key_id = _api_key.id
@@ -202,31 +222,64 @@ def worker_heartbeat(
     if req.ram_available_gb is not None:
         worker.ram_available_gb = req.ram_available_gb
 
-    # Map reported loaded models onto runtime_models.loaded flags, and
-    # record the digest of each loaded model (the reproducibility pin).
+    # Map reported loaded models onto runtime_models.loaded flags. The
+    # legacy `loaded_model_digests` map is accepted but ignored: it carries
+    # /api/tags MANIFEST digests, which never equal a catalogue file-hash
+    # pin, so writing them into `digest` would starve every pinned model on
+    # a not-yet-upgraded daemon. File hashes arrive via `inventory` below.
     reported = set(req.loaded_models)
-    digests = req.loaded_model_digests or {}
     known = set()
     for runtime in worker.runtimes:
         for model in runtime.models:
             was_loaded = model.loaded
             model.loaded = model.name in reported
-            if model.name in digests and digests[model.name]:
-                model.digest = digests[model.name]
             if model.loaded != was_loaded:
                 model.updated_at = unix_now()
             known.add(model.name)
     # A loaded model we've never seen (e.g. pulled on the fly): record it.
-    # The daemon runs a single runtime, so attach to the first one.
+    # Old daemons report no hash here, so classify() leaves it name-matched
+    # (the picker still requires a catalogue entry for the name); the hashed
+    # inventory path below is where quarantine/drift decisions happen.
+    #
+    # Which runtime does the row belong to? A single-runtime worker has
+    # no choice. A mixed worker must route by the runtime tag the daemon
+    # puts on the same beat's inventory — attaching to runtimes[0] would
+    # file a model loaded on runtime #2 under runtime #1, and the
+    # reconciliation below (which routes by that same tag) would then add
+    # a SECOND row for it under runtime #2: duplicate rows, one per beat
+    # until the tag lookup "catches up". No tag (legacy daemon, or the
+    # runtime that serves it reported no inventory) falls back to the
+    # first runtime, as before.
     missing = reported - known
     if missing and worker.runtimes:
+        inventory_runtime = {
+            item.local_name: item.runtime
+            for item in (req.inventory or [])
+            if getattr(item, "runtime", None)
+        }
         for name in missing:
-            worker.runtimes[0].models.append(
+            target = worker.runtimes[0]
+            if len(worker.runtimes) > 1:
+                engine = inventory_runtime.get(name)
+                tagged = next(
+                    (r for r in worker.runtimes if r.engine == engine),
+                    None,
+                ) if engine else None
+                if tagged is not None:
+                    target = tagged
+            status, catalog_id = classify(db, name, None)
+            target.models.append(
                 RuntimeModel(
-                    name=name, runtime_model_id=name,
-                    digest=digests.get(name), loaded=True,
+                    name=name, runtime_model_id=name, loaded=True,
+                    status=status, catalog_id=catalog_id,
                 )
             )
+
+    # Full on-disk inventory (additive; older daemons send none): the
+    # reconciliation loop. Hash-verifies each row against the catalogue,
+    # quarantines unknown hashes, flags drift, and marks rows the box no
+    # longer holds as missing. See reconciliation.py.
+    apply_inventory(db, worker, req.inventory)
 
     db.commit()
     return {"status": "ok", "worker_id": worker_id}
@@ -281,8 +334,13 @@ def poll_job(
     db.refresh(batch)
 
     # The daemon runs the runtime's own model id, not our catalogue slug.
+    # Multi-profile entries answer to several ids — send the one THIS
+    # worker hosts (the picker may have matched on any of them).
     entry = get_catalog_entry(db, batch.model)
-    runtime_model_id = entry.runtime_model_id if entry else batch.model
+    runtime_model_id = (
+        resolve_runtime_model_id(entry, worker.advertised_models())
+        if entry else batch.model
+    )
 
     return {
         "job": {

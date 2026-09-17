@@ -184,6 +184,8 @@ whose. Per-worker rows stay on the superadmin `GET /v1/admin/workers`.
 |---|---|---|
 | `POST` | `/workers/register` | Register/re-register; backend assigns `worker_id` |
 | `POST` | `/workers/{worker_id}/heartbeat` | Unified heartbeat: liveness + activity + dynamic capabilities |
+| `GET` | `/v1/models/quarantine` | superadmin — worker-reported hashes the platform won't schedule (`unregistered` / `drift`), grouped by hash |
+| `POST` | `/v1/models/adopt` | superadmin — promote a quarantined hash into a catalogue entry (`status: unverified`); its worker rows become schedulable at once |
 | `POST` | `/workers/poll` | Claim the best-matching validated batch |
 | `POST` | `/workers/progress` | Live prompt counts (time-throttled — see `DAEMON_PROGRESS_INTERVAL_SECONDS`) |
 | `POST` | `/workers/model-progress` | Model download progress (logged; liveness) |
@@ -208,9 +210,38 @@ assigned to (403 otherwise).
   "vram_available_gb": 9.8,
   "ram_available_gb": 41.2,
   "loaded_models": ["mistral-7b"],
+  "inventory": [
+    {"local_name": "mistral-7b", "sha256": "7485fe…", "size_bytes": 2497280256,
+     "loaded": true, "runtime": "ollama",
+     "details": {"quantization": "Q4_K_M", "parameter_size": "7.2B",
+                 "context_length": 32768, "family": "llama"}}
+  ],
   "uptime_seconds": 3600
 }
 ```
+
+`inventory` (additive; older daemons omit it) is the full on-disk artifact
+list with FILE hashes — Ollama manifest-layer digests, which equal the GGUF
+file's sha256 and join against `model_catalog.digest` (#116). It is resent
+whole every beat, so a model pulled manually on the box surfaces on the
+next heartbeat. Registration's `runtimes[].inventory` carries the same
+shape, so availability rows are born identity-carrying. `details` is what the runtime knows about the artifact — it pre-fills adopt
+and lets auto-adopt register a discovered model without a human. Ollama
+fills it from `/api/tags` + `/api/show` (cached per hash, one call per
+model, not per beat). vLLM fills it from the HF hub cache's `config.json`
+and adds `source_ref` / `source_revision` (repo + commit) — the cache is
+content-addressed, so `sha256` is the first weight's blob hash — the repo's
+own `weight_map` order when it has one, else shard number — and `files`
+lists every weight (`[{file, sha256, size_bytes}]`); models served from a path
+outside the cache stay hash-less. The commit is only guessed when it is
+unambiguous: one snapshot dir in the cache is always served (vLLM can only
+run what is cached), several require a valid `refs/main` — otherwise the
+row reports no identity rather than pin the wrong commit.
+
+Consequence: a worker advertises **everything its runtime holds**, not only
+`DAEMON_MODELS` — every on-disk Ollama model, every model vLLM serves — so a
+batch for a catalogued model may be routed to a box whose operator never
+listed it. Limiting what a box offers is the provider-control work in #104.
 
 #### POST /workers/poll
 ```json

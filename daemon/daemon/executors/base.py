@@ -70,6 +70,22 @@ class BaseExecutor(ABC):
     #: prompt. Ollama overrides this; see OllamaExecutor.
     embedding_chunk_size: int = 1
 
+    #: The runtime this executor drives ("ollama", "vllm", ...). The worker
+    #: may drive several runtimes on one node, and the control plane splits
+    #: an inventory report by this tag — so every item an executor reports
+    #: must be tagged (see tag_inventory).
+    runtime_name: str = ""
+
+    def tag_inventory(self, items: List[dict]) -> List[dict]:
+        """Return `items` with this executor's `runtime_name` attached.
+
+        Shallow copies — the tagged list never aliases the executor's
+        internal item dicts.
+        """
+        if not self.runtime_name:
+            return items
+        return [dict(item, runtime=self.runtime_name) for item in items]
+
     def can_coalesce_embedding(self, prompt: PromptRequest) -> bool:
         """Whether this row may share a request with other embedding rows.
 
@@ -105,6 +121,21 @@ class BaseExecutor(ABC):
             result = await self.execute(prompt)
             results.append(result)
         return results
+
+    async def inventory(self) -> List[dict]:
+        """
+        Every model artifact this runtime holds on disk, with file hashes.
+
+        Returns [{"local_name", "sha256", "size_bytes"}] — `sha256` is the
+        hash of the artifact FILE (the registry's identity/join key), never
+        a runtime-level manifest digest; None when the runtime cannot
+        provide it (the backend then falls back to name matching).
+
+        Feeds registration (first full inventory) and every heartbeat
+        (refresh + drift detection). Must never raise — return [] on any
+        failure; reporting nothing degrades to today's name-only behavior.
+        """
+        return []
 
     async def close(self) -> None:
         """

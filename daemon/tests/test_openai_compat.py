@@ -258,7 +258,7 @@ class TestStreamRejection:
         client = AsyncMock(spec=BackendClient)
         executor = AsyncMock(spec=OllamaExecutor)
 
-        worker = Worker(config=config, client=client, executor=executor)
+        worker = Worker(config=config, client=client, executors={"ollama": executor})
         worker._running = True
 
         job = Job(job_id="test-job", model="m")
@@ -293,7 +293,7 @@ class TestStreamRejection:
             response={"choices": [{"message": {"content": "hi"}}]},
         )
 
-        worker = Worker(config=config, client=client, executor=executor)
+        worker = Worker(config=config, client=client, executors={"ollama": executor})
         worker._running = True
 
         job = Job(job_id="test-job", model="m")
@@ -325,7 +325,7 @@ class TestStreamRejection:
             response={"choices": [{"message": {"content": "hi"}}]},
         )
 
-        worker = Worker(config=config, client=client, executor=executor)
+        worker = Worker(config=config, client=client, executors={"ollama": executor})
         worker._running = True
 
         job = Job(job_id="test-job", model="m")
@@ -495,7 +495,7 @@ class TestWorkerProgressAccounting:
             response={"choices": [{"message": {"content": "hi"}}]},
         )
 
-        worker = Worker(config=config, client=client, executor=executor)
+        worker = Worker(config=config, client=client, executors={"ollama": executor})
         worker._running = True
 
         job = Job(job_id="test-job", model="m")
@@ -537,7 +537,7 @@ class TestWorkerProgressAccounting:
             response={"choices": [{"message": {"content": "hi"}}]},
         )
 
-        worker = Worker(config=config, client=client, executor=executor)
+        worker = Worker(config=config, client=client, executors={"ollama": executor})
         worker._running = True
 
         job = Job(job_id="test-job", model="m")
@@ -575,7 +575,7 @@ class TestWorkerProgressAccounting:
         worker = Worker(
             config=DaemonConfig(worker_id="test-worker"),
             client=client,
-            executor=executor,
+            executors={"ollama": executor},
         )
         worker._running = True
 
@@ -618,7 +618,7 @@ class TestWorkerProgressAccounting:
         worker = Worker(
             config=DaemonConfig(worker_id="test-worker"),
             client=client,
-            executor=executor,
+            executors={"ollama": executor},
         )
         worker._running = True
 
@@ -654,7 +654,7 @@ class TestStreamTruthiness:
         worker = Worker(
             config=DaemonConfig(worker_id="test-worker"),
             client=AsyncMock(spec=BackendClient),
-            executor=executor,
+            executors={"ollama": executor},
         )
         worker._running = True
         return worker, executor
@@ -880,7 +880,7 @@ class TestUnsupportedParameterErrorCode:
         worker = Worker(
             config=DaemonConfig(worker_id="test-worker"),
             client=AsyncMock(spec=BackendClient),
-            executor=executor,
+            executors={"ollama": executor},
         )
         worker._running = True
 
@@ -1123,7 +1123,7 @@ class TestStreamRejectionVLLMSpec:
         client = AsyncMock(spec=BackendClient)
         executor = AsyncMock(spec=VLLMExecutor)   # <-- vLLM spec, not Ollama
 
-        worker = Worker(config=config, client=client, executor=executor)
+        worker = Worker(config=config, client=client, executors={"vllm": executor})
         worker._running = True
 
         job = Job(job_id="test-job", model="m")
@@ -1159,7 +1159,7 @@ class TestStreamRejectionVLLMSpec:
             response={"choices": [{"message": {"content": "hi"}}]},
         )
 
-        worker = Worker(config=config, client=client, executor=executor)
+        worker = Worker(config=config, client=client, executors={"vllm": executor})
         worker._running = True
 
         job = Job(job_id="test-job", model="m")

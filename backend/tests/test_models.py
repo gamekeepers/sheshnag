@@ -30,8 +30,8 @@ def test_list_models_contains_nomic_embed(auth_client):
     assert res.status_code == 200, res.text
     data = res.json()["data"]
     
-    nomic_model = next((m for m in data if m["id"] == "nomic-embed-text-ollama"), None)
-    assert nomic_model is not None, "nomic-embed-text-ollama not found in catalog models"
+    nomic_model = next((m for m in data if m["id"] == "nomic-embed-text-f16"), None)
+    assert nomic_model is not None, "nomic-embed-text-f16 not found in catalog models"
     assert nomic_model["display_name"] == "nomic-embed-text"
     assert nomic_model["task_type"] == "embedding"
     assert nomic_model["vram_gb"] == 1.0

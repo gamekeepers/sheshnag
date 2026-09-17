@@ -149,13 +149,19 @@ class BackendClient:
                 }
                 for gpu in (worker_info.hardware.gpus if worker_info.hardware else [])
             ],
+            # One entry per runtime the worker drives — the backend makes
+            # one worker_runtimes row per entry, so a mixed worker
+            # (vllm + ollama) advertises both in one registration.
             "runtimes": [
                 {
-                    "type": worker_info.runtime,
+                    "type": bundle.runtime,
+                    "status": bundle.status,
                     "endpoint": "localhost",
-                    "models": worker_info.models,
-                    "model_digests": worker_info.model_digests,
+                    "models": bundle.models,
+                    "model_digests": bundle.model_digests,
+                    "inventory": bundle.inventory,
                 }
+                for bundle in worker_info.runtimes
             ],
         }
 

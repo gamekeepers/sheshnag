@@ -19,10 +19,18 @@ single-device runtime is bounded by the largest card rather than the
 machine total, and a runtime that offloads layers is bounded by that plus
 free system RAM.
 """
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from identity_resolver import bare_digest
 from models import ModelCatalog
+
+logger = logging.getLogger(__name__)
+
+# (runtime_model_id, worker digest, catalogue digest) tuples already warned
+# about — a mismatch repeats on every poll, the warning should not.
+_warned_mismatches = set()
 
 
 def get_catalog_entry(db, model_id: str):
@@ -32,7 +40,7 @@ def get_catalog_entry(db, model_id: str):
     return db.query(ModelCatalog).filter(
         ModelCatalog.id == model_id,
         ModelCatalog.enabled.is_(True),
-        ModelCatalog.status == "active",
+        ModelCatalog.status.in_(ModelCatalog.SELECTABLE_STATUSES),
     ).first()
 
 
@@ -47,35 +55,113 @@ def get_model_vram(db, model_id: str):
     return entry.vram_gb if entry else None
 
 
-def _norm_digest(d):
-    """Canonicalise a digest for comparison. Ollama reports a bare hex digest
-    via /api/tags while curated catalogue entries may carry a `sha256:`
-    prefix — strip it (and lowercase) so the same artifact compares equal
-    regardless of which path wrote it."""
-    if not d:
-        return None
-    d = str(d).strip().lower()
-    return d.split(":", 1)[1] if ":" in d else d
+# One digest normaliser for the whole backend (identity_resolver.bare_digest):
+# Ollama reports bare hex, curated entries may carry a `sha256:` prefix.
+_norm_digest = bare_digest
 
 
-def _hosts(worker_models, runtime_model_id: str, catalog_digest) -> bool:
+def _hosts(worker_models, runtime_model_ids, catalog_digest) -> bool:
     """Does the worker host this catalogue artifact?
 
-    Matches on runtime_model_id, then enforces digest equality **only when
-    both sides carry a digest** (the reproducibility guard: same tag +
-    different digest ⇒ not a match). If either digest is missing (older
-    daemon, un-pinned catalogue entry, non-Ollama runtime), fall back to
-    name equality so mixed-version fleets keep scheduling.
+    `runtime_model_ids` is every id the artifact answers to — one per
+    serving profile (the same weights are `qwen3:4b` to Ollama and an HF
+    repo path to vLLM). Matches on any of them, then enforces digest
+    equality **only when both sides carry a digest** (the reproducibility
+    guard: same tag + different digest ⇒ not a match). If either digest is
+    missing (older daemon, un-pinned catalogue entry, non-Ollama runtime),
+    fall back to name equality so mixed-version fleets keep scheduling.
+    A name the entry does not profile still matches when its digest equals
+    the catalogue's — byte-identical artifact, different served alias: the
+    digest IS the identity, the name is just what that box calls it.
     """
     cat = _norm_digest(catalog_digest)
+    ids = set(runtime_model_ids)
     for name, digest in worker_models:
-        if name != runtime_model_id:
+        wd = _norm_digest(digest)
+        if name not in ids:
+            if cat and wd and cat == wd:
+                return True
+            continue
+        if cat and wd and cat != wd:
+            # Same tag, different artifact — reject. Say so once: a silent
+            # rejection here starves the model with nothing in the logs,
+            # e.g. a catalogue pinned to a manifest digest while the daemon
+            # reports the file hash (#118 review).
+            key = (name, wd, cat)
+            if key not in _warned_mismatches:
+                _warned_mismatches.add(key)
+                logger.warning(
+                    "Digest mismatch for %r: worker reports %s…, catalogue "
+                    "pins %s… — not scheduling here. Re-pin the catalogue "
+                    "(scripts/capture_catalog) if the worker's artifact is "
+                    "the intended one.", name, wd[:12], cat[:12],
+                )
+            continue
+        return True
+    return False
+
+
+def _target_ids(entry) -> list:
+    """runtime_model_ids across the entry's serving profiles (or legacy pair)."""
+    return [rmid for _runtime, rmid in entry.serving_targets()]
+
+
+def _prefer_bare(names) -> str:
+    """First of `names`, or its first bare (no '/') name.
+
+    A vLLM box restarted under --served-model-name advertises the alias AND
+    the repo id (daemon/executors/vllm.py reports both rows), and vLLM
+    answers only to the alias — paths are never valid body.model values, the
+    same rule `_pick_served_alias` applies at adoption (catalog_service.py).
+    The repo row predates the alias row, so DB row order alone would keep
+    dispatching the repo id (404) after a `--served-model-name` upgrade.
+    A box served without an alias advertises the single id==root name, and
+    Ollama names carry no '/', so the preference changes nothing for them.
+    """
+    for name in names:
+        if name and "/" not in name:
+            return name
+    return names[0]
+
+
+def resolve_runtime_model_id(entry, worker_models) -> str:
+    """The runtime_model_id to hand THIS worker for `entry` at dispatch.
+
+    A multi-profile entry answers to several ids (`qwen3:4b` to Ollama, an
+    HF repo path to vLLM, an extra alias per box); the picker matched the
+    worker on ANY of them, so dispatch must send the one this worker
+    actually hosts — not the legacy column. Three ways, in order:
+
+    1. a profiled name the worker advertises (digest-checked);
+    2. a name the worker advertises with the entry's exact digest — the
+       same artifact under a name the entry does not profile yet;
+    3. the legacy column (entry with no profiles yet, or the pre-heartbeat
+       worker whose model list is empty: the daemon resolves its own
+       runtime's id there).
+
+    Within 1 and 2, `_prefer_bare` decides when the worker advertises both a
+    repo id and the alias it is served under: only the alias reaches vLLM.
+    """
+    if entry is None:
+        return None
+    cat = _norm_digest(entry.digest)
+    ids = set(rmid for _runtime, rmid in entry.serving_targets())
+    profiled = []
+    for name, digest in worker_models:
+        if name not in ids:
             continue
         wd = _norm_digest(digest)
         if cat and wd and cat != wd:
-            continue  # same tag, different artifact — reject
-        return True
-    return False
+            continue  # same name, different artifact
+        profiled.append(name)
+    if profiled:
+        return _prefer_bare(profiled)
+    if cat:
+        exact = [name for name, digest in worker_models
+                 if _norm_digest(digest) == cat]
+        if exact:
+            return _prefer_bare(exact)
+    return entry.runtime_model_id
 
 
 @dataclass(frozen=True)
@@ -192,15 +278,21 @@ FIT_RULES = {
 DEFAULT_FIT_RULE = fit_vram_only
 
 
-def _hosting_engine(worker, runtime_model_id: str, catalog_digest):
+def _hosting_engine(worker, runtime_model_ids, catalog_digest):
     """The engine of the runtime hosting this artifact, or None if none do.
 
     `Worker.advertised_models()` flattens every runtime into (name, digest)
     pairs and so cannot answer this — the engine is exactly what it drops.
+    What it must not drop is that function's eligibility rules: a quarantined,
+    drifted or missing row is not dispatchable, and neither is any row of a
+    runtime that is down or draining. Both filters have to be repeated here
+    rather than inherited, which is the cost of needing the engine.
     """
     for runtime in worker.runtimes:
-        models = [(m.name, m.digest) for m in runtime.models]
-        if _hosts(models, runtime_model_id, catalog_digest):
+        if not runtime.schedulable:
+            continue
+        models = [(m.name, m.digest) for m in runtime.models if m.schedulable]
+        if _hosts(models, runtime_model_ids, catalog_digest):
             return runtime.engine
     return None
 
@@ -219,9 +311,9 @@ def can_serve(entry, worker) -> bool:
     """
     if entry is None or worker is None:
         return False
-    engine = _hosting_engine(worker, entry.runtime_model_id, entry.digest)
+    engine = _hosting_engine(worker, _target_ids(entry), entry.digest)
     if engine is None:
-        return False  # does not host the artifact on any runtime
+        return False  # does not host the artifact on any schedulable runtime
     rule = FIT_RULES.get(engine, DEFAULT_FIT_RULE)
     return rule(entry.vram_gb or 0, Capacity.of(worker))
 
@@ -253,7 +345,7 @@ class ProviderPicker:
             if not can_serve(entry, worker):
                 continue  # doesn't host the artifact, or can't fit it
 
-            if _hosts(loaded, entry.runtime_model_id, entry.digest):
+            if _hosts(loaded, _target_ids(entry), entry.digest):
                 loaded_matches.append(batch)
             else:
                 other_matches.append(batch)

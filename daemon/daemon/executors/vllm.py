@@ -13,10 +13,12 @@ Architecture note:
 
 from __future__ import annotations
 
-from typing import Optional, Set, Union
+import asyncio
+from typing import List, Optional, Set, Union
 
 import httpx
 
+from daemon import hf_cache
 from daemon.executors.base import BaseExecutor
 from daemon.log import get_logger
 from daemon.models import CompletionResult, PromptRequest
@@ -38,19 +40,25 @@ class VLLMExecutor(BaseExecutor):
                            health_check() will verify these models are loaded in vLLM.
     """
 
+    runtime_name: str = "vllm"
+
     def __init__(
         self,
         base_url: str,
         timeout: float = 300.0,
         supported_models: Optional[list[str]] = None,
         max_concurrent: int = 8,
+        hf_hub_cache: Optional[str] = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._max_concurrent = max_concurrent
+        self._hf_hub_cache = hf_hub_cache
         self._supported_models: Set[str] = set(supported_models) if supported_models else set()
         self._client: httpx.AsyncClient | None = None
         self.version: Optional[str] = None   # populated by health_check()
+        # repo_id -> (snapshot mtime, identity row); describe() only on miss
+        self._ident_cache: dict[str, tuple[float, dict]] = {}
 
     def _get_client(self) -> httpx.AsyncClient:
         """
@@ -234,6 +242,111 @@ class VLLMExecutor(BaseExecutor):
                 # but the server is alive — it might just be loading
 
         return True
+
+    def _identify(self, root: Optional[str]) -> dict:
+        """Blocking: hub-cache identity for a served model's `root`.
+
+        Returns the fields to merge into the model's inventory rows —
+        shard hashes, `files`, `details` (family/quant/ctx/params from
+        config.json) and the pull reference as `details.source_ref` /
+        `source_revision` — or {} when `root` is not a cached HF repo
+        (local path, cache unreadable): those rows stay hash-less and
+        name-matched, exactly as before.
+        """
+        try:
+            cache = hf_cache.resolve_hub_cache(self._hf_hub_cache)
+            found = hf_cache.locate(cache, root or "")
+            if not found:
+                return {}
+            repo_id, revision, snapshot = found
+            mtime = snapshot.stat().st_mtime
+            hit = self._ident_cache.get(repo_id)
+            if hit and hit[0] == mtime:
+                return hit[1]
+            info = hf_cache.describe(snapshot)
+            # A blob gc'd after the fact leaves a dangling symlink: the sha
+            # is still readable from the link NAME, so also require the stat
+            # to have succeeded — all blobs gone means no identity.
+            files = [f for f in info["files"] if f["sha256"] and f["size_bytes"] is not None]
+            details = dict(info["details"], source_ref=repo_id, source_revision=revision)
+            row = {
+                "sha256": files[0]["sha256"] if files else None,
+                "size_bytes": sum(f["size_bytes"] for f in files if f["size_bytes"]) or None,
+                "files": files or None,
+                "details": details if any(v is not None for v in details.values()) else None,
+            }
+            self._ident_cache[repo_id] = (mtime, row)
+            return row
+        except Exception as exc:
+            logger.debug(f"hub-cache identity unavailable for {root!r}: {exc}")
+            return {}
+
+    async def inventory(self) -> List[dict]:
+        """Models this vLLM server serves, with hub-cache identity.
+
+        The served name (`id`) is the join key: it is what a serving
+        profile's runtime_model_id pins and what dispatch sends as
+        body.model. Under --served-model-name it differs from `root` (the
+        HF repo id / path), so both are reported as rows and either
+        convention matches. Identity comes from the HF hub cache, which is
+        content-addressed: `sha256` is the first weight's blob hash (per
+        the repo's own index), `files` every weight, `details.source_ref`/
+        `source_revision` the repo + commit. Models not in the cache stay
+        hash-less. Never raises.
+
+        Rows of one model share a `root`, and so do replicas of the same
+        checkpoint: each distinct root is identified once, and all
+        identifies run concurrently (describe is cached per snapshot, so
+        steady state costs one stat per model per beat).
+        """
+        try:
+            client = self._get_client()
+            resp = await client.get("/v1/models", timeout=10.0)
+            resp.raise_for_status()
+            models = [m for m in resp.json().get("data", []) if not m.get("parent")]
+            roots = list({m.get("root") or m.get("id") for m in models})
+            identities = dict(zip(
+                roots,
+                await asyncio.gather(*(asyncio.to_thread(self._identify, r) for r in roots)),
+            ))
+            items, seen = [], set()
+            for m in models:
+                identity = identities[m.get("root") or m.get("id")]
+                for name in (m.get("id"), m.get("root")):
+                    if name and name not in seen:
+                        seen.add(name)
+                        items.append({
+                            "local_name": name, "sha256": None, "size_bytes": None,
+                            **identity,
+                        })
+            return self.tag_inventory(items)
+        except Exception as exc:
+            logger.warning(f"vLLM inventory failed: {exc}")
+            return []
+
+    async def list_models(self) -> List[str]:
+        """Names this server serves — the same names inventory() reports
+        (served id + root of each non-adapter entry).
+
+        Feeds the worker's model→runtime routing map so a job naming any
+        of these lands on vLLM even on a multi-runtime worker. Never
+        raises — an empty list just means "no names known right now".
+        """
+        try:
+            client = self._get_client()
+            resp = await client.get("/v1/models", timeout=10.0)
+            resp.raise_for_status()
+            names: List[str] = []
+            for m in resp.json().get("data", []):
+                if m.get("parent"):
+                    continue  # adapter — not a standalone served model
+                for name in (m.get("id"), m.get("root")):
+                    if name and name not in names:
+                        names.append(name)
+            return names
+        except Exception as exc:
+            logger.error(f"Failed to list vLLM models: {exc}")
+            return []
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

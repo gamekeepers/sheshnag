@@ -29,7 +29,7 @@ import random
 import signal
 import time
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional, Tuple
 
 import httpx
 
@@ -46,32 +46,43 @@ from daemon.model_manager import ModelManager
 
 logger = get_logger(__name__)
 
+#: Startup readiness wait, per runtime: 12 × 5s = 60s max. Runtimes are
+#: checked concurrently, so a mixed node waits 60s total, not 60s each.
+READINESS_MAX_RETRIES = 12
+READINESS_RETRY_DELAY = 5.0
+
 
 class Worker:
     """
     Main daemon worker — polls for jobs and executes them.
 
     The Worker is the only component that knows about the full workflow.
-    It coordinates between the client (backend HTTP) and executor
-    (inference runtime) but doesn't implement either.
+    It coordinates between the client (backend HTTP) and the executors
+    (inference runtimes) but doesn't implement either. A worker may
+    drive several runtimes on one node (e.g. vLLM + Ollama); jobs are
+    routed to the runtime that serves their model.
 
     Args:
-        config:   Daemon configuration.
-        client:   HTTP client for backend communication.
-        executor: Inference executor (e.g., VLLMExecutor).
+        config:    Daemon configuration.
+        client:    HTTP client for backend communication.
+        executors: One executor per configured runtime, keyed by runtime
+                   name (e.g. {"ollama": OllamaExecutor, "vllm": VLLMExecutor}).
     """
 
     def __init__(
         self,
         config: DaemonConfig,
         client: BackendClient,
-        executor: BaseExecutor,
+        executors: Dict[str, BaseExecutor],
     ) -> None:
         self._config = config
         self._client = client
-        self._executor = executor
+        self._executors = executors
         self._running = False
         self._current_job_id: str | None = None
+        # model name → runtime name; rebuilt from each runtime's model
+        # list (see _refresh_model_map).
+        self._model_runtimes: Dict[str, str] = {}
 
         self._heartbeat = HeartbeatManager(
             client=client,
@@ -79,13 +90,19 @@ class Worker:
             interval=config.heartbeat_interval,
             get_loaded_models=self._get_loaded_models,
             get_loaded_model_digests=self._get_loaded_model_digests,
+            get_inventory=self._get_inventory,
             declared_vram_gb=config.vram_gb,
         )
 
+        # Ollama is the only runtime that can pull models on demand.
+        self._ollama_executor = next(
+            (ex for ex in executors.values() if isinstance(ex, OllamaExecutor)),
+            None,
+        )
         self._model_manager = None
-        if isinstance(executor, OllamaExecutor):
+        if self._ollama_executor is not None:
             self._model_manager = ModelManager(
-                executor=executor,
+                executor=self._ollama_executor,
                 client=client,
                 worker_id=config.worker_id,
             )
@@ -96,30 +113,75 @@ class Worker:
 
     async def _get_loaded_models(self) -> List[str]:
         """
-        Models currently served by the runtime, reported in heartbeats
+        Models currently served by the runtimes, reported in heartbeats
         so the scheduler can prefer workers that already host a model.
-        Falls back to the statically configured list for runtimes that
-        can't be queried.
+        A single-runtime worker keeps its existing behavior (dynamic
+        list, or the static config list when the runtime can't be
+        queried); a mixed worker reports the union across runtimes.
         """
-        if hasattr(self._executor, "list_models"):
-            return await self._executor.list_models()
-        return list(self._config.models)
+        if len(self._executors) == 1:
+            executor = next(iter(self._executors.values()))
+            if hasattr(executor, "list_models"):
+                return await executor.list_models()
+            return list(self._config.models)
+        names: List[str] = []
+        for executor in self._executors.values():
+            if hasattr(executor, "list_models"):
+                names.extend(await executor.list_models())
+        return list(dict.fromkeys(names))
 
     async def _get_loaded_model_digests(self) -> dict:
         """name → digest map for loaded models (reproducibility pins).
 
-        Empty for runtimes that can't report digests; the backend then
-        falls back to name matching.
+        Union across runtimes. Empty for runtimes that can't report
+        digests; the backend then falls back to name matching.
         """
-        if hasattr(self._executor, "list_models_detailed"):
-            return {
-                m["name"]: m.get("digest")
-                for m in await self._executor.list_models_detailed()
-                if m.get("name")
-            }
-        return {}
+        digests: dict = {}
+        for executor in self._executors.values():
+            if hasattr(executor, "list_models_detailed"):
+                for m in await executor.list_models_detailed():
+                    if m.get("name"):
+                        digests[m["name"]] = m.get("digest")
+        return digests
+
+    async def _get_inventory(self) -> List[dict]:
+        """Full on-disk inventory across all runtimes.
+
+        Each executor tags its own items with its runtime name (so the
+        backend's per-runtime rows come out right), and each item's
+        `loaded` flag is scoped to the runtime that holds it — a model
+        live on ollama is not "loaded" on the vllm row, even though the
+        union loaded_models list contains it. BaseExecutor.inventory()
+        never raises and returns [] where the runtime can't report.
+        """
+        items: List[dict] = []
+        for executor in self._executors.values():
+            loaded: set = set()
+            if hasattr(executor, "list_models"):
+                try:
+                    loaded = set(await executor.list_models())
+                except Exception:
+                    loaded = set()
+            for item in await executor.inventory():
+                stamped = dict(item)
+                if "loaded" not in stamped:
+                    stamped["loaded"] = stamped.get("local_name") in loaded
+                items.append(stamped)
+        return items
 
     # ── Public API ───────────────────────────────────────────────
+
+    def update_worker_id(self, worker_id: str) -> None:
+        """Adopt the backend-assigned worker id after registration.
+
+        Registration happens after the Worker is constructed, so the
+        heartbeat and model-manager ids snapshotted in __init__ are
+        local placeholders until this runs. Call it alongside
+        client.update_worker_id().
+        """
+        self._heartbeat.update_worker_id(worker_id)
+        if self._model_manager is not None:
+            self._model_manager.update_worker_id(worker_id)
 
     async def start(self) -> None:
         """
@@ -139,9 +201,6 @@ class Worker:
         )
         
         await self._heartbeat.start()
-
-        # Pre-flight: check vLLM health
-        await self._wait_for_executor()
 
         while self._running:
             try:
@@ -188,7 +247,13 @@ class Worker:
         logger.info("Shutting down worker...")
 
         await self._heartbeat.stop()
-        await self._executor.close()
+        for name, executor in self._executors.items():
+            try:
+                await executor.close()
+            except Exception as exc:
+                # One executor that refuses to die must not keep the
+                # others (or the client) from closing.
+                logger.warning(f"Closing runtime '{name}' failed: {exc}")
         await self._client.close()
 
         logger.info("Worker shutdown complete")
@@ -233,8 +298,33 @@ class Worker:
         input_path = job_dir / "input.jsonl"
         output_path = job_dir / "output.jsonl"
         
-        # ── Step 0: Ensure model is available ────────────────────────
-        if self._model_manager and job.model:
+        # ── Step 0: Route to the runtime that serves this model ─────
+        # On a mixed worker a model belongs to exactly one runtime; on
+        # a single-runtime worker this returns that executor no matter
+        # what the job says.
+        executor = await self._executor_for(job.model)
+        if job.model and executor is None:
+            # A model no runtime's list currently reports. Ollama can
+            # pull it on demand (a single-runtime Ollama worker always
+            # takes the Step 0b path below) — try the pull before
+            # failing, then re-resolve.
+            executor = await self._pull_unrouted_model(job)
+        if job.model and executor is None:
+            # A model no runtime here hosts (stale dispatch, or a
+            # runtime that stopped serving it — and a failed pull).
+            # Never guess at a target — failing the job lets the
+            # backend requeue it onto a worker that does host the model.
+            logger.error(
+                f"[{job.job_id}] No runtime on this worker hosts model "
+                f"'{job.model}' — failing the job"
+            )
+            await self._client.report_failure(
+                job.job_id, f"No runtime on this worker hosts model '{job.model}'"
+            )
+            return
+
+        # ── Step 0b: Ensure model is available (Ollama pulls) ─────────
+        if self._model_manager and job.model and executor is self._ollama_executor:
             self._heartbeat.update_status("downloading_model", job.job_id)
             available = await self._model_manager.ensure_model(job.model)
             if not available:
@@ -262,7 +352,7 @@ class Worker:
             return
 
         # ── Step 3: Execute each prompt ──────────────────────────
-        results = await self._run_prompts(prompts, job)
+        results = await self._run_prompts(prompts, job, executor)
 
         # ── Step 4: Write output JSONL ───────────────────────────
         self._write_output(output_path, results)
@@ -332,7 +422,8 @@ class Worker:
         return prompts
 
     async def _run_prompts(
-        self, prompts: List[PromptRequest], job: Job
+        self, prompts: List[PromptRequest], job: Job,
+        executor: Optional[BaseExecutor] = None,
     ) -> List[CompletionResult]:
         """
         Execute all prompts through a bounded pool of concurrent workers.
@@ -345,7 +436,29 @@ class Worker:
         single prompt can fail the job: rejections are recorded per row before
         execution starts, and an unexpected exception inside a pool worker
         fails only the rows that worker was holding.
+
+        `executor` is the runtime the job routed to; callers that don't
+        resolve it themselves (tests, legacy paths) fall back to routing
+        by job.model here.
         """
+        if executor is None:
+            executor = await self._executor_for(job.model)
+        if executor is None:
+            # No runtime hosts this model (mixed worker, unknown or
+            # unserved name) — fail every row rather than guess at a
+            # target.
+            logger.error(
+                f"[{job.job_id}] No runtime hosts model {job.model!r} "
+                f"— failing all {len(prompts)} rows"
+            )
+            return [
+                CompletionResult(
+                    custom_id=p.custom_id,
+                    error=f"NO_RUNTIME: no runtime on this worker hosts model {job.model!r}",
+                )
+                for p in prompts
+            ]
+
         total = len(prompts)
         # Keyed by input index, not custom_id — duplicate ids still get their
         # own row, and out-of-order completion still writes in input order.
@@ -406,7 +519,7 @@ class Worker:
         # serve several rows in one request (Ollama's /api/embed), a chunk is
         # one unit of work; where it cannot, each row is its own unit and gets
         # the pool's concurrency instead of running serially after it.
-        chunk_size = getattr(self._executor, "embedding_chunk_size", 1)
+        chunk_size = getattr(executor, "embedding_chunk_size", 1)
         if not isinstance(chunk_size, int) or chunk_size < 1:
             # Executors are free not to declare this, and test doubles often
             # don't. Anything unusable means "no coalescing".
@@ -417,7 +530,7 @@ class Worker:
         # run one-at-a-time inside a single pool slot — so a job made entirely
         # of such rows collapsed to one worker no matter how the pool was
         # sized.
-        can_coalesce = getattr(self._executor, "can_coalesce_embedding", None)
+        can_coalesce = getattr(executor, "can_coalesce_embedding", None)
         if chunk_size > 1 and callable(can_coalesce):
             coalescable, solo = [], []
             for row in embedding_rows:
@@ -446,9 +559,9 @@ class Worker:
             unit_prompts = [p for _, p in unit]
             try:
                 if len(unit) == 1 and unit_prompts[0].url != "/v1/embeddings":
-                    results = [await self._executor.execute(unit_prompts[0])]
+                    results = [await executor.execute(unit_prompts[0])]
                 else:
-                    results = await self._executor.batch_execute(unit_prompts)
+                    results = await executor.batch_execute(unit_prompts)
             except Exception as exc:
                 # A crash here must cost only this unit's rows. Losing the
                 # whole batch to one poisoned prompt is what the sequential
@@ -618,36 +731,150 @@ class Worker:
             f"({file_size:,} bytes)"
         )
 
-    # ── Executor Health ──────────────────────────────────────────
+    # ── Model → Runtime Routing ──────────────────────────────────
 
-    async def _wait_for_executor(self) -> None:
+    async def _executor_for(self, model: str) -> Optional[BaseExecutor]:
         """
-        Wait for the inference executor to become healthy.
+        The executor that serves `model`, or None when no runtime on
+        this worker does.
 
-        Retries with backoff on startup. This handles the case where
-        the daemon starts before vLLM is fully loaded.
+        A single-runtime worker routes everything to its one executor,
+        unconditionally — the pre-multi-runtime behavior. A mixed
+        worker consults the model→runtime map; a miss triggers one
+        refresh, because models pulled on the box after registration
+        are not in the stale map.
         """
-        max_retries = 12  # 12 * 5s = 60s max wait
-        for attempt in range(1, max_retries + 1):
-            if await self._executor.health_check():
-                logger.info("Executor health check passed ✓")
-                return
+        if len(self._executors) == 1:
+            return next(iter(self._executors.values()))
+        if not model:
+            return None
+        runtime = self._model_runtimes.get(model)
+        if runtime and runtime in self._executors:
+            return self._executors[runtime]
+        await self._refresh_model_map()
+        runtime = self._model_runtimes.get(model)
+        if runtime:
+            return self._executors.get(runtime)
+        return None
 
-            logger.warning(
-                f"Executor not ready — retry {attempt}/{max_retries} "
-                f"in 5s..."
+    async def _refresh_model_map(self) -> None:
+        """Rebuild the model→runtime map from each runtime's model list.
+
+        First-writer-wins in config order: if two runtimes both claim a
+        name, that is a misconfiguration — we log it and route to the
+        first, rather than silently flip-flopping per job.
+
+        A runtime whose list_models() raised keeps its previous entries:
+        a failed query is not an empty model set, and dropping them would
+        leave its models unroutable for the whole outage window. The
+        carry-over is applied in a second pass after the loop, so a live
+        claim always wins: a stale entry must not keep routing a model to
+        a runtime that is down when a healthy runtime now serves it.
+        """
+        mapping: Dict[str, str] = {}
+        carried: List[Tuple[str, str]] = []
+        for name, executor in self._executors.items():
+            if not hasattr(executor, "list_models"):
+                continue
+            try:
+                names = await executor.list_models()
+            except Exception as exc:
+                logger.debug(f"Could not list models from runtime '{name}': {exc}")
+                carried.extend(
+                    (model, name)
+                    for model, owner in self._model_runtimes.items()
+                    if owner == name
+                )
+                continue
+            for model in names:
+                owner = mapping.get(model)
+                if owner and owner != name:
+                    logger.warning(
+                        f"Model '{model}' is served by both '{owner}' and "
+                        f"'{name}' — jobs for it will route to '{owner}'"
+                    )
+                    continue
+                mapping[model] = name
+        for model, name in carried:
+            mapping.setdefault(model, name)
+        self._model_runtimes = mapping
+
+    async def _pull_unrouted_model(self, job: Job) -> Optional[BaseExecutor]:
+        """Route an unrouted model by pulling it with Ollama, if possible.
+
+        A mixed worker's map only knows what is already on the box, so a
+        catalogue model dispatched here before its first pull would fail
+        outright — the case a single-runtime Ollama worker always handled
+        via the ensure_model path. Pull, then re-resolve; None when this
+        worker has no Ollama runtime, the pull fails, or the model is
+        still unroutable.
+        """
+        if self._ollama_executor is None or self._model_manager is None:
+            return None
+        self._heartbeat.update_status("downloading_model", job.job_id)
+        available = await self._model_manager.ensure_model(job.model)
+        executor = await self._executor_for(job.model) if available else None
+        if executor is None:
+            self._heartbeat.update_status("idle")
+        return executor
+
+    # ── Runtime Readiness ────────────────────────────────────────
+
+    async def wait_for_runtimes(self) -> List[str]:
+        """
+        Wait until the configured runtimes report healthy, checking them
+        concurrently (READINESS_MAX_RETRIES × READINESS_RETRY_DELAY each).
+
+        Handles the case where the daemon starts before the runtimes are
+        fully loaded. Returns the names of the runtimes that came up.
+        Runtimes that don't are not fatal — they are registered anyway,
+        and heartbeats fill their rows in once they recover — but jobs
+        for their models will fail per-row until they do.
+        """
+        outcomes = await asyncio.gather(*(
+            self._wait_one_runtime(name, executor)
+            for name, executor in self._executors.items()
+        ))
+        ready = [name for name, ok in zip(self._executors, outcomes) if ok]
+        for name, ok in zip(self._executors, outcomes):
+            if ok:
+                continue
+            hint = ""
+            if name == "vllm" and gpu_vendors_present() == ["amd"]:
+                hint = f" {VLLM_ROCM_HINT}"
+            logger.error(
+                f"Runtime '{name}' health check failed after all retries — "
+                f"its prompts may fail.{hint}"
             )
-            await asyncio.sleep(5)
+        if not ready:
+            # The pre-multi-runtime behavior: a cold node where the
+            # runtime(s) are still loading. Proceed anyway.
+            logger.error("No runtime is healthy — proceeding anyway (prompts may fail).")
+        else:
+            logger.info(f"Ready runtimes: {', '.join(ready)}")
 
-        # Don't crash — proceed anyway, individual prompts will fail
-        # with descriptive errors if the executor is truly down
-        hint = ""
-        if self._config.runtime == "vllm" and gpu_vendors_present() == ["amd"]:
-            hint = f" {VLLM_ROCM_HINT}"
-        logger.error(
-            "Executor health check failed after all retries — "
-            f"proceeding anyway (prompts may fail).{hint}"
-        )
+        # The routing map must exist before the first poll, or a job that
+        # lands in the gap would have no route on a mixed worker.
+        await self._refresh_model_map()
+        return ready
+
+    async def _wait_one_runtime(self, name: str, executor: BaseExecutor) -> bool:
+        """True once `executor` reports healthy; False after the retries."""
+        for attempt in range(1, READINESS_MAX_RETRIES + 1):
+            try:
+                healthy = await executor.health_check()
+            except Exception as exc:
+                logger.warning(f"Runtime '{name}' health check error: {exc}")
+                healthy = False
+            if healthy:
+                logger.info(f"Runtime '{name}' health check passed")
+                return True
+            logger.warning(
+                f"Runtime '{name}' not ready — retry {attempt}/{READINESS_MAX_RETRIES} "
+                f"in {READINESS_RETRY_DELAY:.0f}s..."
+            )
+            await asyncio.sleep(READINESS_RETRY_DELAY)
+        return False
 
     # ── Signal Handling ──────────────────────────────────────────
 

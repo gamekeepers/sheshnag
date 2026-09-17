@@ -235,7 +235,7 @@ This is the only part that needs Ollama running and a **catalogued** model.
 
 1. **The model must be in the catalogue and the worker must host its runtime
    id.** `body.model` is a catalogue slug from `GET /v1/models` — e.g.
-   `mistral-7b-instruct-q4-ollama`, whose `runtime_model_id` is `mistral:7b`.
+   `mistral-7b-instruct-q4km`, whose `runtime_model_id` is `mistral:7b`.
    The worker must have that pulled (`ollama pull mistral:7b`) and run with
    `--runtime ollama`. A batch for a model no worker hosts is never assigned; a
    `body.model` that is not in the catalogue fails validation with
@@ -243,7 +243,7 @@ This is the only part that needs Ollama running and a **catalogued** model.
 2. **Upload the input:** `POST /v1/files`, multipart, `purpose="batch"` → note
    the `file-…` id. One line looks like:
    ```json
-   {"custom_id":"c1","method":"POST","url":"/v1/chat/completions","body":{"model":"mistral-7b-instruct-q4-ollama","messages":[{"role":"user","content":"hi"}],"max_tokens":64}}
+   {"custom_id":"c1","method":"POST","url":"/v1/chat/completions","body":{"model":"mistral-7b-instruct-q4km","messages":[{"role":"user","content":"hi"}],"max_tokens":64}}
    ```
 3. **Submit:** `POST /v1/batches` with
    `{"input_file_id":"file-…","endpoint":"/v1/chat/completions","completion_window":"24h"}`.

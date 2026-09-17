@@ -36,6 +36,8 @@ Every variable the platform reads at runtime. Defaults are pulled from live code
 | `MAILGUN_API_KEY` | no | — | Mailgun API key. If unset, email sending is gracefully skipped. |
 | `MAILGUN_DOMAIN` | no | — | Mailgun domain. Required alongside `MAILGUN_API_KEY` for emails to work. |
 | `MAILGUN_FROM` | no | `Sheshnag support <noreply@sheshnag.io>` | Default sender address for platform emails. |
+| `CATALOG_AUTO_ADOPT` | no | `registry-confirmed` | Auto-register worker-discovered models whose file hash the public registry confirms for their name (sweeper pass, every 60s). `off` keeps every unknown hash quarantined for manual `POST /v1/models/adopt`. |
+| `CATALOG_AUTO_ADOPT_ENABLED` | no | `true` | Whether auto-adopted entries are user-selectable immediately. `false` stages them (`enabled: false`) until an admin flips them in the Models tab. |
 | `CORS_ORIGINS` | no | `"*"` (all origins) | Comma-separated list of allowed origins for CORS. Keep the default for local dev; set to your frontend URL(s) in production. See also the [credentials warning](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS/Errors/CORSMissingAllowCredentialsWildcard). |
 
 **Old `.env` caveat:** `CORS_ORIGINS` used to be listed in `backend/.env.example` while doing nothing — origins were hardcoded to `["*"]` in `main.py`. It is now read from the environment, so the variable behaves as its name suggests and no code change is needed at deploy time.
@@ -49,9 +51,10 @@ Configured via a three-layer system: CLI > env (`DAEMON_*` prefix) > YAML file >
 | `DAEMON_BACKEND_URL` | `http://localhost:8000` | Control plane API URL |
 | `DAEMON_API_KEY` | _(required)_ | Org worker API key (created in dashboard) |
 | `DAEMON_WORKER_ID` | auto-generated | Unique worker ID with hostname prefix |
-| `DAEMON_RUNTIME` | `ollama` | Inference runtime: `ollama` or `vllm` |
+| `DAEMON_RUNTIME` | `ollama` | Inference runtime(s) to drive: `ollama` or `vllm`, or a comma-separated pair (`vllm,ollama`) to run both on one worker |
 | `DAEMON_OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
 | `DAEMON_VLLM_URL` | `http://localhost:8100` | vLLM server URL |
+| `DAEMON_HF_HUB_CACHE` | auto-detect | HF hub cache vLLM serves from, for on-disk model identity (shard hashes, repo + commit). Auto-detect order: `$HF_HUB_CACHE`, `$HF_HOME/hub`, `~/.cache/huggingface/hub`. Read-only. |
 | `DAEMON_POLL_INTERVAL` | 5 | Seconds between job polls |
 | `DAEMON_HEARTBEAT_INTERVAL` | 30 | Seconds between heartbeats |
 | `DAEMON_PROGRESS_INTERVAL_SECONDS` | 5.0 | Minimum seconds between progress reports. Completion is always reported regardless |

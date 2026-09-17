@@ -1,7 +1,7 @@
 from database import Base
 from sqlalchemy import (
     BigInteger, Column, String, Integer, Boolean, Float, Text, ForeignKey,
-    UniqueConstraint,
+    UniqueConstraint, JSON,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
@@ -55,6 +55,14 @@ def generate_gpu_id():
 
 def generate_catalog_id():
     return f"mdl-{uuid.uuid4().hex[:24]}"
+
+
+def generate_profile_id():
+    return f"sprof-{uuid.uuid4().hex[:24]}"
+
+
+def generate_artifact_file_id():
+    return f"caf-{uuid.uuid4().hex[:24]}"
 
 
 def generate_usage_id():
@@ -243,6 +251,12 @@ class Worker(Base):
     runtimes = relationship(
         "WorkerRuntime", back_populates="worker",
         cascade="all, delete-orphan",
+        # `runtimes[0]` is the fallback target for a heartbeat item that carries
+        # no runtime tag, so it has to name the runtime the daemon lists first —
+        # the one an untagged item most likely came from. Neither uuid4 ids nor a
+        # second-granularity created_at shared by every row of one registration
+        # call can express that, hence `position`.
+        order_by="WorkerRuntime.position",
     )
 
     def loaded_model_names(self) -> list:
@@ -254,12 +268,26 @@ class Worker(Base):
         return {m.name for rt in self.runtimes for m in rt.models}
 
     def advertised_models(self) -> list:
-        """(name, digest) pairs this worker's runtimes host."""
-        return [(m.name, m.digest) for rt in self.runtimes for m in rt.models]
+        """(name, digest) pairs this worker's runtimes host AND may be
+        scheduled: quarantined (unregistered), drifted, and missing rows are
+        excluded, as is every model of a runtime that is not itself
+        schedulable, so every picker/capacity path shares the rule.
+
+        `advertised_model_names` deliberately does not filter — cataloguing
+        what a worker holds is a different question from what it can be given."""
+        return [
+            (m.name, m.digest)
+            for rt in self.runtimes if rt.schedulable
+            for m in rt.models if m.schedulable
+        ]
 
     def loaded_models(self) -> list:
-        """(name, digest) pairs currently loaded in VRAM."""
-        return [(m.name, m.digest) for rt in self.runtimes for m in rt.models if m.loaded]
+        """(name, digest) pairs currently loaded in VRAM (schedulable only)."""
+        return [
+            (m.name, m.digest)
+            for rt in self.runtimes if rt.schedulable
+            for m in rt.models if m.loaded and m.schedulable
+        ]
 
 
 class WorkerRuntime(Base):
@@ -277,6 +305,21 @@ class WorkerRuntime(Base):
     base_url   = Column(String, nullable=False, default="")
     api_protocol = Column(String, default="openai-compatible")
     status     = Column(String, default="ready")  # ready | draining | unavailable
+
+    # A runtime that is draining or was never reached still lists its models —
+    # they are on that worker's disk and that is worth cataloguing — but it
+    # cannot be given work. Mirrors RuntimeModel.schedulable so every picker
+    # and capacity path applies one rule.
+    SCHEDULABLE_STATUSES = frozenset({"ready"})
+
+    @property
+    def schedulable(self) -> bool:
+        return self.status in self.SCHEDULABLE_STATUSES
+    # Index into the daemon's configured runtime list, assigned at registration.
+    # Rows predating the column are NULL and tie, which costs nothing: a worker
+    # registered before it existed has one runtime, and replace-all registration
+    # rewrites every row with a position on the daemon's next start.
+    position   = Column(Integer, nullable=False, default=0)
     max_concurrent_requests = Column(Integer, nullable=True)
     request_timeout_seconds = Column(Integer, nullable=True)
     created_at = Column(Integer, default=unix_now)
@@ -309,14 +352,37 @@ class RuntimeModel(Base):
     )
     name             = Column(String, nullable=False)
     runtime_model_id = Column(String, nullable=True)  # exact id the runtime expects
-    digest           = Column(String, nullable=True)  # artifact digest (reproducibility join key)
-    status     = Column(String, default="available")  # available | downloading | not_downloaded | error
+    digest           = Column(String, nullable=True)  # artifact FILE sha256 (identity join key)
+    # Catalogue entry this row's hash was verified against (#116 reconcile).
+    # NULL = not hash-verified: either an unverifiable row (no hash reported)
+    # that name-matches, or a row in one of the NON_SCHEDULABLE states.
+    catalog_id = Column(
+        String, ForeignKey("model_catalog.id", ondelete="SET NULL"), nullable=True,
+    )
+    # available | downloading | not_downloaded | error — plus the reconcile
+    # states: unregistered (hash matches no entry; quarantined), drift (name
+    # claims a pinned entry, bytes differ), missing (dropped from a full
+    # inventory — e.g. `ollama rm` on the box). The picker never routes to
+    # NON_SCHEDULABLE rows; see reconciliation.py.
+    status     = Column(String, default="available")
     loaded     = Column(Boolean, default=False)
+    # Runtime-reported facts (quantization, parameter_size, context_length,
+    # family) — pre-fills adopt / auto-adopt; descriptive only.
+    details    = Column(JSON, nullable=True)
+    size_bytes = Column(BigInteger, nullable=True)   # artifact size as reported; feeds vram estimates
+    files      = Column(JSON, nullable=True)         # [{file, sha256, size_bytes}] for multi-shard artifacts
     last_used_at = Column(Integer, nullable=True)
     created_at = Column(Integer, default=unix_now)
     updated_at = Column(Integer, default=unix_now)
 
     runtime = relationship("WorkerRuntime", back_populates="models")
+    catalog_entry = relationship("ModelCatalog", foreign_keys=[catalog_id])
+
+    NON_SCHEDULABLE_STATUSES = frozenset({"unregistered", "drift", "missing"})
+
+    @property
+    def schedulable(self) -> bool:
+        return self.status not in self.NON_SCHEDULABLE_STATUSES
 
 
 class WorkerGpu(Base):
@@ -364,6 +430,10 @@ class ModelCatalog(Base):
 
     id               = Column(String, primary_key=True, default=generate_catalog_id)
     display_name     = Column(String, nullable=False)
+    # DEPRECATED pair: runtime coupling now lives on `serving_profiles`
+    # (one entry, several runtimes). Kept dual-written by the seed so
+    # existing readers (dispatch, validator) keep working until they are
+    # migrated to `serving_targets()`; do not add new readers.
     runtime          = Column(String, nullable=False)   # ollama | vllm
     runtime_model_id = Column(String, nullable=False)   # exact runtime string, internal
     digest           = Column(String, nullable=True)    # reproducibility pin / join key (identity)
@@ -375,6 +445,15 @@ class ModelCatalog(Base):
     task_type        = Column(String, nullable=True)    # chat | text-generation | embedding | vision
     parameter_size   = Column(String, nullable=True)    # human-readable, e.g. '7B'
     context_length   = Column(Integer, nullable=True)
+    # What the MODEL can do (properties of the weights: vision, embeddings,
+    # json_mode, logprobs). Runtime mechanism differences (grammar vs guided
+    # decoding) are the executor's capabilities(), not stored here; effective
+    # capability = model AND runtime.
+    capabilities     = Column(JSON, nullable=True)
+    # Upstream base weights (HF repo id) — groups quants/formats of the same
+    # model for the dashboard and duplicate checks. Organizational only,
+    # never an identity or matching key; NULL = ungrouped (unknown upstream).
+    lineage          = Column(String, nullable=True)
     # Provenance (where the artifact came from / how to fetch it) — distinct
     # from identity (`digest`). source_ref + source_revision is the pull
     # reference (HF repo+commit, or Ollama library path); homepage_url is the
@@ -384,9 +463,103 @@ class ModelCatalog(Base):
     source_revision  = Column(String, nullable=True)    # HF commit/tag; NULL for ollama
     homepage_url     = Column(String, nullable=True)    # model-card link for the dashboard
     org_id           = Column(String, ForeignKey("organizations.id"), nullable=True)  # NULL = public
-    status           = Column(String, default="active")  # active | requested | deprecated
+    # active | requested | deprecated | unverified. `unverified` = adopted
+    # from a worker's quarantined hash: selectable and schedulable like
+    # active, but provenance (upstream/lineage) is unconfirmed.
+    status           = Column(String, default="active")
     enabled          = Column(Boolean, default=True)
     created_at       = Column(Integer, default=unix_now)
+
+    # How the entry came to exist: NULL = seeded from the manifest,
+    # 'auto' = auto-adopt pass (registry-confirmed worker hash), else the
+    # id of the admin who adopted it. Lets the Models tab list auto entries
+    # for review without overloading `source_type` (which is provenance).
+    adopted_by       = Column(String, nullable=True)
+
+    SELECTABLE_STATUSES = ("active", "unverified")
+
+    profiles = relationship(
+        "ServingProfile", back_populates="entry",
+        cascade="all, delete-orphan",
+    )
+    artifact_files = relationship(
+        "CatalogArtifactFile", back_populates="entry",
+        cascade="all, delete-orphan",
+    )
+
+    def serving_targets(self) -> list:
+        """(runtime, runtime_model_id) pairs this entry can be served as.
+
+        Serving profiles are the source of truth; entries whose profiles have
+        not been seeded yet fall back to the legacy columns, so mixed states
+        keep scheduling. A profile's `runtime_model_ids` are extra names the
+        same artifact answers to (e.g. vLLM --served-model-name aliases on
+        different boxes) — each expands to its own target.
+        """
+        if self.profiles:
+            targets = []
+            for p in self.profiles:
+                targets.append((p.runtime, p.runtime_model_id))
+                targets.extend((p.runtime, extra) for extra in (p.runtime_model_ids or []))
+            return targets
+        return [(self.runtime, self.runtime_model_id)]
+
+
+class ServingProfile(Base):
+    """How one catalogue artifact is served by one runtime.
+
+    The registry entry (`ModelCatalog`) pins WHAT the artifact is; a profile
+    binds it to a runtime plus that runtime's launch knobs (`params`, e.g.
+    llama.cpp `n_ctx`/`parallel`, vLLM `max_model_len`/`gpu_mem_util`).
+    Launch knobs are per-deployment and platform-owned — per-request
+    sampling params still travel in each batch row's `body`, untouched.
+    One entry may carry several profiles; adding a runtime is a new row
+    here, never a registry change.
+    """
+    __tablename__ = "serving_profiles"
+    __table_args__ = (
+        UniqueConstraint("catalog_id", "runtime"),
+    )
+
+    id         = Column(String, primary_key=True, default=generate_profile_id)
+    catalog_id = Column(
+        String, ForeignKey("model_catalog.id", ondelete="CASCADE"), nullable=False,
+    )
+    runtime          = Column(String, nullable=False)  # ollama | vllm | llamacpp
+    runtime_model_id = Column(String, nullable=False)  # exact id this runtime expects
+    runtime_model_ids = Column(JSON, nullable=True)    # extra names the artifact answers to (vLLM aliases)
+    params           = Column(JSON, nullable=True)     # server-launch knobs
+    created_at = Column(Integer, default=unix_now)
+    updated_at = Column(Integer, default=unix_now)
+
+    entry = relationship("ModelCatalog", back_populates="profiles")
+
+
+class CatalogArtifactFile(Base):
+    """One file of a catalogue artifact, with its own hash.
+
+    `ModelCatalog.digest` pins only the weights file; a vision GGUF is two
+    files (weights + mmproj projector) and a safetensors model is many
+    shards. Provisioning downloads and verifies every row here before an
+    assignment counts as present — "artifact present" means complete, not
+    just weights. Single-file entries may skip this table (digest suffices).
+    """
+    __tablename__ = "catalog_artifact_files"
+    __table_args__ = (
+        UniqueConstraint("catalog_id", "file"),
+    )
+
+    id         = Column(String, primary_key=True, default=generate_artifact_file_id)
+    catalog_id = Column(
+        String, ForeignKey("model_catalog.id", ondelete="CASCADE"), nullable=False,
+    )
+    file       = Column(String, nullable=False)      # filename within the source repo
+    role       = Column(String, nullable=False, default="weights")  # weights | mmproj | shard
+    sha256     = Column(String, nullable=True)
+    size_bytes = Column(BigInteger, nullable=True)
+    created_at = Column(Integer, default=unix_now)
+
+    entry = relationship("ModelCatalog", back_populates="artifact_files")
 
 
 # ─── Files & Batches ────────────────────────────────────────

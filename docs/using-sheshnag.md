@@ -52,7 +52,7 @@ tells you **which models you may actually request** — see below.
 
 !!! warning "`body.model` must be a catalogue id, not a raw model name"
     Every line's `body.model` has to be one of the ids from `GET /v1/models`,
-    like `mistral-7b-instruct-q4-ollama` — not `mistral:7b` and not
+    like `mistral-7b-instruct-q4km` — not `mistral:7b` and not
     `gpt-4o-mini`. There is deliberately no path to run an uncatalogued model,
     and the id must be the **same on every line** of the file. A model that is
     not in the catalogue fails validation with `unsupported_model`.

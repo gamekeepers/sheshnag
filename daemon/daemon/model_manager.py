@@ -16,6 +16,16 @@ class ModelManager:
         self._client = client
         self._worker_id = worker_id
         self._available_models: Set[str] = set()
+
+    def update_worker_id(self, worker_id: str):
+        """Adopt the backend-assigned worker id after registration.
+
+        The constructor value is only the local placeholder — the
+        control plane assigns the real id at register time, after this
+        manager is built.
+        """
+        self._worker_id = worker_id
+
     
     async def refresh_models(self):
         """Refresh the list of locally available models."""

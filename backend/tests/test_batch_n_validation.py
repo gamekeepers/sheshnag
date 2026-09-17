@@ -28,7 +28,7 @@ from unittest.mock import patch, MagicMock
 # ---------------------------------------------------------------------------
 
 def _make_jsonl_row(custom_id: str, n=None, url="/v1/chat/completions",
-                    model="gemma3-12b-ollama") -> str:
+                    model="gemma3-12b-q4km") -> str:
     body = {
         "model": model,
         "messages": [{"role": "user", "content": "hello"}],

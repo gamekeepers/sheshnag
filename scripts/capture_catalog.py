@@ -2,11 +2,17 @@
 """
 Capture real digests + metadata for catalogue entries from a live Ollama.
 
-Digests are only knowable after a model is pulled. Run this on a reference
-box that has the models pulled; it queries Ollama and fills the catalogue
-manifest so seeded entries get a pinned digest (enabling the strict
-same-tag/different-digest reproducibility guard) plus quantization, size,
-parameter size, and context length.
+Run this on a reference box; it queries Ollama for metadata (quantization,
+size, parameter size, context length) and fills the catalogue manifest.
+
+`digest` is the artifact FILE's sha256 — the Ollama manifest's model-layer
+digest, which is what daemons report in their inventory and what the
+picker's reproducibility guard compares. It is read from the local
+manifests tree (--models-dir, auto-detected) and, for models not present
+locally, from registry.ollama.ai's manifest API — never from /api/tags,
+whose `digest` hashes the manifest file itself and matches nothing a worker
+reports. An entry whose file hash cannot be determined keeps digest: null
+(name matching) rather than a wrong pin.
 
 Two modes:
 
@@ -37,27 +43,82 @@ loads each model — needs GPU headroom; falls back to the estimate).
 Never removes entries; curation-by-omission is avoided by design.
 """
 import argparse
+import json
+import os
 import sys
+from pathlib import Path
 
 import httpx
 import yaml
+
+try:
+    from backend.identity_resolver import (
+        bare_digest, manifest_model_name, model_layer_digest, registry_file_digest,
+    )
+except ImportError:  # run as a plain file (python scripts/capture_catalog.py)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from backend.identity_resolver import (
+        bare_digest, manifest_model_name, model_layer_digest, registry_file_digest,
+    )
 
 
 def _bytes_to_gb(n):
     return round(n / (1024 ** 3), 2) if n else None
 
 
-def _bare_digest(d):
-    """Canonical stored form: bare lowercase hex, no `sha256:` prefix.
-    (The picker normalizes on read, but we keep the manifest consistent.)"""
-    if not d:
-        return None
-    d = str(d).strip().lower()
-    return d.split(":", 1)[1] if ":" in d else d
+# Digest / name helpers live in backend/identity_resolver.py — the same
+# lookup the auto-adopt pass uses to confirm quarantined hashes, so the two
+# cannot drift apart.
+_bare_digest = bare_digest
+_manifest_model_name = manifest_model_name
+_model_layer_digest = model_layer_digest
+
+
+def _resolve_models_dir(explicit):
+    for c in (explicit, os.environ.get("OLLAMA_MODELS"),
+              os.path.expanduser("~/.ollama/models"), "/usr/share/ollama/.ollama/models"):
+        if c and (Path(c) / "manifests").is_dir() and os.access(Path(c) / "manifests", os.R_OK):
+            return Path(c)
+    return None
+
+
+def fetch_local_file_digests(models_dir) -> dict:
+    """runtime_model_id -> file sha256 from the on-disk manifests tree."""
+    root = _resolve_models_dir(models_dir)
+    if root is None:
+        return {}
+    out = {}
+    manifests = root / "manifests"
+    for path in manifests.rglob("*"):
+        parts = path.relative_to(manifests).parts
+        if not path.is_file() or len(parts) != 4:
+            continue
+        try:
+            with open(path) as f:
+                digest = _model_layer_digest(json.load(f))
+        except (OSError, ValueError):
+            continue
+        if digest:
+            out[_manifest_model_name(*parts)] = digest
+    return out
+
+
+def fetch_registry_file_digest(runtime_model_id: str):
+    """File sha256 for a default-registry model via its manifest API — no
+    blob download. `library/` is assumed for bare names (`gemma3:12b`).
+    The lookup itself is `identity_resolver.registry_file_digest`; this
+    wrapper keeps the script's stdout narration."""
+    digest, reason = registry_file_digest(runtime_model_id)
+    if digest is None:
+        print(f"  {runtime_model_id}: {reason}")
+    return digest
 
 
 def fetch_tags(base_url: str) -> dict:
-    """runtime_model_id -> {digest, size, quantization, parameter_size} from /api/tags."""
+    """runtime_model_id -> {digest, size, quantization, parameter_size} from /api/tags.
+
+    `digest` here is /api/tags' MANIFEST digest and is replaced by the file
+    hash in main() before anything is written — see the module docstring."""
     r = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=10.0)
     r.raise_for_status()
     out = {}
@@ -138,11 +199,19 @@ def resolve_vram_gb(args, model: str, size_gb):
     return estimate_vram_gb(size_gb), "estimated"
 
 
-def _slug(rmid: str) -> str:
-    """Draft a catalogue id from a runtime model id, e.g. mistral:7b ->
-    mistral-7b-ollama. Human should tidy it before enabling."""
+def _slug(rmid: str, quantization: str = None) -> str:
+    """Draft a catalogue id from a runtime model id, e.g. mistral:7b +
+    Q4_K_M -> mistral-7b-q4km. Human should tidy it before enabling.
+
+    Naming rules (#116, enforced by catalog_seed): lowercase [a-z0-9-],
+    quant slug suffix, and never a runtime name — the id must survive a
+    runtime swap unchanged."""
+    import re
     base = rmid.replace(":", "-").replace("/", "-").replace(".", "-").lower()
-    return f"{base}-ollama"
+    if quantization:
+        quant = re.sub(r"[^a-z0-9]", "", str(quantization).lower())
+        return f"{base}-{quant}"
+    return base
 
 
 def _enrich(entries, tags, args) -> int:
@@ -179,9 +248,12 @@ def _enrich(entries, tags, args) -> int:
                 updates["vram_gb"] = vram
                 print(f"    vram_gb={vram} ({how} — verify)")
 
+        # `digest` is written even when None: an unresolvable file hash must
+        # CLEAR a stale (manifest-digest) pin, not preserve it forever.
+        clearable = {"digest"} if t.get("digest_resolved") else set()
         entry_changed = False
         for k, v in updates.items():
-            if v is not None and e.get(k) != v:
+            if (v is not None or k in clearable) and e.get(k) != v:
                 e[k] = v
                 entry_changed = True
         if entry_changed:
@@ -207,7 +279,7 @@ def _discover(entries, tags, args) -> int:
         ctx = fetch_context_length(args.ollama, rmid)
         vram, how = resolve_vram_gb(args, rmid, t["size_gb"])
         entries.append({
-            "id": _slug(rmid),
+            "id": _slug(rmid, t["quantization"]),
             "display_name": f"TODO: {rmid}",
             "runtime": "ollama",
             "runtime_model_id": rmid,
@@ -226,7 +298,7 @@ def _discover(entries, tags, args) -> int:
         })
         added += 1
         vnote = f"vram_gb={vram} ({how})" if vram is not None else "vram_gb=null"
-        print(f"  discovered {rmid} -> staged '{_slug(rmid)}' (enabled:false, {vnote} — verify)")
+        print(f"  discovered {rmid} -> staged '{_slug(rmid, t['quantization'])}' (enabled:false, {vnote} — verify)")
     return added
 
 
@@ -237,6 +309,11 @@ def main():
     ap.add_argument("--only", nargs="*", help="ENRICH: runtime_model_ids to capture (default: all ollama entries)")
     ap.add_argument("--discover", action="store_true",
                     help="Append staged stubs (enabled:false) for Ollama models not yet in the manifest")
+    ap.add_argument("--models-dir", default=None,
+                    help="Ollama models dir for file hashes (default: auto-detect $OLLAMA_MODELS, "
+                         "~/.ollama/models, /usr/share/ollama/.ollama/models)")
+    ap.add_argument("--no-registry", action="store_true",
+                    help="Do not fall back to registry.ollama.ai manifests for file hashes")
     ap.add_argument("--measure-vram", action="store_true",
                     help="Measure vram_gb by loading each model and reading /api/ps size_vram "
                          "(accurate but LOADS each model — needs GPU headroom; falls back to an "
@@ -247,6 +324,24 @@ def main():
         entries = yaml.safe_load(f) or []
 
     tags = fetch_tags(args.ollama)
+    # Swap /api/tags' manifest digest for the artifact FILE hash — the only
+    # digest a daemon's inventory will ever report. Unknown -> None, which
+    # _enrich WRITES (clearing any stale pin) rather than skipping: a wrong
+    # pin rejects every worker, an absent one merely name-matches.
+    # Only resolve what this run will touch (--only), so the registry
+    # fallback is not one serial 20s request per model on the box.
+    local = fetch_local_file_digests(args.models_dir)
+    wanted = set(args.only) if (args.only and not args.discover) else set(tags)
+    for name in wanted & set(tags):
+        t = tags[name]
+        digest = local.get(name)
+        if digest is None and not args.no_registry:
+            digest = fetch_registry_file_digest(name)
+        if digest is None:
+            print(f"  no file hash for {name}: digest will be cleared/unpinned (name matching) "
+                  f"— re-run with a readable --models-dir or registry access to pin it")
+        t["digest"] = digest
+        t["digest_resolved"] = True
     changed = _discover(entries, tags, args) if args.discover else _enrich(entries, tags, args)
 
     if changed:

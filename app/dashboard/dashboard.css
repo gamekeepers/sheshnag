@@ -840,6 +840,15 @@ td.mono {
   border: 1px solid var(--border);
   color: var(--dim);
 }
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+th.sortable:hover {
+  color: var(--accent);
+}
+
 .engine-tag {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 0.66rem;

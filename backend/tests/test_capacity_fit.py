@@ -19,9 +19,16 @@ from provider_picker import (
 )
 
 
-def _entry(vram_gb=8.0, runtime_model_id="m:latest", digest=None):
+def _entry(vram_gb=8.0, runtime_model_id="m:latest", digest=None, runtime="ollama"):
+    """A catalogue entry as the picker reads it.
+
+    `serving_targets()` is the real contract: an artifact answers to one id per
+    serving profile, so the picker matches on all of them rather than a single
+    column.
+    """
     return SimpleNamespace(
         vram_gb=vram_gb, runtime_model_id=runtime_model_id, digest=digest,
+        serving_targets=lambda: [(runtime, runtime_model_id)],
     )
 
 
@@ -32,7 +39,12 @@ def _worker(*, gpus=(), engine="ollama", models=("m:latest",),
         gpus=[SimpleNamespace(vram_gb=g) for g in gpus],
         runtimes=[SimpleNamespace(
             engine=engine,
-            models=[SimpleNamespace(name=m, digest=None) for m in models],
+            # Eligibility defaults: these tests are about capacity fit, so the
+            # runtime is up and the rows are not quarantined. The filters
+            # themselves are covered in test_worker_inventory.
+            schedulable=True,
+            models=[SimpleNamespace(name=m, digest=None, schedulable=True)
+                    for m in models],
         )],
         vram_total_gb=vram_total_gb,
         ram_total_gb=ram_total_gb,
@@ -111,8 +123,8 @@ def test_engine_is_taken_from_the_runtime_that_hosts_the_model():
     """
     worker = _worker(gpus=(4.0,), engine="vllm", models=("m:latest",))
     worker.runtimes.insert(0, SimpleNamespace(
-        engine="unknown-engine",
-        models=[SimpleNamespace(name="other:latest", digest=None)],
+        engine="unknown-engine", schedulable=True,
+        models=[SimpleNamespace(name="other:latest", digest=None, schedulable=True)],
     ))
 
     # Resolved to vllm (which hosts it), not the first runtime in the list.

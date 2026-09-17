@@ -62,19 +62,48 @@ class HardwareInfo(BaseModel):
     ram_gb: float = 0.0
     gpus: List[GPUInfo] = Field(default_factory=list)
 
+class WorkerRuntimeBundle(BaseModel):
+    """
+    What ONE runtime on this worker advertises at registration.
+
+    A daemon may drive several runtimes on one node (e.g. vLLM + Ollama);
+    the backend turns each bundle into its own worker_runtimes row, so
+    everything inside a bundle must belong to exactly that runtime.
+
+    Attributes:
+        runtime:        Runtime name ("ollama", "vllm").
+        models:         Model names this runtime serves.
+        model_digests:  name → digest (manifest-digest lineage).
+        inventory:      On-disk artifacts [{local_name, sha256, size_bytes,
+                        ...}] — artifact FILE hashes (registry identity).
+                        Empty when the runtime can't report at register time.
+    """
+
+    runtime: str
+    # "ready" only when the runtime answered its health check during startup.
+    # A runtime that never answered is advertised so its rows survive the
+    # backend's replace-all register, but says so rather than looking servable.
+    status: str = "ready"
+    models: List[str] = Field(default_factory=list)
+    model_digests: Dict[str, Any] = Field(default_factory=dict)
+    inventory: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 class WorkerInfo(BaseModel):
     """
     Worker registration payload sent to the control plane.
 
     Per spec §8, a worker must register with metadata before polling.
     This model captures the worker's identity, hardware capabilities,
-    and available models so the scheduler can make informed assignments.
+    and what each of its runtimes serves so the scheduler can make
+    informed assignments.
 
     Attributes:
         worker_id:   Unique identifier for this worker instance.
         hardware:    Hardware specifications of the worker.
-        models:      List of model names available on this worker.
-        runtime:     Inference runtime type (e.g., "ollama", "vllm").
+        runtimes:    One bundle per runtime this worker drives (ollama,
+                     vllm, ...). The backend creates one worker_runtimes
+                     row per bundle.
         status:      Current worker status ("online", "offline", "busy", "downloading_model").
 
     The owning organization is derived server-side from the org worker
@@ -84,9 +113,7 @@ class WorkerInfo(BaseModel):
 
     worker_id: str
     hardware: Optional[HardwareInfo] = None
-    models: List[str] = Field(default_factory=list)
-    model_digests: Dict[str, Any] = Field(default_factory=dict)  # name → digest
-    runtime: str = "ollama"
+    runtimes: List[WorkerRuntimeBundle] = Field(default_factory=list)
     status: str = "online"
 
 

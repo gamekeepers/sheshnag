@@ -24,6 +24,7 @@ class HeartbeatManager:
         interval: int = 30,
         get_loaded_models: Optional[Callable[[], Awaitable[List[str]]]] = None,
         get_loaded_model_digests: Optional[Callable[[], Awaitable[Dict]]] = None,
+        get_inventory: Optional[Callable[[], Awaitable[List[Dict]]]] = None,
         declared_vram_gb: float = 0.0,
     ):
         self._client = client
@@ -31,6 +32,7 @@ class HeartbeatManager:
         self._interval = interval
         self._get_loaded_models = get_loaded_models
         self._get_loaded_model_digests = get_loaded_model_digests
+        self._get_inventory = get_inventory
         self._declared_vram_gb = declared_vram_gb
         self._warned_zero_vram = False
         self._running = False
@@ -64,6 +66,15 @@ class HeartbeatManager:
         self._current_job_id = job_id
         self._progress = progress
 
+    def update_worker_id(self, worker_id: str):
+        """Adopt the backend-assigned worker id after registration.
+
+        The constructor value is only the local placeholder — the
+        control plane assigns the real id at register time, after this
+        manager is built.
+        """
+        self._worker_id = worker_id
+
     async def _loop(self):
         while self._running:
             try:
@@ -95,6 +106,16 @@ class HeartbeatManager:
         except Exception as e:
             logger.debug(f"Could not fetch model digests for heartbeat: {e}")
             return {}
+
+    async def _fetch_inventory(self) -> List[Dict]:
+        """Best-effort full on-disk inventory (artifact file hashes)."""
+        if self._get_inventory is None:
+            return []
+        try:
+            return list(await self._get_inventory())
+        except Exception as e:
+            logger.debug(f"Could not fetch inventory for heartbeat: {e}")
+            return []
 
     async def _build_payload(self):
         # Off the event loop: nvidia-smi is a subprocess with a hard
@@ -134,6 +155,18 @@ class HeartbeatManager:
         else:
             memory_used = min(memory_used, memory_total)
             memory_available = round(max(memory_total - memory_used, 0.0), 2)
+
+        loaded_models = await self._fetch_loaded_models()
+        loaded_set = set(loaded_models)
+        inventory = [
+            # The worker stamps each item with its own runtime's loaded
+            # state (a model live on one runtime is not loaded on
+            # another); keep it when present, fall back to the union for
+            # items that carry no flag.
+            dict(item, loaded=item.get("loaded") if item.get("loaded") is not None
+                 else item.get("local_name") in loaded_set)
+            for item in await self._fetch_inventory()
+        ]
         return {
             "worker_id": self._worker_id,
             # Activity (idle | busy | downloading_model) — distinct from the
@@ -146,8 +179,13 @@ class HeartbeatManager:
             "vram_total_gb": memory_total,
             "vram_available_gb": memory_available,
             "ram_available_gb": ram_available,
-            "loaded_models": await self._fetch_loaded_models(),
+            "loaded_models": loaded_models,
             "loaded_model_digests": await self._fetch_loaded_model_digests(),
+            # Full on-disk inventory with artifact file hashes — the
+            # registry's identity join. Resent whole every beat (10-100
+            # entries) so drift (a manual `ollama pull`) surfaces on the
+            # next beat. Kept alongside loaded_models for rolling upgrade.
+            "inventory": inventory,
             "uptime_seconds": int(time.time() - self._start_time),
             "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
