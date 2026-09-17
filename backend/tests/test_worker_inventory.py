@@ -157,3 +157,163 @@ def test_digest_mismatch_rejects_and_warns_once(caplog):
     # Matching digests, or a missing one on either side, still schedule.
     assert _hosts([("qwen3:4b", "b" * 64)], ["qwen3:4b"], "b" * 64)
     assert _hosts([("qwen3:4b", None)], ["qwen3:4b"], "b" * 64)
+
+
+# ── Multi-runtime workers (#134): one daemon, several runtimes ──────
+
+
+def _rows_by_runtime(db_session, worker_id):
+    """{engine: {model name: RuntimeModel}} — unlike _rows, keeps rows
+    separate when the same name is hosted by two runtimes."""
+    out = {}
+    for rt in db_session.query(WorkerRuntime).filter_by(worker_id=worker_id):
+        out[rt.engine] = {
+            m.name: m
+            for m in db_session.query(RuntimeModel).filter_by(runtime_id=rt.id)
+        }
+    return out
+
+
+def _mixed_registration(key, hostname, runtimes):
+    return {
+        "hostname": hostname,
+        "runtimes": [
+            {
+                "type": engine,
+                "endpoint": "localhost",
+                "models": models,
+                "model_digests": {},
+                "inventory": inventory,
+            }
+            for engine, models, inventory in runtimes
+        ],
+    }
+
+
+def test_register_mixed_worker_creates_row_per_runtime(auth_client, db_session):
+    """Each bundle in a multi-runtime registration becomes its own
+    worker_runtimes row; the same model name on two runtimes yields two
+    rows (one per runtime) with their own artifact hashes."""
+    key = _worker_key(auth_client, "Multi Org Reg")
+    payload = _mixed_registration(key, "mixed-box", [
+        ("vllm", ["vllm-only:7b"], [
+            {"local_name": "vllm-only:7b", "sha256": "c" * 64,
+             "size_bytes": 1, "loaded": True, "runtime": "vllm"},
+            {"local_name": "shared:1b", "sha256": "d" * 64,
+             "size_bytes": 2, "loaded": False, "runtime": "vllm"},
+        ]),
+        ("ollama", ["ollama-only:8b"], [
+            {"local_name": "ollama-only:8b", "sha256": "e" * 64,
+             "size_bytes": 3, "loaded": True, "runtime": "ollama"},
+            {"local_name": "shared:1b", "sha256": "f" * 64,
+             "size_bytes": 4, "loaded": False, "runtime": "ollama"},
+        ]),
+    ])
+    resp = auth_client.post(
+        "/workers/register", json=payload, headers={"Authorization": f"Bearer {key}"}
+    )
+    assert resp.status_code == 200, resp.text
+    worker_id = resp.json()["worker_id"]
+
+    rows = _rows_by_runtime(db_session, worker_id)
+    assert set(rows) == {"vllm", "ollama"}
+    assert set(rows["vllm"]) == {"vllm-only:7b", "shared:1b"}
+    assert set(rows["ollama"]) == {"ollama-only:8b", "shared:1b"}
+    # Per-runtime artifact identity: the shared name keeps its own hash
+    # under each runtime, and loaded state is per-runtime too.
+    assert rows["vllm"]["vllm-only:7b"].digest == "c" * 64
+    assert rows["vllm"]["vllm-only:7b"].loaded is True
+    assert rows["vllm"]["shared:1b"].digest == "d" * 64
+    assert rows["vllm"]["shared:1b"].loaded is False
+    assert rows["ollama"]["ollama-only:8b"].digest == "e" * 64
+    assert rows["ollama"]["shared:1b"].digest == "f" * 64
+
+
+def test_heartbeat_routes_loaded_model_by_runtime_tag(auth_client, db_session):
+    """A model the worker reports loaded but has no row for is filed under
+    the runtime its inventory tag names — not runtimes[0]. Without the tag
+    routing, the row would land under runtime #1 while reconciliation files
+    a SECOND row under runtime #2: duplicates, one per beat."""
+    key = _worker_key(auth_client, "Multi Org HB")
+    resp = auth_client.post(
+        "/workers/register",
+        json=_mixed_registration(key, "mixed-hb-box", [
+            ("vllm", ["vllm-only:7b"], []),
+            ("ollama", ["ollama-only:8b"], []),
+        ]),
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    worker_id = resp.json()["worker_id"]
+
+    def beat():
+        return auth_client.post(
+            f"/workers/{worker_id}/heartbeat",
+            json={
+                "worker_id": worker_id,
+                "activity": "idle",
+                "loaded_models": ["ollama-only:8b", "fresh-pull:1b"],
+                # A mixed node's beat carries the UNION inventory, tagged
+                # per runtime (the daemon's _get_inventory). Sending only
+                # one runtime's slice would mark the other's rows missing.
+                "inventory": [
+                    {"local_name": "vllm-only:7b", "size_bytes": 1,
+                     "loaded": False, "runtime": "vllm"},
+                    {"local_name": "ollama-only:8b", "size_bytes": 3,
+                     "loaded": True, "runtime": "ollama"},
+                    {"local_name": "fresh-pull:1b", "sha256": "g" * 64,
+                     "size_bytes": 5, "loaded": True, "runtime": "ollama"},
+                ],
+            },
+            headers={"Authorization": f"Bearer {key}"},
+        )
+
+    assert beat().status_code == 200
+    rows = _rows_by_runtime(db_session, worker_id)
+    assert "fresh-pull:1b" in rows["ollama"]
+    assert "fresh-pull:1b" not in rows["vllm"]
+    assert rows["ollama"]["fresh-pull:1b"].loaded is True
+    assert rows["ollama"]["fresh-pull:1b"].digest == "g" * 64
+    assert rows["ollama"]["ollama-only:8b"].loaded is True
+    assert rows["vllm"]["vllm-only:7b"].loaded is False
+
+    # A second identical beat must not duplicate the row.
+    assert beat().status_code == 200
+    rows = _rows_by_runtime(db_session, worker_id)
+    total = sum(1 for engine_rows in rows.values() if "fresh-pull:1b" in engine_rows)
+    assert total == 1
+
+
+def test_heartbeat_untagged_loaded_model_falls_back_to_first_runtime(auth_client, db_session):
+    """Legacy daemon: a loaded model with no inventory tag anywhere keeps
+    the pre-multi-runtime behavior — one row, filed under the first
+    runtime — and no duplicate rows on repeated beats."""
+    key = _worker_key(auth_client, "Multi Org Legacy")
+    resp = auth_client.post(
+        "/workers/register",
+        json=_mixed_registration(key, "mixed-legacy-box", [
+            ("vllm", ["vllm-only:7b"], []),
+            ("ollama", ["ollama-only:8b"], []),
+        ]),
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    worker_id = resp.json()["worker_id"]
+
+    for _ in range(2):
+        hb = auth_client.post(
+            f"/workers/{worker_id}/heartbeat",
+            json={
+                "worker_id": worker_id,
+                "activity": "idle",
+                "loaded_models": ["mystery:1b"],
+                "inventory": [],
+            },
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        assert hb.status_code == 200, hb.text
+
+    rows = _rows_by_runtime(db_session, worker_id)
+    hosts = [engine for engine, names in rows.items() if "mystery:1b" in names]
+    assert hosts == ["vllm"]          # first runtime registered
+    assert rows["vllm"]["mystery:1b"].loaded is True

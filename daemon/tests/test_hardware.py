@@ -16,7 +16,7 @@ import pytest
 
 from daemon import hardware
 from daemon.heartbeat import HeartbeatManager
-from daemon.models import GPUInfo, HardwareInfo, WorkerInfo
+from daemon.models import GPUInfo, HardwareInfo, WorkerInfo, WorkerRuntimeBundle
 
 # ══ Apple Silicon ═══════════════════════════════════════════════
 
@@ -354,7 +354,7 @@ async def test_registration_applies_declared_vram(monkeypatch, tmp_path):
 
     config = DaemonConfig(api_key="gk-x", vram_gb=16.0, gpu_name="Radeon RX 7900")
     manager = RegistrationManager(credentials_path=str(tmp_path / "creds"))
-    await manager.register(_Client(), config)
+    await manager.register(_Client(), config, [])
 
     assert seen["gpus"][0]["vram_gb"] == 16.0
     assert seen["gpus"][0]["vendor"] == "other"
@@ -645,7 +645,10 @@ def test_registration_payload_carries_vendor_and_rocm():
         GPUInfo(name="RTX 4090", vendor="nvidia", vram_gb=23.99,
                 driver_version="535.183.01", cuda_version="12.2", index=1),
     ])
-    info = WorkerInfo(worker_id="w", hardware=hw, models=["llama3:8b"])
+    info = WorkerInfo(
+        worker_id="w", hardware=hw,
+        runtimes=[WorkerRuntimeBundle(runtime="ollama", models=["llama3:8b"])],
+    )
 
     captured = {}
 

@@ -462,7 +462,7 @@ async def test_version_probe_not_repeated_for_every_prompt():
 @pytest.mark.asyncio
 async def test_failed_version_probe_is_retried_after_the_window():
     """The negative cache must not be permanent. The daemon is allowed to start
-    before Ollama is up (Worker._wait_for_executor retries for 60s and then
+    before Ollama is up (Worker.wait_for_runtimes retries for 60s and then
     proceeds anyway), so a latched failure would leave structured outputs dead
     for the life of the process while plain chat kept working."""
     server = {"up": False}

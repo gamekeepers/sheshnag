@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ── Worker ID Generation ─────────────────────────────────────────
@@ -56,7 +56,6 @@ _ENV_MAP: Dict[str, str] = {
     "api_key": "DAEMON_API_KEY",
     "gpu_name": "DAEMON_GPU_NAME",
     "vram_gb": "DAEMON_VRAM_GB",
-    "runtime": "DAEMON_RUNTIME",
     "inference_timeout": "DAEMON_INFERENCE_TIMEOUT",
     "heartbeat_interval": "DAEMON_HEARTBEAT_INTERVAL",
     "progress_interval_seconds": "DAEMON_PROGRESS_INTERVAL_SECONDS",
@@ -66,6 +65,37 @@ _ENV_MAP: Dict[str, str] = {
 # Fields that need type coercion from string env vars
 _INT_FIELDS = frozenset({"poll_interval", "heartbeat_interval", "max_concurrent_prompts"})
 _FLOAT_FIELDS = frozenset({"vram_gb", "inference_timeout", "progress_interval_seconds"})
+
+# Inference runtimes the daemon knows how to drive.
+_KNOWN_RUNTIMES = frozenset({"ollama", "vllm"})
+
+
+def _normalize_runtime(value: Any) -> List[str]:
+    """
+    Normalize a runtime entry into a de-duplicated, ordered list.
+
+    Accepts any of: "vllm", "vllm,ollama", ["vllm", "ollama"],
+    ["vllm,ollama"] — so YAML scalars, env strings, and CLI lists
+    all land on the same shape. Raises ValueError on empty input
+    so a mistyped DAEMON_RUNTIME fails at startup, not at first job.
+    """
+    if isinstance(value, str):
+        parts = [p.strip() for p in value.split(",")]
+    elif isinstance(value, (list, tuple)):
+        parts = [str(p).strip() for p in value]
+    else:
+        raise ValueError(
+            f"runtime must be a string or a list of strings, "
+            f"got {type(value).__name__}"
+        )
+
+    runtimes: List[str] = []
+    for part in parts:
+        if part and part not in runtimes:
+            runtimes.append(part)
+    if not runtimes:
+        raise ValueError("runtime is empty — set at least one of: " + ", ".join(sorted(_KNOWN_RUNTIMES)))
+    return runtimes
 
 
 def _read_env() -> Dict[str, Any]:
@@ -90,10 +120,15 @@ def _read_env() -> Dict[str, Any]:
         else:
             result[field_name] = value
 
-    # Special handling: DAEMON_MODELS is a comma-separated list
+    # Special handling: DAEMON_MODELS and DAEMON_RUNTIME are comma-separated
+    # lists (e.g. DAEMON_RUNTIME=vllm,ollama).
     models_env = os.getenv("DAEMON_MODELS")
     if models_env:
         result["models"] = [m.strip() for m in models_env.split(",") if m.strip()]
+
+    runtime_env = os.getenv("DAEMON_RUNTIME")
+    if runtime_env:
+        result["runtime"] = [r.strip() for r in runtime_env.split(",") if r.strip()]
 
     return result
 
@@ -122,7 +157,9 @@ class DaemonConfig(BaseModel):
         vram_gb:        Advertised GPU memory in GB. When > 0 it overrides
                         probing in both registration and every heartbeat.
         models:         List of model names available on this worker (spec §8).
-        runtime:        Inference runtime type — "ollama" (default) or "vllm" .
+        runtime:        Inference runtime(s) this daemon drives — "ollama"
+                        (default) and/or "vllm". A list (e.g. ["vllm", "ollama"])
+                        runs both on one worker.
         inference_timeout: Per-prompt inference timeout in seconds (any runtime).
         max_concurrent_prompts: Prompts executed concurrently per job.
     """
@@ -151,7 +188,12 @@ class DaemonConfig(BaseModel):
     gpu_name: str = "unknown"
     vram_gb: float = Field(default=0.0, ge=0, description="GPU VRAM in GB, must be >= 0")
     models: List[str] = Field(default_factory=list)
-    runtime: str = "ollama"
+    # Inference runtimes this daemon drives on one node, e.g.
+    # ["ollama"] (default) or ["vllm", "ollama"] for a mixed node.
+    runtime: List[str] = Field(
+        default_factory=lambda: ["ollama"],
+        description="Inference runtime(s) to drive: any of ollama, vllm",
+    )
 
     # ── Executor tuning ──────────────────────────────────────────
     inference_timeout: float = Field(default=300.0, gt=0, description="Per-prompt timeout in seconds, must be > 0")
@@ -165,6 +207,17 @@ class DaemonConfig(BaseModel):
     progress_interval_seconds: float = Field(
         default=5.0, gt=0, description="Minimum seconds between progress reporting roundtrips"
     )
+
+    @field_validator("runtime", mode="before")
+    @classmethod
+    def _validate_runtime(cls, value: Any) -> List[str]:
+        runtimes = _normalize_runtime(value)
+        unknown = [r for r in runtimes if r not in _KNOWN_RUNTIMES]
+        if unknown:
+            raise ValueError(
+                f"unknown runtime(s) {unknown} — known runtimes: {sorted(_KNOWN_RUNTIMES)}"
+            )
+        return runtimes
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> DaemonConfig:

@@ -3,10 +3,10 @@ import os
 import json
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from daemon.hardware import apply_declared_vram, detect_hardware
-from daemon.models import WorkerInfo
+from daemon.models import WorkerInfo, WorkerRuntimeBundle
 
 logger = logging.getLogger(__name__)
 
@@ -25,16 +25,16 @@ class RegistrationManager:
         self._credentials_path = Path(credentials_path)
         self._credentials_path.parent.mkdir(parents=True, exist_ok=True)
 
-    async def register(self, client, config, model_digests=None, inventory=None) -> str:
+    async def register(self, client, config, runtimes: List[WorkerRuntimeBundle]) -> str:
         """
         Register worker with the control plane, returning the assigned
         worker_id. Re-registering (same hostname + org) updates the
         worker's hardware/models on the backend.
 
-        `model_digests` (name → digest) is best-effort provenance for the
-        advertised models; empty when the runtime can't be queried.
-        `inventory` is the first full on-disk artifact list (file hashes),
-        so availability rows are born identity-carrying — see #116.
+        `runtimes` is one bundle per runtime this worker drives (models,
+        digests, on-disk inventory scoped to that runtime). The backend
+        creates one worker_runtimes row per bundle — a mixed worker
+        advertises all of them in a single registration.
         """
         logger.info("Detecting hardware for registration...")
         hardware = await asyncio.to_thread(detect_hardware)
@@ -48,10 +48,7 @@ class RegistrationManager:
         worker_info = WorkerInfo(
             worker_id=config.worker_id,
             hardware=hardware,
-            models=config.models,
-            model_digests=model_digests or {},
-            inventory=inventory or [],
-            runtime=config.runtime,
+            runtimes=runtimes,
             status="online"
         )
 

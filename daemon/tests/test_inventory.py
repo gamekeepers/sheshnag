@@ -60,6 +60,7 @@ async def test_ollama_inventory_reads_model_layer_hash(tmp_path):
         "sha256": WEIGHTS_SHA,
         "size_bytes": 2497280256,
         "details": None,
+        "runtime": "ollama",
     }]
 
 
@@ -120,7 +121,8 @@ async def test_ollama_inventory_falls_back_to_tags(tmp_path, monkeypatch):
     items = await ex.inventory()
     assert items == [{"local_name": "qwen3:4b", "sha256": None, "size_bytes": None,
                       "details": {"quantization": "Q4_K_M", "parameter_size": "4.0B",
-                                  "family": "qwen3", "context_length": 40960}}]
+                                  "family": "qwen3", "context_length": 40960},
+                      "runtime": "ollama"}]
 
 
 def _async(value):

@@ -70,6 +70,22 @@ class BaseExecutor(ABC):
     #: prompt. Ollama overrides this; see OllamaExecutor.
     embedding_chunk_size: int = 1
 
+    #: The runtime this executor drives ("ollama", "vllm", ...). The worker
+    #: may drive several runtimes on one node, and the control plane splits
+    #: an inventory report by this tag — so every item an executor reports
+    #: must be tagged (see tag_inventory).
+    runtime_name: str = ""
+
+    def tag_inventory(self, items: List[dict]) -> List[dict]:
+        """Return `items` with this executor's `runtime_name` attached.
+
+        Shallow copies — the tagged list never aliases the executor's
+        internal item dicts.
+        """
+        if not self.runtime_name:
+            return items
+        return [dict(item, runtime=self.runtime_name) for item in items]
+
     def can_coalesce_embedding(self, prompt: PromptRequest) -> bool:
         """Whether this row may share a request with other embedding rows.
 

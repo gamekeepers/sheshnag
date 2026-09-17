@@ -110,7 +110,7 @@ def make_prompts(
 
 def _worker(executor, client, **cfg):
     config = DaemonConfig(**cfg)
-    worker = Worker(config, client, executor)
+    worker = Worker(config, client, {"ollama": executor})
     worker._running = True
     return worker
 

@@ -147,7 +147,12 @@ class HeartbeatManager:
         loaded_models = await self._fetch_loaded_models()
         loaded_set = set(loaded_models)
         inventory = [
-            dict(item, loaded=item.get("local_name") in loaded_set)
+            # The worker stamps each item with its own runtime's loaded
+            # state (a model live on one runtime is not loaded on
+            # another); keep it when present, fall back to the union for
+            # items that carry no flag.
+            dict(item, loaded=item.get("loaded") if item.get("loaded") is not None
+                 else item.get("local_name") in loaded_set)
             for item in await self._fetch_inventory()
         ]
         return {

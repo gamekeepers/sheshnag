@@ -86,6 +86,7 @@ class OllamaExecutor(BaseExecutor):
     
     #: Ollama's /api/embed accepts a list of inputs in one request.
     embedding_chunk_size: int = 64
+    runtime_name: str = "ollama"
 
     def __init__(
         self,
@@ -633,7 +634,7 @@ class OllamaExecutor(BaseExecutor):
                      "_tag_digest": m.get("digest")}
                     for m in tags
                 ]
-            return await self._attach_details(items, tags)
+            return self.tag_inventory(await self._attach_details(items, tags))
         except Exception as exc:
             logger.warning(f"Ollama inventory failed: {exc}")
             return []

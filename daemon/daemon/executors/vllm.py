@@ -40,6 +40,8 @@ class VLLMExecutor(BaseExecutor):
                            health_check() will verify these models are loaded in vLLM.
     """
 
+    runtime_name: str = "vllm"
+
     def __init__(
         self,
         base_url: str,
@@ -317,9 +319,33 @@ class VLLMExecutor(BaseExecutor):
                             "local_name": name, "sha256": None, "size_bytes": None,
                             **identity,
                         })
-            return items
+            return self.tag_inventory(items)
         except Exception as exc:
             logger.warning(f"vLLM inventory failed: {exc}")
+            return []
+
+    async def list_models(self) -> List[str]:
+        """Names this server serves — the same names inventory() reports
+        (served id + root of each non-adapter entry).
+
+        Feeds the worker's model→runtime routing map so a job naming any
+        of these lands on vLLM even on a multi-runtime worker. Never
+        raises — an empty list just means "no names known right now".
+        """
+        try:
+            client = self._get_client()
+            resp = await client.get("/v1/models", timeout=10.0)
+            resp.raise_for_status()
+            names: List[str] = []
+            for m in resp.json().get("data", []):
+                if m.get("parent"):
+                    continue  # adapter — not a standalone served model
+                for name in (m.get("id"), m.get("root")):
+                    if name and name not in names:
+                        names.append(name)
+            return names
+        except Exception as exc:
+            logger.error(f"Failed to list vLLM models: {exc}")
             return []
 
     async def close(self) -> None:

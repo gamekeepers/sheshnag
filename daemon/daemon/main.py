@@ -27,12 +27,15 @@ import argparse
 import asyncio
 import sys
 
+from typing import Any, Dict, List
+
 from daemon import __version__
 from daemon.client import BackendClient
 from daemon.config import DaemonConfig
-from daemon.executor_factory import create_executor
+from daemon.executors.base import BaseExecutor
+from daemon.executor_factory import create_executors
 from daemon.log import get_logger, setup_logging
-from daemon.models import WorkerInfo
+from daemon.models import WorkerRuntimeBundle
 from daemon.registration import RegistrationManager
 from daemon.worker import Worker
 
@@ -156,8 +159,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--runtime",
         type=str,
+        nargs="+",
         default=None,
-        help="Inference runtime type (default: ollama)",
+        help="Inference runtime(s) to drive, e.g. --runtime ollama --runtime vllm "
+             "or --runtime vllm ollama (default: ollama)",
     )
 
     # ── Executor tuning ──────────────────────────────────────────
@@ -210,18 +215,84 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
     return {k: v for k, v in mapping.items() if v is not None}
 
 
+async def _collect_runtime_bundles(
+    config: DaemonConfig,
+    executors: Dict[str, BaseExecutor],
+    ready: List[str],
+) -> List[WorkerRuntimeBundle]:
+    """One WorkerRuntimeBundle per runtime to advertise at registration.
+
+    `ready` is the set of runtimes that passed startup health checks.
+    When at least one is ready, only the ready ones are advertised — a
+    down runtime's models would just fail at dispatch time. When none
+    is ready (a cold node whose runtimes are still loading), advertise
+    everything: registering and waiting is the old behavior, and it is
+    better than registering nothing.
+    """
+    if ready:
+        targets = [name for name in executors if name in ready]
+    else:
+        targets = list(executors)
+
+    logger = get_logger(__name__)
+    bundles: List[WorkerRuntimeBundle] = []
+    for name in targets:
+        executor = executors[name]
+
+        # Best-effort provenance for the advertised models; empty when
+        # the runtime can't be queried (or can't report digests at all).
+        digests: Dict[str, Any] = {}
+        if hasattr(executor, "list_models_detailed"):
+            try:
+                digests = {
+                    m["name"]: m.get("digest")
+                    for m in await executor.list_models_detailed()
+                    if m.get("name")
+                }
+            except Exception as exc:
+                logger.debug(f"Could not collect digests from runtime '{name}': {exc}")
+
+        # First full on-disk inventory (artifact file hashes) — never
+        # raises, [] when the runtime or its models dir isn't reachable.
+        try:
+            inventory = await executor.inventory()
+        except Exception as exc:
+            logger.debug(f"Could not collect inventory from runtime '{name}': {exc}")
+            inventory = []
+
+        names = list(digests.keys())
+        if len(config.runtime) == 1:
+            # Single runtime: the static config.models list is
+            # unambiguous and was always advertised alongside the
+            # dynamic list — keep it, deduped.
+            names = list(dict.fromkeys(list(config.models) + names))
+        # Multi-runtime: config.models is a flat list with no runtime
+        # attribution, so it can't be split per bundle. The dynamic
+        # lists (tags / served models) carry the names instead; the
+        # backend unions them with each bundle's inventory names.
+
+        bundles.append(WorkerRuntimeBundle(
+            runtime=name,
+            models=names,
+            model_digests=digests,
+            inventory=inventory,
+        ))
+    return bundles
+
+
 async def _run(config: DaemonConfig) -> None:
     logger = get_logger(__name__)
     """
     Async entry point — wires up all components and starts the worker.
 
     Component creation follows Dependency Injection:
-        Config → Client + Executor → Worker
+        Config → Client + Executors → Worker
 
     Startup sequence:
-        1. Create components
-        2. Register worker with control plane (spec §8)
-        3. Start the poll-execute loop
+        1. Create components (one executor per configured runtime)
+        2. Wait for the runtimes to become healthy (concurrently)
+        3. Register the ready runtimes with the control plane (spec §8)
+        4. Start the poll-execute loop
     """
     # ── Resolve the org worker API key  ───────────
     # The key is created in the platform dashboard and is a required
@@ -246,30 +317,25 @@ async def _run(config: DaemonConfig) -> None:
         worker_id=config.worker_id,
         api_key=api_key,
     )
-    # Executor built before registration so we can advertise per-model
-    # digests (the reproducibility pins) at register time, not only via
-    # heartbeats. Best-effort — empty if the runtime isn't reachable yet.
-    executor = create_executor(config)
-    model_digests = {}
-    if hasattr(executor, "list_models_detailed"):
-        try:
-            model_digests = {
-                m["name"]: m.get("digest")
-                for m in await executor.list_models_detailed()
-                if m.get("name")
-            }
-        except Exception as exc:
-            logger.debug(f"Could not query model digests at registration: {exc}")
-    # First full on-disk inventory (artifact file hashes) — never raises,
-    # [] when the runtime or its models dir isn't reachable yet.
-    inventory = [
-        dict(item, runtime=config.runtime)
-        for item in await executor.inventory()
-    ]
+    # One executor per configured runtime, built before registration so
+    # we can advertise per-runtime models/digests/inventory at register
+    # time, not only via heartbeats.
+    executors = create_executors(config)
+    worker = Worker(
+        config=config,
+        client=client,
+        executors=executors,
+    )
+
+    # ── Wait for the runtimes to be ready ─────────────────────────
+    # Concurrently, 60s max per runtime. Down runtimes are not fatal —
+    # registration below decides what to advertise.
+    ready = await worker.wait_for_runtimes()
 
     # ── Register with platform ───────────────────────────────────
+    bundles = await _collect_runtime_bundles(config, executors, ready)
     try:
-        assigned_worker_id = await reg_manager.register(client, config, model_digests, inventory)
+        assigned_worker_id = await reg_manager.register(client, config, bundles)
         config.worker_id = assigned_worker_id
         client.update_worker_id(assigned_worker_id)
         logger.info(f"Worker registered: {assigned_worker_id}")
@@ -285,13 +351,6 @@ async def _run(config: DaemonConfig) -> None:
             f"Continuing as previously registered worker "
             f"'{saved_worker_id}' despite registration failure."
         )
-
-    # ── Worker (executor already built above) ────────────────────
-    worker = Worker(
-        config=config,
-        client=client,
-        executor=executor,
-    )
 
     # ── Run ──────────────────────────────────────────────────────
     try:
@@ -333,7 +392,7 @@ def main() -> None:
     logger.info(f"  Work dir:      {config.work_dir}")
     logger.info(f"  Auth:          {auth_status}")
     logger.info(f"  Models:        {models_str}")
-    logger.info(f"  Runtime:       {config.runtime}")
+    logger.info(f"  Runtimes:      {', '.join(config.runtime)}")
     logger.info(f"  Concurrency:   {config.max_concurrent_prompts}")
     logger.info(f"{'='*60}")
 

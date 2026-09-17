@@ -669,7 +669,14 @@ export default function ProviderPage() {
                     ))}
                     {(worker.gpus || []).length === 0 && <div>No GPU detected</div>}
                     {(worker.runtimes || []).length > 0 && (
-                      <div className="engine-tag">Engine: {worker.runtimes[0].type}</div>
+                      /* One tag per runtime — a mixed node drives several
+                         (e.g. vLLM + Ollama), and showing only the first
+                         hid the rest. */
+                      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                        {worker.runtimes.map((rt, idx) => (
+                          <div className="engine-tag" key={idx}>Engine: {rt.type}</div>
+                        ))}
+                      </div>
                     )}
                   </div>
                   <div className="worker-models">

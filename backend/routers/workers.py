@@ -232,12 +232,35 @@ def worker_heartbeat(
     # Old daemons report no hash here, so classify() leaves it name-matched
     # (the picker still requires a catalogue entry for the name); the hashed
     # inventory path below is where quarantine/drift decisions happen.
-    # The daemon runs a single runtime, so attach to the first one.
+    #
+    # Which runtime does the row belong to? A single-runtime worker has
+    # no choice. A mixed worker must route by the runtime tag the daemon
+    # puts on the same beat's inventory — attaching to runtimes[0] would
+    # file a model loaded on runtime #2 under runtime #1, and the
+    # reconciliation below (which routes by that same tag) would then add
+    # a SECOND row for it under runtime #2: duplicate rows, one per beat
+    # until the tag lookup "catches up". No tag (legacy daemon, or the
+    # runtime that serves it reported no inventory) falls back to the
+    # first runtime, as before.
     missing = reported - known
     if missing and worker.runtimes:
+        inventory_runtime = {
+            item.local_name: item.runtime
+            for item in (req.inventory or [])
+            if getattr(item, "runtime", None)
+        }
         for name in missing:
+            target = worker.runtimes[0]
+            if len(worker.runtimes) > 1:
+                engine = inventory_runtime.get(name)
+                tagged = next(
+                    (r for r in worker.runtimes if r.engine == engine),
+                    None,
+                ) if engine else None
+                if tagged is not None:
+                    target = tagged
             status, catalog_id = classify(db, name, None)
-            worker.runtimes[0].models.append(
+            target.models.append(
                 RuntimeModel(
                     name=name, runtime_model_id=name, loaded=True,
                     status=status, catalog_id=catalog_id,
