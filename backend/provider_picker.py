@@ -98,6 +98,24 @@ def _target_ids(entry) -> list:
     return [rmid for _runtime, rmid in entry.serving_targets()]
 
 
+def _prefer_bare(names) -> str:
+    """First of `names`, or its first bare (no '/') name.
+
+    A vLLM box restarted under --served-model-name advertises the alias AND
+    the repo id (daemon/executors/vllm.py reports both rows), and vLLM
+    answers only to the alias — paths are never valid body.model values, the
+    same rule `_pick_served_alias` applies at adoption (catalog_service.py).
+    The repo row predates the alias row, so DB row order alone would keep
+    dispatching the repo id (404) after a `--served-model-name` upgrade.
+    A box served without an alias advertises the single id==root name, and
+    Ollama names carry no '/', so the preference changes nothing for them.
+    """
+    for name in names:
+        if name and "/" not in name:
+            return name
+    return names[0]
+
+
 def resolve_runtime_model_id(entry, worker_models) -> str:
     """The runtime_model_id to hand THIS worker for `entry` at dispatch.
 
@@ -112,21 +130,29 @@ def resolve_runtime_model_id(entry, worker_models) -> str:
     3. the legacy column (entry with no profiles yet, or the pre-heartbeat
        worker whose model list is empty: the daemon resolves its own
        runtime's id there).
+
+    Within 1 and 2, `_prefer_bare` decides when the worker advertises both a
+    repo id and the alias it is served under: only the alias reaches vLLM.
     """
     if entry is None:
         return None
     cat = _norm_digest(entry.digest)
     ids = set(rmid for _runtime, rmid in entry.serving_targets())
+    profiled = []
     for name, digest in worker_models:
         if name not in ids:
             continue
         wd = _norm_digest(digest)
-        if not (cat and wd and cat != wd):
-            return name
+        if cat and wd and cat != wd:
+            continue  # same name, different artifact
+        profiled.append(name)
+    if profiled:
+        return _prefer_bare(profiled)
     if cat:
-        for name, digest in worker_models:
-            if _norm_digest(digest) == cat:
-                return name
+        exact = [name for name, digest in worker_models
+                 if _norm_digest(digest) == cat]
+        if exact:
+            return _prefer_bare(exact)
     return entry.runtime_model_id
 
 

@@ -246,6 +246,35 @@ def test_picker_digest_join_for_unprofiled_alias(auth_client, db):
     assert can_serve(e, [("alpha", None)], 16)          # old daemon: name fallback
 
 
+def test_dispatch_sends_served_alias_not_repo_id(db):
+    """A box restarted under --served-model-name advertises alias AND repo
+    id; vLLM answers only to the alias. The repo row predates the alias row
+    (DB order), so dispatch must not let row order pick it — and the
+    same-tag-different-digest guard must still reject a stale alias."""
+    e = ModelCatalog(id="zzauto-dispatch-bf16", display_name="Dispatch", runtime="vllm",
+                     runtime_model_id="zzauto/Model", digest=MSHARD, vram_gb=1.0,
+                     enabled=True, status="active")
+    db.add(e)
+    db.flush()
+    # Post-self-heal state: the profile answers to the repo id AND the alias.
+    db.add(ServingProfile(catalog_id=e.id, runtime="vllm", runtime_model_id="zzauto/Model",
+                          runtime_model_ids=["beta-alias"]))
+    db.commit()
+    # Repo row first, as when the box registered without an alias and the
+    # operator later added --served-model-name beta-alias.
+    rows = [("zzauto/Model", MSHARD), ("beta-alias", MSHARD)]
+    assert resolve_runtime_model_id(e, rows) == "beta-alias"
+    # ...and not a coin flip: reversed row order dispatches the same name.
+    assert resolve_runtime_model_id(e, list(reversed(rows))) == "beta-alias"
+    # A stale alias (same tag, different artifact) stays rejected — the
+    # digest guard wins over the bare-name preference.
+    stale = "aa" * 32
+    assert resolve_runtime_model_id(e, [("zzauto/Model", MSHARD), ("beta-alias", stale)]) \
+        == "zzauto/Model"
+    # A box served WITHOUT an alias advertises the single repo id — unchanged.
+    assert resolve_runtime_model_id(e, [("zzauto/Model", MSHARD)]) == "zzauto/Model"
+
+
 def test_heartbeat_extends_profile_with_new_alias(auth_client, db):
     """A box that reports the pinned hash under an unprofiled alias extends
     the entry's profile for its own runtime — and only for that runtime: a
