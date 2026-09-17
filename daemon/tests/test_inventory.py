@@ -1,6 +1,8 @@
 """On-disk inventory reporting (#116): manifest-layer file hashes, name
 derivation, the /api/tags fallback, and the heartbeat payload."""
 import json
+import os
+import time
 
 import httpx
 import pytest
@@ -505,6 +507,91 @@ async def test_vllm_standalone_adapter_reports_no_identity(tmp_path):
     assert item["sha256"] is None and item["files"] is None
     assert item["details"].get("family") is None
     assert item["details"]["source_ref"] == "acme/finance-lora"
+
+
+# ─── vLLM: local paths, dangling blobs, identity cache ───────
+
+def test_local_dir_named_like_repo_id_is_never_public(tmp_path):
+    """The daemon's CWD holds ./Qwen/Qwen2.5-7B-Instruct/ — a local AWQ
+    quant vLLM loads by path. Before the fix its name matched _REPO_ID, so
+    identity was read from the PUBLIC cache snapshot: the public bf16's
+    hashes adopted for different bytes. A real directory is a local
+    checkout — no public identity — unless it IS a cache snapshot."""
+    hub, _ = _hub_cache(tmp_path)
+    local = tmp_path / "Qwen" / "Qwen2.5-7B-Instruct"
+    local.mkdir(parents=True)
+    assert hf_cache.locate(hub, str(local)) is None
+    # A bare repo id (not a directory) still resolves through the cache.
+    assert hf_cache.locate(hub, "Org/Name") is not None
+    # ...and a repo-id-named dir that IS a cache snapshot still maps back.
+    hub2, snap2 = _hub_cache(tmp_path / "h2")
+    assert hf_cache.locate(hub2, str(snap2)) is not None
+
+
+@pytest.mark.asyncio
+async def test_dangling_blobs_carry_no_identity(tmp_path):
+    """After `hf cache gc` the symlinks survive but the blobs are gone.
+    _blob_sha256 still reads the link NAME, so describe() lists files with
+    a sha but a failed stat; _identify must require the blob to be intact,
+    so all-blobs-gone falls back to hash-less (name-matched)."""
+    hub, _ = _hub_cache(tmp_path)
+    for b in (hub / "models--Org--Name" / "blobs").iterdir():
+        b.unlink()
+    ex = VLLMExecutor(base_url="http://vllm.test", hf_hub_cache=str(hub))
+    ex._client = _vllm_client([{"id": "served-alias", "root": "Org/Name"}])
+    for item in await ex.inventory():
+        assert item["sha256"] is None and item["files"] is None
+
+
+@pytest.mark.asyncio
+async def test_identity_describe_cached_per_snapshot_mtime(tmp_path, monkeypatch):
+    """Steady-state heartbeat: the mtime cache makes the second beat a
+    single stat — describe() (all symlinks + config + full index) runs
+    exactly once across both beats."""
+    hub, _ = _hub_cache(tmp_path)
+    ex = VLLMExecutor(base_url="http://vllm.test", hf_hub_cache=str(hub))
+    ex._client = _vllm_client([{"id": "served-alias", "root": "Org/Name"}])
+    calls, real = [], hf_cache.describe
+    monkeypatch.setattr(hf_cache, "describe", lambda s: (calls.append(s), real(s))[1])
+    await ex.inventory()
+    await ex.inventory()
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_identity_cache_invalidates_on_mtime_change(tmp_path, monkeypatch):
+    """A new snapshot landing (files added) bumps the dir mtime, so the
+    cache misses and describe() runs again."""
+    hub, snap = _hub_cache(tmp_path)
+    ex = VLLMExecutor(base_url="http://vllm.test", hf_hub_cache=str(hub))
+    ex._client = _vllm_client([{"id": "served-alias", "root": "Org/Name"}])
+    calls, real = [], hf_cache.describe
+    monkeypatch.setattr(hf_cache, "describe", lambda s: (calls.append(s), real(s))[1])
+    await ex.inventory()
+    assert len(calls) == 1
+    os.utime(snap, (time.time() + 10, time.time() + 10))
+    await ex.inventory()
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_inventory_identifies_each_distinct_root_once(tmp_path):
+    """Three cards sharing one root (served alias + repo id + another
+    alias) identify the snapshot once, and every row carries the same
+    identity."""
+    hub, _ = _hub_cache(tmp_path)
+    ex = VLLMExecutor(base_url="http://vllm.test", hf_hub_cache=str(hub))
+    ex._client = _vllm_client([
+        {"id": "alias-a", "root": "Org/Name"},
+        {"id": "Org/Name", "root": "Org/Name"},
+        {"id": "alias-b", "root": "Org/Name"},
+    ])
+    calls, real = [], ex._identify
+    ex._identify = lambda root: (calls.append(root), real(root))[1]
+    items = await ex.inventory()
+    assert calls == ["Org/Name"]
+    assert {i["local_name"] for i in items} == {"alias-a", "Org/Name", "alias-b"}
+    assert all(i["sha256"] == SHARD1 for i in items)
 
 
 # ─── hf_cache.snapshot_for: revision choice ──────────────────

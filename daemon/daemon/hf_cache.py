@@ -81,23 +81,29 @@ def locate(cache: Optional[Path], root: str) -> Optional[tuple]:
     """(repo_id, revision, snapshot_path) for what vLLM reports as `root`.
 
     `root` is either an HF repo id (`Org/Name` — the usual `vllm serve`
-    argument) or a filesystem path. A path inside the cache's
-    `snapshots/<rev>/` is mapped back to its repo; any other path is a
-    local model with no public identity -> None.
+    argument) or a filesystem path. The PATH is checked first: a real
+    directory is a local checkout and never gets a public identity — a
+    relative `Org/Name` dir in the CWD must not be read as the PUBLIC
+    `Org/Name` cache snapshot, which serves different bytes. Only a
+    directory that IS a cache snapshot (`snapshots/<rev>/`) maps back to
+    its repo. Only a non-directory string may then be tried as a cached
+    repo id; anything else is a local model with no public identity ->
+    None.
     """
     if not root:
         return None
-    if _REPO_ID.match(root) and cache is not None:
-        found = snapshot_for(cache / repo_dir_name(root))
-        return (root, found[0], found[1]) if found else None
     p = Path(root)
-    if p.is_absolute() and p.is_dir():
-        # .../models--Org--Name/snapshots/<rev>[/...]
+    if p.is_dir():                                   # local checkout: no public identity
+        # ...unless it IS a cache snapshot: .../models--Org--Name/snapshots/<rev>[/...]
         for parent in [p] + list(p.parents):
             if parent.parent.name == "snapshots":
                 repo_id = repo_id_from_dir_name(parent.parent.parent.name)
                 if repo_id:
                     return repo_id, parent.name, parent
+        return None
+    if _REPO_ID.match(root) and cache is not None:   # only then: a cached repo id
+        found = snapshot_for(cache / repo_dir_name(root))
+        return (root, found[0], found[1]) if found else None
     return None
 
 
