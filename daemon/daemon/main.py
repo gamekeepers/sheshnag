@@ -27,7 +27,7 @@ import argparse
 import asyncio
 import sys
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from daemon import __version__
 from daemon.client import BackendClient
@@ -230,6 +230,7 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
 async def _collect_runtime_bundles(
     config: DaemonConfig,
     executors: Dict[str, BaseExecutor],
+    ready: Optional[List[str]] = None,
 ) -> List[WorkerRuntimeBundle]:
     """One WorkerRuntimeBundle per configured runtime, unconditionally.
 
@@ -238,7 +239,12 @@ async def _collect_runtime_bundles(
     it (and every runtime_models row under it), and nothing re-registers
     a dropped runtime. A runtime that is still loading is advertised
     with whatever it can report — empty models/inventory when it can't
-    be queried — and heartbeats fill its row in once it recovers.
+    be queried — and heartbeats fill its row in once it recovers. It
+    carries status="unavailable", which is what keeps its models out of
+    dispatch — they stay in the catalogue, because a model on disk is a
+    real fact about this worker and survives the runtime being down.
+    ready=None means readiness was never established, and every runtime
+    keeps the default.
 
     On a mixed node the flat config.models list is split per bundle:
     each entry is advertised by the runtime that reports it in
@@ -268,7 +274,7 @@ async def _collect_runtime_bundles(
     bundles: List[WorkerRuntimeBundle] = []
     for name in targets:
         executor = executors[name]
-
+        status = "ready" if ready is None or name in ready else "unavailable"
         # Best-effort provenance for the advertised models; empty when
         # the runtime can't be queried (or can't report digests at all).
         digests: Dict[str, Any] = {}
@@ -307,6 +313,7 @@ async def _collect_runtime_bundles(
 
         bundles.append(WorkerRuntimeBundle(
             runtime=name,
+            status=status,
             models=names,
             model_digests=digests,
             inventory=inventory,
@@ -376,10 +383,10 @@ async def _run(config: DaemonConfig) -> None:
     # Concurrently, 60s max per runtime. Down runtimes are not fatal —
     # they are registered too, and heartbeats fill their rows in once
     # they recover.
-    await worker.wait_for_runtimes()
+    ready_runtimes = await worker.wait_for_runtimes()
 
     # ── Register with platform ───────────────────────────────────
-    bundles = await _collect_runtime_bundles(config, executors)
+    bundles = await _collect_runtime_bundles(config, executors, ready_runtimes)
     try:
         assigned_worker_id = await reg_manager.register(client, config, bundles)
         config.worker_id = assigned_worker_id

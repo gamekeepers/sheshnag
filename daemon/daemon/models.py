@@ -80,6 +80,10 @@ class WorkerRuntimeBundle(BaseModel):
     """
 
     runtime: str
+    # "ready" only when the runtime answered its health check during startup.
+    # A runtime that never answered is advertised so its rows survive the
+    # backend's replace-all register, but says so rather than looking servable.
+    status: str = "ready"
     models: List[str] = Field(default_factory=list)
     model_digests: Dict[str, Any] = Field(default_factory=dict)
     inventory: List[Dict[str, Any]] = Field(default_factory=list)

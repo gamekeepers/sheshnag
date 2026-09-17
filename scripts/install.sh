@@ -233,14 +233,25 @@ PY
   # otherwise still read and write one machine's worker id for both.
   {
     echo "backend_url: \"$BACKEND_URL\""
-    echo "api_key: \"$API_KEY\""
     [ -n "${WORKER_ID:-}" ] && echo "worker_id: \"$WORKER_ID\""
     echo "# runtime: ollama or vllm, or a list to drive both on one worker"
     echo "runtime: \"ollama\""
     echo "credentials_path: \"$DAEMON_DIR/credentials\""
     echo "work_dir: \"$DAEMON_DIR/jobs\""
   } > "$DAEMON_DIR/config.yaml"
-  chmod 600 "$DAEMON_DIR/config.yaml"   # contains the API key
+  chmod 600 "$DAEMON_DIR/config.yaml"
+
+  # The key goes in .env, which the unit already reads, and nowhere else.
+  # config.yaml is the file that gets pasted into an issue when a worker
+  # misbehaves; an env file is the one everything already treats as secret.
+  # Env beats YAML in config.py's layering, so an install over a config that
+  # still carries `api_key` is overridden rather than confused by it — but
+  # strip it anyway, or the stale copy takes over if .env is ever lost.
+  {
+    echo "# Written by install.sh. Read by the systemd unit's EnvironmentFile."
+    echo "DAEMON_API_KEY=$API_KEY"
+  } > "$DAEMON_DIR/.env"
+  chmod 600 "$DAEMON_DIR/.env"
 
   # The units refer to the install directory through %h wherever they can, so
   # keep expressing it relative to home. With the default directory this

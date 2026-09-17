@@ -329,6 +329,10 @@ class GpuInfo(BaseModel):
 class RuntimeInfo(BaseModel):
     type: str                   # "ollama", "vllm", etc.
     endpoint: str
+    # What the daemon verified at startup, not what it was configured to run.
+    # Older daemons omit it and default to "ready", which is what they meant:
+    # they only ever registered runtimes they had reached.
+    status: str = "ready"
     models: List[str] = []
     # Legacy name → /api/tags MANIFEST digest map. Accepted for wire
     # compatibility, ignored by the backend: it is not an artifact identity

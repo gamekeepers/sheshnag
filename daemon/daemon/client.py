@@ -155,6 +155,7 @@ class BackendClient:
             "runtimes": [
                 {
                     "type": bundle.runtime,
+                    "status": bundle.status,
                     "endpoint": "localhost",
                     "models": bundle.models,
                     "model_digests": bundle.model_digests,

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import confetti from 'canvas-confetti';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
@@ -237,6 +237,10 @@ export default function DashboardPage() {
   const [submitStatus, setSubmitStatus] = useState('');
   const [availableModels, setAvailableModels] = useState([]);
   const [modelCatalog, setModelCatalog] = useState([]);
+  const [modelQuery, setModelQuery] = useState('');
+  const [modelRuntime, setModelRuntime] = useState('all');
+  const [modelServableOnly, setModelServableOnly] = useState(false);
+  const [modelSort, setModelSort] = useState({ key: 'id', dir: 'asc' });
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [copiedModelId, setCopiedModelId] = useState(null);
 
@@ -1019,6 +1023,56 @@ export default function DashboardPage() {
   // sample never names a model this deployment cannot serve.
 
   const sampleModelId = modelCatalog[0]?.id || null;
+
+  // "32.8B" and "137M" sort as text with 137M above 32.8B, so compare the
+  // magnitude the suffix means. Anything unparseable sorts last in both
+  // directions rather than drifting to whichever end the comparator picks.
+  const modelMagnitude = (raw) => {
+    if (!raw) return null;
+    const m = String(raw).match(/^([\d.]+)\s*([KMBT])?/i);
+    if (!m) return null;
+    const scale = { K: 1e3, M: 1e6, B: 1e9, T: 1e12 }[(m[2] || '').toUpperCase()] || 1;
+    return parseFloat(m[1]) * scale;
+  };
+
+  const servableIds = useMemo(
+    () => new Set((poolCapacity?.models_servable || []).map(m => m.id)),
+    [poolCapacity]
+  );
+
+  const modelRuntimes = useMemo(
+    () => Array.from(new Set(modelCatalog.map(m => m.runtime).filter(Boolean))).sort(),
+    [modelCatalog]
+  );
+
+  const visibleModels = useMemo(() => {
+    const q = modelQuery.trim().toLowerCase();
+    const rows = modelCatalog.filter(m => {
+      if (modelRuntime !== 'all' && m.runtime !== modelRuntime) return false;
+      if (modelServableOnly && !servableIds.has(m.id)) return false;
+      if (!q) return true;
+      return `${m.id} ${m.display_name || ''}`.toLowerCase().includes(q);
+    });
+    const { key, dir } = modelSort;
+    const sign = dir === 'asc' ? 1 : -1;
+    const numeric = { parameter_size: modelMagnitude, context_length: Number, vram_gb: Number };
+    return [...rows].sort((a, b) => {
+      if (numeric[key]) {
+        const av = numeric[key](a[key]);
+        const bv = numeric[key](b[key]);
+        const aBad = av == null || Number.isNaN(av);
+        const bBad = bv == null || Number.isNaN(bv);
+        if (aBad || bBad) return aBad && bBad ? 0 : (aBad ? 1 : -1);  // missing last, both ways
+        return (av - bv) * sign;
+      }
+      return String(a[key] ?? '').localeCompare(String(b[key] ?? '')) * sign;
+    });
+  }, [modelCatalog, modelQuery, modelRuntime, modelServableOnly, modelSort, servableIds]);
+
+  const toggleModelSort = (key) => setModelSort(s =>
+    s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' });
+  const sortMark = (key) =>
+    modelSort.key === key ? (modelSort.dir === 'asc' ? ' ▲' : ' ▼') : '';
 
   const buildSampleJsonl = (modelId) => [
     'Summarise the causes of the 1973 oil crisis in two sentences.',
@@ -2043,21 +2097,47 @@ export default function DashboardPage() {
             </p>
 
             <div className="panel" style={{ padding: '0.5rem' }}>
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap',
+                            alignItems: 'center', padding: '0.5rem 0.4rem 0.75rem' }}>
+                <input
+                  className="search"
+                  type="search"
+                  placeholder="Filter by id or name…"
+                  value={modelQuery}
+                  onChange={e => setModelQuery(e.target.value)}
+                  style={{ flex: '1 1 16rem', minWidth: '12rem' }}
+                />
+                <select value={modelRuntime}
+                        onChange={e => setModelRuntime(e.target.value)}
+                        style={{ flex: '0 0 auto' }}>
+                  <option value="all">All runtimes</option>
+                  {modelRuntimes.map(r => <option key={r} value={r}>{r}</option>)}
+                </select>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+                       title="Hide models no online worker can currently serve">
+                  <input type="checkbox" checked={modelServableOnly}
+                         onChange={e => setModelServableOnly(e.target.checked)} />
+                  Servable now
+                </label>
+                <span className="dim" style={{ marginLeft: 'auto', fontSize: '0.8rem' }}>
+                  {visibleModels.length} of {modelCatalog.length}
+                </span>
+              </div>
               <div className="table-container">
                 <table>
                   <thead>
                     <tr>
-                      <th>ID</th>
-                      <th>Name</th>
-                      <th>Runtime</th>
-                      <th>Params</th>
-                      <th>Quantization</th>
-                      <th>Context</th>
-                      <th>VRAM</th>
+                      <th className="sortable" onClick={() => toggleModelSort('id')}>ID{sortMark('id')}</th>
+                      <th className="sortable" onClick={() => toggleModelSort('display_name')}>Name{sortMark('display_name')}</th>
+                      <th className="sortable" onClick={() => toggleModelSort('runtime')}>Runtime{sortMark('runtime')}</th>
+                      <th className="sortable" onClick={() => toggleModelSort('parameter_size')}>Params{sortMark('parameter_size')}</th>
+                      <th className="sortable" onClick={() => toggleModelSort('quantization')}>Quantization{sortMark('quantization')}</th>
+                      <th className="sortable" onClick={() => toggleModelSort('context_length')}>Context{sortMark('context_length')}</th>
+                      <th className="sortable" onClick={() => toggleModelSort('vram_gb')}>VRAM{sortMark('vram_gb')}</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {modelCatalog.map(m => (
+                    {visibleModels.map(m => (
                       <tr key={m.id}>
                         <td className="mono">
                           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -2080,9 +2160,13 @@ export default function DashboardPage() {
                         <td className="dim">{m.vram_gb ? `${m.vram_gb} GB` : '—'}</td>
                       </tr>
                     ))}
-                    {modelCatalog.length === 0 && (
+                    {visibleModels.length === 0 && (
                       <tr>
-                        <td colSpan={7} className="empty-hint">No models in the catalogue yet.</td>
+                        <td colSpan={7} className="empty-hint">
+                          {modelCatalog.length === 0
+                            ? 'No models in the catalogue yet.'
+                            : 'No model matches these filters.'}
+                        </td>
                       </tr>
                     )}
                   </tbody>

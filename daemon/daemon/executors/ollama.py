@@ -2,8 +2,10 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Optional, List, Callable, Awaitable
 
 import httpx
@@ -428,21 +430,34 @@ class OllamaExecutor(BaseExecutor):
 
     # ── On-disk inventory (registry identity) ─────────────────
 
+    def _is_local_server(self) -> bool:
+        """Whether ollama_url names this machine, so a local store can be its store."""
+        host = (urlparse(self._base_url).hostname or "").lower()
+        return host in {"localhost", "127.0.0.1", "::1", "", socket.gethostname().lower()}
+
     def _resolve_models_dir(self) -> Optional[Path]:
         """The Ollama models dir whose manifests we can actually read.
 
         Order: explicit config, $OLLAMA_MODELS, the user store
         (~/.ollama/models), the systemd service store
-        (/usr/share/ollama/.ollama/models). Read-only; when none is
-        readable (daemon runs as a different user), inventory() degrades
-        to /api/tags names — never escalate privileges to win the read.
+        (/usr/share/ollama/.ollama/models). The two default stores are
+        only considered for a local server — a remote ollama_url makes any
+        path on this box the wrong store. Read-only; when none is readable
+        (daemon runs as a different user), inventory() degrades to
+        /api/tags names — never escalate privileges to win the read.
         """
-        candidates = [
-            self._models_dir,
-            os.environ.get("OLLAMA_MODELS"),
-            os.path.expanduser("~/.ollama/models"),
-            "/usr/share/ollama/.ollama/models",
-        ]
+        # A local manifests tree describes a local server. When ollama_url
+        # points elsewhere, the tree on this box belongs to a different
+        # Ollama and its hashes would be attributed to the remote one, so
+        # only an explicit models_dir (the operator saying "these are the
+        # same store") is honoured.
+        explicit = self._models_dir or os.environ.get("OLLAMA_MODELS")
+        candidates = [explicit]
+        if self._is_local_server():
+            candidates += [
+                os.path.expanduser("~/.ollama/models"),
+                "/usr/share/ollama/.ollama/models",
+            ]
         for c in candidates:
             if not c:
                 continue
@@ -615,6 +630,10 @@ class OllamaExecutor(BaseExecutor):
 
     async def inventory(self) -> List[dict]:
         """Every model on disk with its GGUF file hash and descriptive details.
+
+        A reading of the disk, not of the server: callers that advertise this
+        upward must establish the server is reachable first, or they publish a
+        catalogue nothing can serve (see main._collect_runtime_bundles).
 
         Reads Ollama's own manifests tree (the API never exposes per-file
         hashes) — pure filesystem, and once details are cached this path

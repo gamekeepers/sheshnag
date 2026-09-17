@@ -366,3 +366,63 @@ def test_runtimes_are_ordered_by_position_not_insertion(auth_client, db_session)
     assert [rt.engine for rt in worker.runtimes] == ["ollama", "vllm"]
     assert worker.runtimes[0].position == 0
 
+
+
+def test_register_persists_runtime_status_and_defaults_it(auth_client, db_session):
+    """A runtime the daemon could not reach registers as `unavailable`.
+
+    The row has to exist — replace-all would delete it and cascade away its
+    models — so the daemon sends it with an empty catalogue and says why. A
+    daemon predating the field omits it and means `ready`: it only ever
+    registered runtimes it had reached.
+    """
+    key = _worker_key(auth_client, "Multi Org Status")
+    payload = _mixed_registration(key, "status-box", [
+        ("vllm", ["served:7b"], []),
+        ("ollama", [], []),
+    ])
+    payload["runtimes"][1]["status"] = "unavailable"
+    assert "status" not in payload["runtimes"][0], "vllm entry stays legacy-shaped"
+
+    resp = auth_client.post("/workers/register", json=payload,
+                            headers={"Authorization": f"Bearer {key}"})
+    assert resp.status_code == 200, resp.text
+    worker_id = resp.json()["worker_id"]
+
+    db_session.expire_all()
+    rows = {rt.engine: rt for rt in
+            db_session.query(WorkerRuntime).filter_by(worker_id=worker_id)}
+
+    assert rows["ollama"].status == "unavailable"
+    assert rows["vllm"].status == "ready", "omitted status means ready, not empty"
+
+
+def test_unavailable_runtime_is_catalogued_but_not_dispatchable(auth_client, db_session):
+    """A model on a down runtime stays in the catalogue and out of dispatch.
+
+    The worker really does hold it, and that is worth knowing for capacity and
+    provenance — the digests are expensive to recompute and survive the outage.
+    What must not happen is the scheduler handing it a batch it cannot run.
+    """
+    key = _worker_key(auth_client, "Multi Org Dispatch")
+    payload = _mixed_registration(key, "dispatch-box", [
+        ("vllm", ["served:7b"], []),
+        ("ollama", ["on-disk:8b"], []),
+    ])
+    payload["runtimes"][1]["status"] = "unavailable"
+
+    resp = auth_client.post("/workers/register", json=payload,
+                            headers={"Authorization": f"Bearer {key}"})
+    assert resp.status_code == 200, resp.text
+    worker_id = resp.json()["worker_id"]
+
+    db_session.expire_all()
+    worker = db_session.query(Worker).filter_by(id=worker_id).one()
+
+    names = worker.advertised_model_names()
+    assert "on-disk:8b" in names, "the catalogue keeps what the worker holds"
+    assert "served:7b" in names
+
+    dispatchable = {n for n, _digest in worker.advertised_models()}
+    assert "on-disk:8b" not in dispatchable, "a down runtime must not be given work"
+    assert "served:7b" in dispatchable

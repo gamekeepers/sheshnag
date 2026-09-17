@@ -826,3 +826,61 @@ class TestRegisterPayload:
         assert entries[0]["model_digests"] == {"m1": "d1"}
         assert entries[0]["inventory"][0]["sha256"] == "a" * 64
         assert entries[1]["inventory"] == []
+
+
+class TestReportsOnlyWhatItVerified:
+    """A runtime the daemon never reached must not be advertised as servable."""
+
+    @pytest.mark.asyncio
+    async def test_unready_runtime_keeps_its_catalogue_but_says_it_is_down(self, tmp_path):
+        """A model on disk is a fact about this worker whether or not its
+        runtime answered. The catalogue keeps it; `status` is what stops it
+        being dispatched (see Worker.advertised_models)."""
+        from daemon.main import _collect_runtime_bundles
+
+        up = FakeExecutor("vllm", ["served:7b"])
+        down = FakeExecutor("ollama", ["on-disk:8b"])
+        down.inventory_items = [
+            {"local_name": "on-disk:8b", "sha256": "d" * 64, "runtime": "ollama"}]
+
+        config = DaemonConfig(api_key="gk-x", runtime=["vllm", "ollama"], models=[])
+        bundles = await _collect_runtime_bundles(
+            config, {"vllm": up, "ollama": down}, ready=["vllm"])
+
+        by_runtime = {b.runtime: b for b in bundles}
+        assert set(by_runtime) == {"vllm", "ollama"}
+
+        assert by_runtime["ollama"].status == "unavailable"
+        assert by_runtime["ollama"].inventory, "the on-disk catalogue is not discarded"
+
+        assert by_runtime["vllm"].status == "ready"
+        assert by_runtime["vllm"].models == ["served:7b"]
+
+    @pytest.mark.asyncio
+    async def test_readiness_unknown_keeps_every_runtime_ready(self, tmp_path):
+        """ready=None is 'never established', not 'nothing is ready'."""
+        from daemon.main import _collect_runtime_bundles
+
+        ex = FakeExecutor("ollama", ["m1"])
+        config = DaemonConfig(api_key="gk-x", runtime=["ollama"], models=[])
+        bundles = await _collect_runtime_bundles(config, {"ollama": ex}, ready=None)
+        assert bundles[0].status == "ready"
+        assert bundles[0].models == ["m1"]
+
+    def test_remote_ollama_never_resolves_a_local_store(self):
+        """A manifests tree on this box describes this box's Ollama, not a remote one."""
+        from daemon.executors.ollama import OllamaExecutor
+
+        assert OllamaExecutor(base_url="http://localhost:11434")._is_local_server()
+        remote = OllamaExecutor(base_url="http://another-box:11434")
+        assert not remote._is_local_server()
+        assert remote._resolve_models_dir() is None
+
+    def test_explicit_models_dir_is_honoured_even_for_a_remote_server(self, tmp_path):
+        """The operator naming a store is them saying it is that server's store."""
+        from daemon.executors.ollama import OllamaExecutor
+
+        (tmp_path / "manifests").mkdir()
+        remote = OllamaExecutor(base_url="http://another-box:11434",
+                                models_dir=str(tmp_path))
+        assert remote._resolve_models_dir() == tmp_path
