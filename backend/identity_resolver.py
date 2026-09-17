@@ -298,7 +298,11 @@ class IdentityResolver:
         if not digest:
             return Unconfirmed("no-hash")
         digests = tuple(sorted({bare_digest(f) for f in (files or []) if bare_digest(f)} | {digest}))
-        key = (local_name, digests, source_ref, source_revision)
+        # Key on the SOURCE, not the local name: the auto-adopt loop asks
+        # about one hash under several served names (aliases, repo id), and
+        # every one of them resolves the same upstream repo — without this
+        # each name burns its own request budget per negative TTL.
+        key = (source_ref or local_name, digests, source_ref, source_revision)
 
         cached = self._cached(key)
         if cached is not None:

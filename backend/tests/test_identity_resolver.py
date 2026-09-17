@@ -222,6 +222,23 @@ def test_negative_cache_is_per_name_and_hash(clock):
     assert isinstance(r.resolve("gemma3:1b", OTHER), Confirmed)
 
 
+def test_same_source_under_two_names_shares_one_request(clock):
+    """The auto-adopt loop asks about one hash under several served names
+    (alias, repo id): they resolve the same upstream repo, so the request
+    is made once per TTL, not once per name."""
+    reg = Registry({HF_INFO: (404, {"error": "Repository not found"})})
+    r = make_resolver(reg, clock, ttl=60)
+    ref = "bartowski/Llama-3.2-1B-Instruct-GGUF"
+    res1 = r.resolve("Llama-3.2-1B", SHA, source_ref=ref)
+    res2 = r.resolve("Llama-3.2-1B-Instruct-GGUF", SHA, source_ref=ref)
+    assert res1 == res2 == Unconfirmed("http-404")
+    assert len(reg.requests) == 1
+    clock.t += 61
+    r.resolve("Llama-3.2-1B", SHA, source_ref=ref)
+    r.resolve("Llama-3.2-1B-Instruct-GGUF", SHA, source_ref=ref)
+    assert len(reg.requests) == 2
+
+
 # ─── hugging face ────────────────────────────────────────────────────────────
 
 HF_INFO = "/api/models/bartowski/Llama-3.2-1B-Instruct-GGUF"
