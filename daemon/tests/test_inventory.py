@@ -558,3 +558,67 @@ def test_snapshot_no_dirs_is_none(tmp_path):
     (repo / "snapshots").mkdir(parents=True)
     assert hf_cache.snapshot_for(repo) is None
     assert hf_cache.snapshot_for(tmp_path / "missing") is None
+
+
+# ─── hf_cache._weight_files: identity shard choice ───────────
+
+def _file_snapshot(tmp_path, entries):
+    """A snapshot dir; entries is {filename: blob_sha or None} — a sha makes
+    the file a symlink into blobs/ (as the hub lays it out), None a plain
+    file."""
+    repo = tmp_path / "models--Org--Name"
+    blobs = repo / "blobs"
+    blobs.mkdir(parents=True)
+    snap = repo / "snapshots" / REV
+    snap.mkdir(parents=True)
+    for name, sha in entries.items():
+        if sha:
+            (blobs / sha).write_bytes(b"z" * (10 + len(name)))
+            (snap / name).symlink_to(f"../../blobs/{sha}")
+        else:
+            (snap / name).write_bytes(b"q" * len(name))
+    return snap
+
+
+def test_weight_selection_follows_the_repo_index(tmp_path):
+    """consolidated.safetensors sorts before model-*, but the repo's own
+    weight_map says the shards are the weights: identity = shard 1, only
+    index-listed shards reported, consolidated ignored."""
+    W1, W2, W3 = "a1" * 32, "a2" * 32, "a3" * 32
+    snap = _file_snapshot(tmp_path, {
+        "consolidated.safetensors": W3,
+        "model-00001-of-00002.safetensors": W1,
+        "model-00002-of-00002.safetensors": W2,
+    })
+    (snap / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {
+        "model.embed_tokens.weight": "model-00001-of-00002.safetensors",
+        "model.layers.0.weight": "model-00001-of-00002.safetensors",
+        "lm_head.weight": "model-00002-of-00002.safetensors",
+    }}))
+    files = hf_cache.describe(snap)["files"]
+    assert [f["file"] for f in files] == [
+        "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+    assert files[0]["sha256"] == W1
+
+
+def test_weight_selection_never_crows_optimizer_bin(tmp_path):
+    """Legacy sharded bin: a filename sort puts optimizer.bin (o < p) first
+    and would crown the trainer's optimizer state as the model's identity —
+    shard NUMBER orders the real weights instead."""
+    P1, P2 = "c1" * 32, "c2" * 32
+    snap = _file_snapshot(tmp_path, {
+        "optimizer.bin": "c0" * 32,
+        "pytorch_model-00001-of-00002.bin": P1,
+        "pytorch_model-00002-of-00002.bin": P2,
+    })
+    files = hf_cache.describe(snap)["files"]
+    assert [f["file"] for f in files] == [
+        "pytorch_model-00001-of-00002.bin", "pytorch_model-00002-of-00002.bin"]
+    assert files[0]["sha256"] == P1
+
+
+def test_weight_selection_single_file_ignores_other_bins(tmp_path):
+    M, O = "d1" * 32, "d2" * 32
+    snap = _file_snapshot(tmp_path, {"model.safetensors": M, "optimizer.bin": O})
+    files = hf_cache.describe(snap)["files"]
+    assert [(f["file"], f["sha256"]) for f in files] == [("model.safetensors", M)]

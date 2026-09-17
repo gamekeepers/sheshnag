@@ -20,7 +20,6 @@ from typing import Optional
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _REPO_ID = re.compile(r"^[A-Za-z0-9][\w.\-]*/[A-Za-z0-9][\w.\-]*$")
-_WEIGHT_SUFFIXES = (".safetensors", ".gguf", ".bin")
 _DTYPE_SLUG = {"bfloat16": "bf16", "float16": "fp16", "float32": "fp32", "float8_e4m3fn": "fp8"}
 _BYTES_PER_PARAM = {"bfloat16": 2, "float16": 2, "float32": 4}
 
@@ -141,18 +140,51 @@ def _parameter_size(snapshot: Path, config: dict) -> Optional[str]:
     return f"{params:.1f}B" if params >= 1 else f"{params * 1000:.0f}M"
 
 
+def _shard_key(p: Path) -> tuple:
+    """(part, of) from a sharded filename; unsharded sorts first."""
+    m = re.search(r"(\d+)-of-(\d+)", p.name)
+    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+
+def _weight_files(snapshot: Path) -> list:
+    """The snapshot's weight files, in the repo's own order — the identity
+    is the first one returned. The repo's `weight_map` index is
+    authoritative for the shard set and order; without it, the canonical
+    single-file names, then sharded files by shard NUMBER (a filename sort
+    would crown `optimizer.bin` — `o` < `p` — over the real weights)."""
+    idx = snapshot / "model.safetensors.index.json"
+    if idx.is_file():
+        try:
+            wm = json.loads(idx.read_text()).get("weight_map", {})
+        except (OSError, ValueError):
+            wm = {}
+        if wm:
+            return [snapshot / k for k in dict.fromkeys(wm.values())]
+    for single in ("model.safetensors", "consolidated.safetensors"):
+        if (p := snapshot / single).is_file():
+            return [p]
+    shards = sorted(
+        list(snapshot.glob("model-*-of-*.safetensors"))
+        + list(snapshot.glob("pytorch_model-*-of-*.bin")),
+        key=_shard_key,
+    )
+    if shards:
+        return shards
+    p = snapshot / "pytorch_model.bin"
+    return [p] if p.is_file() else []
+
+
 def describe(snapshot: Path) -> dict:
     """{"files": [{file, sha256, size_bytes}], "details": {...}} for a
-    snapshot dir. Weight files are sorted by name so shard 1 is first —
-    its hash is the artifact's identity (the "digest pins the weights file"
-    convention); `files` carries every shard for catalog_artifact_files."""
+    snapshot dir. Weight files come from the repo's own weight map (or
+    shard number), so shard 1 is first — its hash is the artifact's
+    identity (the "digest pins the weights file" convention); `files`
+    carries every shard for catalog_artifact_files."""
     if (snapshot / "adapter_config.json").is_file():
         # PEFT/LoRA adapter: no base-model identity, nothing to report.
         return {"files": [], "details": {}}
     files = []
-    for p in sorted(snapshot.iterdir()):
-        if not p.name.endswith(_WEIGHT_SUFFIXES):
-            continue
+    for p in _weight_files(snapshot):
         try:
             size = p.stat().st_size  # follows the symlink to the blob
         except OSError:
