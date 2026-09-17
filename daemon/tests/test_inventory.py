@@ -44,6 +44,14 @@ def _template_layer():
 
 # ─── Ollama: manifest scan ───────────────────────────────────
 
+
+def _empty_hub(tmp_path):
+    """A hub cache holding nothing — `resolve_hub_cache` skips a path that does
+    not exist and would otherwise reach this machine's real cache."""
+    hub = tmp_path / "empty-hub"
+    hub.mkdir(exist_ok=True)
+    return hub
+
 @pytest.mark.asyncio
 async def test_ollama_inventory_reads_model_layer_hash(tmp_path):
     """The reported sha256 is the MODEL LAYER digest (== the GGUF file's
@@ -208,7 +216,7 @@ async def test_inventory_details_degrade_without_show(tmp_path):
 # ─── vLLM ────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_vllm_inventory_reports_served_name_and_root():
+async def test_vllm_inventory_reports_served_name_and_root(tmp_path):
     """Under --served-model-name the served id (what profiles pin and
     dispatch sends) differs from root (the HF path); both rows are
     reported so either convention joins. Identical id/root -> one row."""
@@ -220,7 +228,7 @@ async def test_vllm_inventory_reports_served_name_and_root():
             {"id": "no-root-model"},
         ]})
 
-    ex = VLLMExecutor(base_url="http://vllm.test")
+    ex = VLLMExecutor(base_url="http://vllm.test", hf_hub_cache=str(_empty_hub(tmp_path)))
     ex._client = httpx.AsyncClient(
         base_url="http://vllm.test", transport=httpx.MockTransport(handler),
     )
@@ -449,14 +457,26 @@ async def test_vllm_uncached_model_stays_hashless(tmp_path):
     ex = VLLMExecutor(base_url="http://vllm.test", hf_hub_cache=str(hub))
     ex._client = _vllm_client([{"id": "Other/NotCached", "root": "Other/NotCached"},
                                {"id": "local", "root": "/opt/models/local"}])
-    for item in await ex.inventory():
-        assert item["sha256"] is None and "files" not in item
+    items = await ex.inventory()
+
+    # The served rows: neither name is in the cache, so neither gets an identity.
+    served = [i for i in items if i.get("loaded")]
+    assert {i["local_name"] for i in served} == {
+        "Other/NotCached", "local", "/opt/models/local"}
+    for item in served:
+        assert item["sha256"] is None and not item.get("files")
+
+    # What the cache holds is reported too, as held-not-loaded — a model can be
+    # catalogued without this server ever having served it.
+    held = [i for i in items if not i.get("loaded")]
+    assert [i["local_name"] for i in held] == ["Org/Name"]
+    assert held[0]["files"], "a held row carries the shard hashes that confirm it"
 
 
 # ─── vLLM: LoRA adapters ─────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_vllm_inventory_skips_lora_adapters():
+async def test_vllm_inventory_skips_lora_adapters(tmp_path):
     """/v1/models lists every --enable-lora adapter as a ModelCard with
     `parent` set; an adapter is not a standalone model, so it is never
     inventoried (its PEFT weights would otherwise get the base model's
@@ -470,7 +490,7 @@ async def test_vllm_inventory_skips_lora_adapters():
              "parent": "Qwen/Qwen2.5-7B-Instruct"},
         ]})
 
-    ex = VLLMExecutor(base_url="http://vllm.test")
+    ex = VLLMExecutor(base_url="http://vllm.test", hf_hub_cache=str(_empty_hub(tmp_path)))
     ex._client = httpx.AsyncClient(
         base_url="http://vllm.test", transport=httpx.MockTransport(handler))
     items = await ex.inventory()

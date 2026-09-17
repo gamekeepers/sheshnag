@@ -266,14 +266,16 @@ class Worker(Base):
         """(name, digest) pairs this worker's runtimes host AND may be
         scheduled: quarantined (unregistered), drifted, and missing rows are
         excluded, as is every model of a runtime that is not itself
-        schedulable, so every picker/capacity path shares the rule.
+        schedulable, and every unloaded model of a runtime that serves only
+        what it has loaded — so every picker/capacity path shares the rule.
 
         `advertised_model_names` deliberately does not filter — cataloguing
         what a worker holds is a different question from what it can be given."""
         return [
             (m.name, m.digest)
             for rt in self.runtimes if rt.schedulable
-            for m in rt.models if m.schedulable
+            for m in rt.models
+            if m.schedulable and (m.loaded or not rt.serves_only_loaded)
         ]
 
     def loaded_models(self) -> list:
@@ -305,11 +307,22 @@ class WorkerRuntime(Base):
     # they are on that worker's disk and that is worth cataloguing — but it
     # cannot be given work. Mirrors RuntimeModel.schedulable so every picker
     # and capacity path applies one rule.
+    # NULL for rows written before the column existed, and for daemons that
+    # do not send it. Both meant "everything advertised is servable", which is
+    # what True says — so only an explicit False narrows dispatch.
+    loads_on_demand = Column(Boolean, nullable=True, default=True)
+
     SCHEDULABLE_STATUSES = frozenset({"ready"})
 
     @property
     def schedulable(self) -> bool:
         return self.status in self.SCHEDULABLE_STATUSES
+
+    @property
+    def serves_only_loaded(self) -> bool:
+        """A vLLM instance serves the one model it was started with; the rest
+        of its hub cache is catalogue, not capacity."""
+        return self.loads_on_demand is False
     # Index into the daemon's configured runtime list, assigned at registration.
     # Rows predating the column are NULL and tie, which costs nothing: a worker
     # registered before it existed has one runtime, and replace-all registration

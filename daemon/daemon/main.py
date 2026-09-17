@@ -314,6 +314,7 @@ async def _collect_runtime_bundles(
         bundles.append(WorkerRuntimeBundle(
             runtime=name,
             status=status,
+            loads_on_demand=getattr(executor, "loads_on_demand", True),
             models=names,
             model_digests=digests,
             inventory=inventory,

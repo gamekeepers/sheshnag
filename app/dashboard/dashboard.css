@@ -840,6 +840,19 @@ td.mono {
   border: 1px solid var(--border);
   color: var(--dim);
 }
+/* Capability badges sit beside the task type, so they read as a qualifier
+   of it rather than a column of their own. */
+.cap-tag {
+  margin-left: 0.4rem;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
 th.sortable {
   cursor: pointer;
   user-select: none;

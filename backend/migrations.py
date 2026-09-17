@@ -10,7 +10,7 @@ SQLite (the two dialects in the deployment matrix).
 import logging
 
 from sqlalchemy import inspect, text
-from sqlalchemy import BigInteger, Integer, String, JSON
+from sqlalchemy import BigInteger, Boolean, Integer, String, JSON
 
 from database import get_engine
 from models import Base, Batch, BatchAssignment, UsageRecord  # noqa: F401 — ensure models are registered
@@ -97,6 +97,10 @@ MIGRATIONS = [
     # daemon's next start.
     _Migration("worker_runtimes.position",
                "worker_runtimes", "position", Integer()),
+    # Cache-enumerated inventory: a vLLM worker now advertises every model it
+    # holds, so dispatch needs to know it can only serve the loaded one.
+    _Migration("worker_runtimes.loads_on_demand",
+               "worker_runtimes", "loads_on_demand", Boolean()),
 ]
 
 

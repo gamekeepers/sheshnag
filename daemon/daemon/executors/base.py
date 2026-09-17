@@ -76,6 +76,13 @@ class BaseExecutor(ABC):
     #: must be tagged (see tag_inventory).
     runtime_name: str = ""
 
+    # Whether an advertised model this runtime is not currently serving can
+    # still be given work. Ollama loads on demand (and pulls when asked), so
+    # holding a model means being able to serve it. A vLLM instance serves the
+    # one model it was started with; the rest of its cache is catalogue, not
+    # capacity, until someone restarts it on a different model.
+    loads_on_demand: bool = True
+
     def tag_inventory(self, items: List[dict]) -> List[dict]:
         """Return `items` with this executor's `runtime_name` attached.
 

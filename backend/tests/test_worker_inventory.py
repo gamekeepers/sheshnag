@@ -426,3 +426,77 @@ def test_unavailable_runtime_is_catalogued_but_not_dispatchable(auth_client, db_
     dispatchable = {n for n, _digest in worker.advertised_models()}
     assert "on-disk:8b" not in dispatchable, "a down runtime must not be given work"
     assert "served:7b" in dispatchable
+
+
+def _catalogued(db, runtime_model_id, digest):
+    """A catalogue entry pinning this artifact, so classify() calls the row
+    known and schedulability is decided by the runtime, not by provenance."""
+    from models import ModelCatalog
+    entry = db.query(ModelCatalog).filter_by(runtime_model_id=runtime_model_id).first()
+    if entry is None:
+        entry = ModelCatalog(
+            display_name=runtime_model_id, runtime="vllm",
+            runtime_model_id=runtime_model_id, digest=digest,
+        )
+        db.add(entry)
+        db.commit()
+    return entry
+
+
+def test_vllm_holds_its_cache_but_serves_only_what_is_loaded(auth_client, db_session):
+    """Cache-enumerated models are catalogued and not dispatchable.
+
+    A vLLM worker advertises every repo in its hub cache, because that is what
+    it holds and what the resolver can confirm. It serves the one model it was
+    started with, so only that row may be given work — `loads_on_demand=False`
+    is what separates the two.
+    """
+    key = _worker_key(auth_client, "Multi Org Cache")
+    _catalogued(db_session, "Qwen/Qwen3.8-27B-FP8", "a" * 64)
+    _catalogued(db_session, "LiquidAI/LFM2.5-2.6B", "b" * 64)
+    payload = _mixed_registration(key, "cache-box", [
+        ("vllm", [], [
+            {"local_name": "Qwen/Qwen3.8-27B-FP8", "sha256": "a" * 64,
+             "loaded": True, "runtime": "vllm"},
+            {"local_name": "LiquidAI/LFM2.5-2.6B", "sha256": "b" * 64,
+             "loaded": False, "runtime": "vllm"},
+        ]),
+    ])
+    payload["runtimes"][0]["loads_on_demand"] = False
+
+    resp = auth_client.post("/workers/register", json=payload,
+                            headers={"Authorization": f"Bearer {key}"})
+    assert resp.status_code == 200, resp.text
+    worker_id = resp.json()["worker_id"]
+
+    db_session.expire_all()
+    worker = db_session.query(Worker).filter_by(id=worker_id).one()
+
+    held = worker.advertised_model_names()
+    assert {"Qwen/Qwen3.8-27B-FP8", "LiquidAI/LFM2.5-2.6B"} <= held, "the cache is catalogued"
+
+    dispatchable = {n for n, _d in worker.advertised_models()}
+    assert "Qwen/Qwen3.8-27B-FP8" in dispatchable, "the served model takes work"
+    assert "LiquidAI/LFM2.5-2.6B" not in dispatchable, "a cached model is not capacity"
+
+
+def test_ollama_serves_what_it_holds(auth_client, db_session):
+    """Ollama loads on demand, so holding a model is being able to serve it —
+    the default, and what every daemon predating the field meant."""
+    key = _worker_key(auth_client, "Multi Org OnDemand")
+    _catalogued(db_session, "qwen3:0.6b", "c" * 64)
+    payload = _mixed_registration(key, "ondemand-box", [
+        ("ollama", [], [
+            {"local_name": "qwen3:0.6b", "sha256": "c" * 64,
+             "loaded": False, "runtime": "ollama"},
+        ]),
+    ])
+    assert "loads_on_demand" not in payload["runtimes"][0], "entry stays legacy-shaped"
+
+    resp = auth_client.post("/workers/register", json=payload,
+                            headers={"Authorization": f"Bearer {key}"})
+    assert resp.status_code == 200, resp.text
+
+    db_session.expire_all()
+    worker = db_session.query(Worker).filter_by(id=resp.json()["worker_id"]).one()
+    assert "qwen3:0.6b" in {n for n, _d in worker.advertised_models()}

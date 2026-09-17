@@ -77,6 +77,29 @@ def snapshot_for(repo_dir: Path) -> Optional[tuple]:
     return None
 
 
+def enumerate_cached(cache: Optional[Path]) -> list:
+    """(repo_id, revision, snapshot_path) for every unambiguously cached repo.
+
+    The catalogue asks what a worker HOLDS, which the cache answers whole —
+    `snapshot_for` already refuses a repo whose revision is ambiguous, so a
+    repo pulled at two commits is skipped rather than reported under a guess.
+    A repo dir whose name is not a repo id (a stray directory) is skipped too.
+    """
+    if cache is None or not cache.is_dir():
+        return []
+    out = []
+    for repo_dir in sorted(cache.glob("models--*")):
+        if not repo_dir.is_dir():
+            continue
+        repo_id = repo_id_from_dir_name(repo_dir.name)
+        if not repo_id:
+            continue
+        found = snapshot_for(repo_dir)
+        if found:
+            out.append((repo_id, found[0], found[1]))
+    return out
+
+
 def locate(cache: Optional[Path], root: str) -> Optional[tuple]:
     """(repo_id, revision, snapshot_path) for what vLLM reports as `root`.
 

@@ -240,6 +240,8 @@ export default function DashboardPage() {
   const [modelQuery, setModelQuery] = useState('');
   const [modelRuntime, setModelRuntime] = useState('all');
   const [modelServableOnly, setModelServableOnly] = useState(false);
+  const [modelTask, setModelTask] = useState('all');
+  const [modelVisionOnly, setModelVisionOnly] = useState(false);
   const [modelSort, setModelSort] = useState({ key: 'id', dir: 'asc' });
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [copiedModelId, setCopiedModelId] = useState(null);
@@ -1040,6 +1042,11 @@ export default function DashboardPage() {
     [poolCapacity]
   );
 
+  const modelTasks = useMemo(
+    () => Array.from(new Set(modelCatalog.map(m => m.task_type).filter(Boolean))).sort(),
+    [modelCatalog]
+  );
+
   const modelRuntimes = useMemo(
     () => Array.from(new Set(modelCatalog.map(m => m.runtime).filter(Boolean))).sort(),
     [modelCatalog]
@@ -1050,6 +1057,8 @@ export default function DashboardPage() {
     const rows = modelCatalog.filter(m => {
       if (modelRuntime !== 'all' && m.runtime !== modelRuntime) return false;
       if (modelServableOnly && !servableIds.has(m.id)) return false;
+      if (modelTask !== 'all' && m.task_type !== modelTask) return false;
+      if (modelVisionOnly && !m.capabilities?.vision) return false;
       if (!q) return true;
       return `${m.id} ${m.display_name || ''}`.toLowerCase().includes(q);
     });
@@ -1067,7 +1076,8 @@ export default function DashboardPage() {
       }
       return String(a[key] ?? '').localeCompare(String(b[key] ?? '')) * sign;
     });
-  }, [modelCatalog, modelQuery, modelRuntime, modelServableOnly, modelSort, servableIds]);
+  }, [modelCatalog, modelQuery, modelRuntime, modelServableOnly, modelTask,
+      modelVisionOnly, modelSort, servableIds]);
 
   const toggleModelSort = (key) => setModelSort(s =>
     s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' });
@@ -2113,6 +2123,18 @@ export default function DashboardPage() {
                   <option value="all">All runtimes</option>
                   {modelRuntimes.map(r => <option key={r} value={r}>{r}</option>)}
                 </select>
+                <select value={modelTask}
+                        onChange={e => setModelTask(e.target.value)}
+                        style={{ flex: '0 0 auto' }}>
+                  <option value="all">All types</option>
+                  {modelTasks.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+                       title="Only models whose family accepts image input">
+                  <input type="checkbox" checked={modelVisionOnly}
+                         onChange={e => setModelVisionOnly(e.target.checked)} />
+                  Vision
+                </label>
                 <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
                        title="Hide models no online worker can currently serve">
                   <input type="checkbox" checked={modelServableOnly}
@@ -2130,6 +2152,7 @@ export default function DashboardPage() {
                       <th className="sortable" onClick={() => toggleModelSort('id')}>ID{sortMark('id')}</th>
                       <th className="sortable" onClick={() => toggleModelSort('display_name')}>Name{sortMark('display_name')}</th>
                       <th className="sortable" onClick={() => toggleModelSort('runtime')}>Runtime{sortMark('runtime')}</th>
+                      <th className="sortable" onClick={() => toggleModelSort('task_type')}>Type{sortMark('task_type')}</th>
                       <th className="sortable" onClick={() => toggleModelSort('parameter_size')}>Params{sortMark('parameter_size')}</th>
                       <th className="sortable" onClick={() => toggleModelSort('quantization')}>Quantization{sortMark('quantization')}</th>
                       <th className="sortable" onClick={() => toggleModelSort('context_length')}>Context{sortMark('context_length')}</th>
@@ -2154,6 +2177,10 @@ export default function DashboardPage() {
                         </td>
                         <td>{m.display_name || '—'}</td>
                         <td className="dim">{m.runtime || '—'}</td>
+                        <td className="dim">
+                          {m.task_type || '—'}
+                          {m.capabilities?.vision && <span className="cap-tag">vision</span>}
+                        </td>
                         <td className="dim">{m.parameter_size || '—'}</td>
                         <td className="dim">{m.quantization || '—'}</td>
                         <td className="dim">{m.context_length ? m.context_length.toLocaleString() : '—'}</td>
@@ -2162,7 +2189,7 @@ export default function DashboardPage() {
                     ))}
                     {visibleModels.length === 0 && (
                       <tr>
-                        <td colSpan={7} className="empty-hint">
+                        <td colSpan={8} className="empty-hint">
                           {modelCatalog.length === 0
                             ? 'No models in the catalogue yet.'
                             : 'No model matches these filters.'}

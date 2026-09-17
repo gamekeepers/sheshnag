@@ -41,6 +41,7 @@ class VLLMExecutor(BaseExecutor):
     """
 
     runtime_name: str = "vllm"
+    loads_on_demand: bool = False
 
     def __init__(
         self,
@@ -243,6 +244,47 @@ class VLLMExecutor(BaseExecutor):
 
         return True
 
+    def _cached_rows(self, seen: set) -> List[dict]:
+        """Blocking: one row per cached repo this server is not already serving.
+
+        Held, not loaded, and only when the weights are actually here: a repo
+        cached without them is skipped, because it can be neither served nor
+        confirmed. The identity is the same content-addressed evidence
+        `_identify` produces for a served model — repo, commit and every shard
+        hash — so the backend's resolver can confirm these against the registry
+        and adopt them without the model ever having been served.
+        """
+        try:
+            cache = hf_cache.resolve_hub_cache(self._hf_hub_cache)
+            rows = []
+            for repo_id, revision, snapshot in hf_cache.enumerate_cached(cache):
+                if repo_id in seen:
+                    continue
+                described = hf_cache.describe(snapshot)
+                # Identical shape to _identify: the artifact identity is the
+                # first shard's blob hash with every shard in `files`, which is
+                # what classify() hash-matches on and what the resolver confirms
+                # against the registry. Reporting a row without it would leave
+                # the model name-matched and invisible to auto-adopt.
+                files = [f for f in described["files"]
+                         if f.get("sha256") and f.get("size_bytes") is not None]
+                if not files:
+                    logger.debug(f"Skipping {repo_id}: no hashable weights")
+                    continue
+                details = dict(described.get("details") or {})
+                details["source_ref"] = repo_id
+                details["source_revision"] = revision
+                rows.append({
+                    "local_name": repo_id,
+                    "sha256": files[0]["sha256"],
+                    "size_bytes": sum(f["size_bytes"] for f in files) or None,
+                    "loaded": False, "files": files, "details": details,
+                })
+            return rows
+        except Exception as exc:
+            logger.debug(f"Could not enumerate the hub cache: {exc}")
+            return []
+
     def _identify(self, root: Optional[str]) -> dict:
         """Blocking: hub-cache identity for a served model's `root`.
 
@@ -282,7 +324,15 @@ class VLLMExecutor(BaseExecutor):
             return {}
 
     async def inventory(self) -> List[dict]:
-        """Models this vLLM server serves, with hub-cache identity.
+        """Every model this worker holds, with hub-cache identity.
+
+        Two sources, because they answer different questions. `/v1/models`
+        says what is being served right now — those rows are `loaded`. The
+        hub cache says what this box could serve if vLLM were started on it;
+        those rows are catalogue-only, and `loads_on_demand = False` keeps
+        them out of dispatch (a vLLM instance serves one model and cannot
+        swap without a restart). Enumerating the cache is what lets a model
+        be adopted without first being served.
 
         The served name (`id`) is the join key: it is what a serving
         profile's runtime_model_id pins and what dispatch sends as
@@ -317,8 +367,9 @@ class VLLMExecutor(BaseExecutor):
                         seen.add(name)
                         items.append({
                             "local_name": name, "sha256": None, "size_bytes": None,
-                            **identity,
+                            "loaded": True, **identity,
                         })
+            items.extend(await asyncio.to_thread(self._cached_rows, seen))
             return self.tag_inventory(items)
         except Exception as exc:
             logger.warning(f"vLLM inventory failed: {exc}")

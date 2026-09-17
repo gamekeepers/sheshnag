@@ -333,6 +333,10 @@ class RuntimeInfo(BaseModel):
     # Older daemons omit it and default to "ready", which is what they meant:
     # they only ever registered runtimes they had reached.
     status: str = "ready"
+    # False when the runtime serves only what it has loaded. Older daemons omit
+    # it and default True, which matches how they behaved: everything they
+    # advertised was something they could load.
+    loads_on_demand: bool = True
     models: List[str] = []
     # Legacy name → /api/tags MANIFEST digest map. Accepted for wire
     # compatibility, ignored by the backend: it is not an artifact identity

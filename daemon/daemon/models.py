@@ -84,6 +84,8 @@ class WorkerRuntimeBundle(BaseModel):
     # A runtime that never answered is advertised so its rows survive the
     # backend's replace-all register, but says so rather than looking servable.
     status: str = "ready"
+    # False when the runtime can only serve what it has already loaded.
+    loads_on_demand: bool = True
     models: List[str] = Field(default_factory=list)
     model_digests: Dict[str, Any] = Field(default_factory=dict)
     inventory: List[Dict[str, Any]] = Field(default_factory=list)
