@@ -672,10 +672,9 @@ export default function ProviderPage() {
                       /* One tag per runtime — a mixed node drives several
                          (e.g. vLLM + Ollama), and showing only the first
                          hid the rest. */
-                      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                        {worker.runtimes.map((rt, idx) => (
-                          <div className="engine-tag" key={idx}>Engine: {rt.type}</div>
-                        ))}
+                      <div className="engine-tag">
+                        Engine{worker.runtimes.length > 1 ? 's' : ''}:{' '}
+                        {worker.runtimes.map((rt) => rt.type).join(', ')}
                       </div>
                     )}
                   </div>
