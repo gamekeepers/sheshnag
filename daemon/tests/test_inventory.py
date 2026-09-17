@@ -446,3 +446,61 @@ async def test_vllm_uncached_model_stays_hashless(tmp_path):
                                {"id": "local", "root": "/opt/models/local"}])
     for item in await ex.inventory():
         assert item["sha256"] is None and "files" not in item
+
+
+# ─── vLLM: LoRA adapters ─────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_vllm_inventory_skips_lora_adapters():
+    """/v1/models lists every --enable-lora adapter as a ModelCard with
+    `parent` set; an adapter is not a standalone model, so it is never
+    inventoried (its PEFT weights would otherwise get the base model's
+    hash and be adopted as a chat model)."""
+    def handler(request):
+        assert request.url.path == "/v1/models"
+        return httpx.Response(200, json={"data": [
+            {"id": "Qwen/Qwen2.5-7B-Instruct", "root": "Qwen/Qwen2.5-7B-Instruct"},
+            {"id": "finance-lora",
+             "root": "/root/.cache/huggingface/hub/models--acme--finance-lora/snapshots/c0ffe12",
+             "parent": "Qwen/Qwen2.5-7B-Instruct"},
+        ]})
+
+    ex = VLLMExecutor(base_url="http://vllm.test")
+    ex._client = httpx.AsyncClient(
+        base_url="http://vllm.test", transport=httpx.MockTransport(handler))
+    items = await ex.inventory()
+    assert [i["local_name"] for i in items] == ["Qwen/Qwen2.5-7B-Instruct"]
+
+
+def _adapter_cache(tmp_path, repo="acme/finance-lora"):
+    """A cached PEFT adapter: adapter_config.json + adapter weights, no
+    base-model config/index."""
+    hub = tmp_path / "hub"
+    repo_dir = hub / ("models--" + repo.replace("/", "--"))
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text(REV + "\n")
+    blobs = repo_dir / "blobs"
+    blobs.mkdir()
+    (blobs / SHARD1).write_bytes(b"l" * 100)
+    snap = repo_dir / "snapshots" / REV
+    snap.mkdir(parents=True)
+    (snap / "adapter_config.json").write_text(json.dumps(
+        {"base_model_name_or_path": "Qwen/Qwen2.5-7B-Instruct"}))
+    (snap / "adapter_model.safetensors").symlink_to(f"../../blobs/{SHARD1}")
+    return hub, snap
+
+
+@pytest.mark.asyncio
+async def test_vllm_standalone_adapter_reports_no_identity(tmp_path):
+    """Defense in depth: an adapter snapshot served on its own (no `parent`
+    in the card) still has no base-model identity — describe() refuses to
+    read adapter weights as model shards, so the row stays hash-less."""
+    hub, _ = _adapter_cache(tmp_path)
+    ex = VLLMExecutor(base_url="http://vllm.test", hf_hub_cache=str(hub))
+    ex._client = _vllm_client([{"id": "acme/finance-lora", "root": "acme/finance-lora"}])
+    items = await ex.inventory()
+    assert len(items) == 1
+    item = items[0]
+    assert item["sha256"] is None and item["files"] is None
+    assert item["details"].get("family") is None
+    assert item["details"]["source_ref"] == "acme/finance-lora"

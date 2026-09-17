@@ -407,6 +407,8 @@ class IdentityResolver:
             return err
         if not isinstance(tree, list):
             return Unconfirmed("bad-json")
+        if "adapter_config.json" in {e.get("path") for e in tree if isinstance(e, dict)}:
+            return Unconfirmed("lora-adapter")
         paths_by_oid = {}
         for entry in tree:
             lfs = entry.get("lfs") if isinstance(entry, dict) else None

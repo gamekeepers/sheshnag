@@ -286,6 +286,8 @@ class VLLMExecutor(BaseExecutor):
             resp.raise_for_status()
             items, seen = [], set()
             for m in resp.json().get("data", []):
+                if m.get("parent"):
+                    continue  # LoRA adapter of another served model, not a standalone model
                 identity = await asyncio.to_thread(self._identify, m.get("root") or m.get("id"))
                 for name in (m.get("id"), m.get("root")):
                     if name and name not in seen:

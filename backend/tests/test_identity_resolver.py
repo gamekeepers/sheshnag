@@ -269,6 +269,18 @@ def test_hf_no_matching_file_is_unconfirmed(clock):
     assert res == Unconfirmed("digest-mismatch")
 
 
+def test_hf_adapter_repo_is_never_confirmed(clock):
+    """A repo whose tree holds adapter_config.json is a PEFT/LoRA adapter,
+    not a model: its weight files may hash-match, but confirmation would
+    adopt the adapter as the base model — the tree is already fetched, so
+    the check is free."""
+    tree = hf_tree() + [{"type": "file", "oid": "f" * 40, "size": 1234,
+                         "path": "adapter_config.json"}]
+    reg = Registry({HF_INFO: (200, {"sha": HF_REV}), HF_TREE: (200, tree)})
+    res = make_resolver(reg, clock).resolve("hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M", SHA)
+    assert res == Unconfirmed("lora-adapter")
+
+
 def test_hf_private_or_missing_repo_is_unconfirmed(clock):
     reg = Registry({"/api/models/secret/repo": (401, {"error": "Repository not found"})})
     res = make_resolver(reg, clock).resolve("hf.co/secret/repo:Q4_K_M", SHA)

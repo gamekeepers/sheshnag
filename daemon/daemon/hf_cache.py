@@ -140,6 +140,9 @@ def describe(snapshot: Path) -> dict:
     snapshot dir. Weight files are sorted by name so shard 1 is first —
     its hash is the artifact's identity (the "digest pins the weights file"
     convention); `files` carries every shard for catalog_artifact_files."""
+    if (snapshot / "adapter_config.json").is_file():
+        # PEFT/LoRA adapter: no base-model identity, nothing to report.
+        return {"files": [], "details": {}}
     files = []
     for p in sorted(snapshot.iterdir()):
         if not p.name.endswith(_WEIGHT_SUFFIXES):
