@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from catalog_seed import validate_entry_id
-from identity_resolver import Confirmed, IdentityResolver
+from identity_resolver import Confirmed, IdentityResolver, Unconfirmed
 from models import (
     CatalogArtifactFile, ModelCatalog, Organization, RuntimeModel, ServingProfile,
     WorkerRuntime,
@@ -275,6 +275,14 @@ def auto_adopt_pass(db, resolver: IdentityResolver, *, enabled: Optional[bool] =
         confirmed = None
         for name in cand.names:
             result = resolver.resolve(name, cand.digest, **hints)
+            if (isinstance(result, Unconfirmed) and result.reason == "digest-mismatch"
+                    and hints.get("source_revision")):
+                # The hinted commit no longer holds the shards (a tag was
+                # re-published, or the box's cache predates it). Not a
+                # verdict: retry at the repo's current commit first.
+                result = resolver.resolve(name, cand.digest,
+                                          source_ref=hints.get("source_ref"),
+                                          files=hints.get("files"))
             if isinstance(result, Confirmed):
                 confirmed = (name, result)
                 break

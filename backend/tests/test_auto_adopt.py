@@ -144,6 +144,40 @@ def test_unconfirmed_hash_stays_quarantined(auth_client, db):
     assert db.query(ModelCatalog).filter(ModelCatalog.digest == H2).first() is None
 
 
+def test_stale_revision_hint_retries_at_repo_head(auth_client, db):
+    """The daemon hints the commit its cache snapshot sits at; when that
+    commit no longer holds the shards (a tag was re-published upstream) the
+    digest-mismatch is not a verdict — retry at the repo's current commit
+    before quarantining for a human."""
+    key = _worker_key(auth_client, "Auto Org 7")
+    digest = "b8" * 32
+    details = dict(DETAILS, source_ref="zzauto/Model-GGUF",
+                   source_revision="0a1b2c3d")
+    _register(auth_client, key, "zzauto-box7",
+              [_item("zzauto-retag:1b", digest, details=details)])
+
+    class RetagStub:
+        def __init__(self):
+            self.calls = []
+
+        def resolve(self, name, sha256, **hints):
+            self.calls.append((name, sha256, hints))
+            if (name, sha256) != ("zzauto-retag:1b", digest):
+                return Unconfirmed("unverified")    # not this test's candidate
+            if hints.get("source_revision"):
+                return Unconfirmed("digest-mismatch")   # pinned commit lost the shards
+            return Confirmed(source_type="huggingface", source_ref="zzauto/Model-GGUF",
+                             source_revision="cafebabe", digest=sha256,
+                             homepage_url="https://huggingface.co/zzauto/Model-GGUF")
+
+    resolver = RetagStub()
+    assert auto_adopt_pass(db, resolver, enabled=True) == 1
+    mine = [h.get("source_revision") for (_n, s, h) in resolver.calls if s == digest]
+    assert mine == ["0a1b2c3d", None]            # hinted commit first, then repo HEAD
+    entry = db.query(ModelCatalog).filter_by(digest=digest).one()
+    assert entry.source_revision == "cafebabe"    # adopted at HEAD, not the stale hint
+
+
 def test_slug_collision_gets_numeric_suffix(auth_client, db):
     db.add(ModelCatalog(id="zzauto-taken-1b-q40", display_name="taken", runtime="ollama",
                         runtime_model_id="elsewhere:1b", digest="c3" * 32, enabled=True))

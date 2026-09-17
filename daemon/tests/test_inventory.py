@@ -5,6 +5,7 @@ import json
 import httpx
 import pytest
 
+from daemon import hf_cache
 from daemon.executors.ollama import OllamaExecutor
 from daemon.executors.vllm import VLLMExecutor
 from daemon.heartbeat import HeartbeatManager
@@ -504,3 +505,56 @@ async def test_vllm_standalone_adapter_reports_no_identity(tmp_path):
     assert item["sha256"] is None and item["files"] is None
     assert item["details"].get("family") is None
     assert item["details"]["source_ref"] == "acme/finance-lora"
+
+
+# ─── hf_cache.snapshot_for: revision choice ──────────────────
+
+def _repo_with_snapshots(tmp_path, revs, main_ref=None):
+    repo = tmp_path / "models--Org--Name"
+    for rev in revs:
+        (repo / "snapshots" / rev).mkdir(parents=True)
+    if main_ref is not None:
+        (repo / "refs").mkdir(parents=True, exist_ok=True)
+        (repo / "refs" / "main").write_text(main_ref + "\n")
+    return repo
+
+
+def test_snapshot_single_dir_is_unambiguous_without_any_ref(tmp_path):
+    """vLLM can only serve what is in its cache: one snapshot dir IS the
+    commit, regardless of refs (tags live under refs/tags, commit pulls
+    write no ref at all)."""
+    repo = _repo_with_snapshots(tmp_path, ["0a1b2c3d"])
+    rev, snap = hf_cache.snapshot_for(repo)
+    assert rev == "0a1b2c3d" and snap == repo / "snapshots" / "0a1b2c3d"
+
+
+def test_snapshot_single_dir_ignores_stale_main_ref(tmp_path):
+    """refs/main dangling (pull interrupted) must not shadow the only
+    snapshot — the box is serving it."""
+    repo = _repo_with_snapshots(tmp_path, ["0a1b2c3d"], main_ref="deadbeef")
+    assert hf_cache.snapshot_for(repo)[0] == "0a1b2c3d"
+
+
+def test_snapshot_multiple_dirs_honours_valid_main_ref(tmp_path):
+    repo = _repo_with_snapshots(tmp_path, ["0a1b2c3d", "9f9f9f9f"], main_ref="9f9f9f9f")
+    assert hf_cache.snapshot_for(repo)[0] == "9f9f9f9f"
+
+
+def test_snapshot_multiple_dirs_without_ref_refuses_to_guess(tmp_path):
+    """--revision v0.5.0 and a later main pull: two dirs, no ref pointing
+    at an existing snapshot. Picking by mtime would pin the wrong commit
+    and digest-mismatch into permanent quarantine — None instead."""
+    repo = _repo_with_snapshots(tmp_path, ["0a1b2c3d", "9f9f9f9f"])
+    assert hf_cache.snapshot_for(repo) is None
+
+
+def test_snapshot_multiple_dirs_with_stale_ref_refuses_to_guess(tmp_path):
+    repo = _repo_with_snapshots(tmp_path, ["0a1b2c3d", "9f9f9f9f"], main_ref="deadbeef")
+    assert hf_cache.snapshot_for(repo) is None
+
+
+def test_snapshot_no_dirs_is_none(tmp_path):
+    repo = tmp_path / "models--Org--Name"
+    (repo / "snapshots").mkdir(parents=True)
+    assert hf_cache.snapshot_for(repo) is None
+    assert hf_cache.snapshot_for(tmp_path / "missing") is None

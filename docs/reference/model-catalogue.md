@@ -212,9 +212,12 @@ entry is added (every runnable model stays a pinned entry):
    (see [Configuration](configuration.md)). A provider that pulls a public
    model therefore sees it offered within about a minute. vLLM boxes ride
    the same path: the daemon reads shard hashes, repo and commit from the
-   HF hub cache, the resolver confirms **every shard** at that commit, and
-   the entry pins the served alias in its `vllm` profile (what dispatch
-   sends) with all shards in `catalog_artifact_files`.
+    HF hub cache, the resolver confirms **every shard** at that commit, and
+    the entry pins the served alias in its `vllm` profile (what dispatch
+    sends) with all shards in `catalog_artifact_files`. A hinted commit that
+    no longer holds the shards (a tag re-published upstream) is retried at
+    the repo's current commit before the hash is left quarantined for a
+    human.
 3. **Admin-adopted** — hashes the registry cannot confirm (custom
    fine-tunes, private builds) stay quarantined; a superadmin adopts them
    via `POST /v1/models/adopt` / the Models tab, supplying what bytes

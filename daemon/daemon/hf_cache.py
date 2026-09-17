@@ -52,12 +52,22 @@ def repo_id_from_dir_name(name: str) -> Optional[str]:
 
 
 def snapshot_for(repo_dir: Path) -> Optional[tuple]:
-    """(revision, snapshot_path) for a cached repo: `refs/main` when it
-    points at an existing snapshot, else the only snapshot, else the newest.
+    """(revision, snapshot_path) for a cached repo, or None when the choice
+    is ambiguous. A single snapshot dir is unambiguous no matter what the
+    refs say — vLLM can only serve what is in its cache, and the dir name IS
+    the commit SHA. With several (e.g. `--revision v0.5.0` and a later
+    `main` pull), only `refs/main` picking an existing snapshot may be
+    trusted: tags live under refs/tags/<tag>, commit pulls write no ref,
+    and mtime order is a guess, not an identity.
     """
     snaps = repo_dir / "snapshots"
     if not snaps.is_dir():
         return None
+    dirs = [d for d in snaps.iterdir() if d.is_dir()]
+    if not dirs:
+        return None
+    if len(dirs) == 1:
+        return dirs[0].name, dirs[0]
     ref = repo_dir / "refs" / "main"
     try:
         rev = ref.read_text().strip()
@@ -65,11 +75,7 @@ def snapshot_for(repo_dir: Path) -> Optional[tuple]:
             return rev, snaps / rev
     except OSError:
         pass
-    dirs = [d for d in snaps.iterdir() if d.is_dir()]
-    if not dirs:
-        return None
-    dirs.sort(key=lambda d: d.stat().st_mtime, reverse=True)
-    return dirs[0].name, dirs[0]
+    return None
 
 
 def locate(cache: Optional[Path], root: str) -> Optional[tuple]:

@@ -222,7 +222,10 @@ model, not per beat). vLLM fills it from the HF hub cache's `config.json`
 and adds `source_ref` / `source_revision` (repo + commit) — the cache is
 content-addressed, so `sha256` is shard 1's blob hash and `files` lists
 every shard (`[{file, sha256, size_bytes}]`); models served from a path
-outside the cache stay hash-less.
+outside the cache stay hash-less. The commit is only guessed when it is
+unambiguous: one snapshot dir in the cache is always served (vLLM can only
+run what is cached), several require a valid `refs/main` — otherwise the
+row reports no identity rather than pin the wrong commit.
 
 Consequence: a worker advertises **everything its runtime holds**, not only
 `DAEMON_MODELS` — every on-disk Ollama model, every model vLLM serves — so a
