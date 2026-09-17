@@ -413,7 +413,7 @@ async def test_vllm_identity_from_hub_cache(tmp_path):
     items = {i["local_name"]: i for i in await ex.inventory()}
     assert set(items) == {"served-alias", "Org/Name"}
     for item in items.values():
-        assert item["sha256"] == SHARD1 and item["size_bytes"] == 1000
+        assert item["sha256"] == SHARD1 and item["size_bytes"] == 1500  # total, not shard 1
         assert [(f["file"], f["sha256"], f["size_bytes"]) for f in item["files"]] == [
             ("model-00001-of-00002.safetensors", SHARD1, 1000),
             ("model-00002-of-00002.safetensors", SHARD2, 500),

@@ -260,7 +260,7 @@ class VLLMExecutor(BaseExecutor):
             details = dict(info["details"], source_ref=repo_id, source_revision=revision)
             return {
                 "sha256": files[0]["sha256"] if files else None,
-                "size_bytes": files[0]["size_bytes"] if files else None,
+                "size_bytes": sum(f["size_bytes"] for f in files if f["size_bytes"]) or None,
                 "files": files or None,
                 "details": details if any(v is not None for v in details.values()) else None,
             }
