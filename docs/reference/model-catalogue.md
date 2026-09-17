@@ -1,6 +1,6 @@
 # Model catalogue
 
-*Last updated 2026-09-15 (registry schema: serving profiles, artifact files, capabilities/lineage, naming rules — #116).*
+*Last updated 2026-09-17 (multi-name serving profiles + digest-join matching, auto-adopt alias pinning, family/revision/LoRA/pagination/cache fixes — #124 review).*
 
 The set of models a user may select for a batch. `body.model` in a submitted
 JSONL is a **catalogue id** — a stable platform slug — not a raw runtime tag.
@@ -52,8 +52,14 @@ per-worker `runtime_models` rows, which stay lean (name, `runtime_model_id`,
 ## Child tables
 
 **`serving_profiles`** — how one artifact is served by one runtime:
-`(catalog_id, runtime, runtime_model_id, params)`, unique per
-`(catalog_id, runtime)`. `params` are platform-owned server-launch knobs
+`(catalog_id, runtime, runtime_model_id, runtime_model_ids, params)`,
+unique per `(catalog_id, runtime)`. `runtime_model_ids` (JSON list) are
+**extra names the same artifact answers to** — vLLM boxes often differ on
+`--served-model-name`, and each name must stay dispatchable on one entry
+instead of fragmenting it. Every profile id (primary + extras) is a
+scheduling target. Reconciliation auto-appends a reported name when its
+digest matches the entry, so a new box's alias becomes schedulable without
+a registry edit. `params` are platform-owned server-launch knobs
 (llama.cpp `n_ctx`/`parallel`, vLLM `max_model_len`) — per-request sampling
 params still travel in each batch row's `body`. Entries without an explicit
 `profiles:` list in the manifest get one profile derived from the legacy
@@ -87,7 +93,9 @@ At `POST /workers/poll`, for each `validated` batch the picker:
 3. requires the worker to **host** `runtime_model_id` (advertised at
    registration / reported loaded), enforcing **digest equality when both the
    entry and the worker's model carry a digest** — *same tag + different digest
-   ⇒ not matched*; falls back to name match when either digest is absent;
+   ⇒ not matched*; falls back to name match when either digest is absent. A
+   name the entry does not profile still matches when its digest **equals**
+   the entry's (digest-join: same artifact, different served alias);
 4. prefers a worker already serving the model (loaded in VRAM).
 
 Poll returns `runtime_model_id` (not the slug) as the job's `model`, so the
@@ -113,10 +121,11 @@ Rows without a hash are never quarantined: there is nothing to adopt and the
 picker already requires a catalogue entry for the name. `missing` is scoped
 to the runtimes present in a report — a daemon inventories only its own
 runtime, so a second runtime's rows are left alone. A hash-verified row
-whose local name is none of the entry's runtime ids is logged: it is
-`available` but the picker will not dispatch it under that name (add a
-serving profile for the name, or adopt with the name workers actually use —
-`POST /v1/models/adopt` rejects a `runtime_model_id` no worker reports). A hash-bearing row
+whose local name is none of the entry's serving names is **self-healed**:
+the name is appended to the entry's serving profile for the row's runtime
+(the digest match proves the artifact — the name is just what that box
+calls it), so the row dispatches on the next poll. Manual equivalent:
+`POST /v1/models/adopt` rejects a `runtime_model_id` no worker reports. A hash-bearing row
 registered before its entry existed self-heals on the next heartbeat
 (re-classified every beat). Adopted entries carry `status: unverified` —
 selectable and schedulable like `active`, provenance unconfirmed.

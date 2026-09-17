@@ -120,6 +120,7 @@ def adopt(
     runtime: str,
     runtime_model_id: str,
     vram_gb: Optional[float],
+    extra_names: Optional[list] = None,
     quantization: Optional[str] = None,
     task_type: str = "chat",
     capabilities: Optional[dict] = None,
@@ -156,12 +157,13 @@ def adopt(
     # worker reports for this hash would flip rows to available yet never
     # dispatch — a false success.
     names = local_names_for_hash(db, sha256)
-    if names and runtime_model_id not in names:
-        raise AdoptError(
-            400,
-            f"runtime_model_id {runtime_model_id!r} is not what any worker "
-            f"reports for this hash; workers call it {sorted(names)}",
-        )
+    for rmid in [runtime_model_id] + [n for n in (extra_names or []) if n != runtime_model_id]:
+        if names and rmid not in names:
+            raise AdoptError(
+                400,
+                f"runtime_model_id {rmid!r} is not what any worker "
+                f"reports for this hash; workers call it {sorted(names)}",
+            )
     if org_id is not None and db.get(Organization, org_id) is None:
         raise AdoptError(400, f"unknown org_id {org_id!r}")
 
@@ -191,7 +193,9 @@ def adopt(
     )
     db.add(entry)
     db.flush()
-    db.add(ServingProfile(catalog_id=entry.id, runtime=runtime, runtime_model_id=runtime_model_id))
+    extras = [n for n in (extra_names or []) if n != runtime_model_id] or None
+    db.add(ServingProfile(catalog_id=entry.id, runtime=runtime,
+                          runtime_model_id=runtime_model_id, runtime_model_ids=extras))
     db.flush()
     verified = reclassify_hash(db, digest)
     return entry, verified
@@ -232,6 +236,24 @@ def _candidates(db) -> list:
     return list(by_digest.values())
 
 
+def _pick_served_alias(names, source_ref):
+    """The primary served name to pin for a vLLM artifact, or None.
+
+    A short reported alias (no '/', so never a filesystem path or a repo id),
+    chosen deterministically (shortest, then lexicographic) — `aliases[0]`
+    used to read an unordered DB query, so which box's alias got pinned was
+    a coin flip and the other boxes' aliases never dispatched. When no alias
+    is reported, the repo id (the model is served under it). Paths are never
+    valid body.model values and lose by construction."""
+    names = set(names or [])
+    short = sorted(n for n in names if n and "/" not in n)
+    if short:
+        return min(short, key=lambda n: (len(n), n))
+    if source_ref and source_ref in names:
+        return source_ref
+    return None
+
+
 def auto_adopt_pass(db, resolver: IdentityResolver, *, enabled: Optional[bool] = None) -> int:
     """Adopt every quarantined hash the resolver confirms. Returns the number
     of entries created. Commits per adoption so one failure cannot roll back
@@ -260,13 +282,24 @@ def auto_adopt_pass(db, resolver: IdentityResolver, *, enabled: Optional[bool] =
         if confirmed is None:
             continue
         name, res = confirmed
-        # The serving profile must pin the name dispatch will send. For vLLM
-        # that is the served alias, not the HF repo path also reported as a
-        # row — prefer a reported name that is not the repo id.
         served = name
+        extra_names = None
         if cand.runtime == "vllm":
-            aliases = [n for n in cand.names if n != res.source_ref]
-            served = aliases[0] if aliases else name
+            # The serving profile must pin the name dispatch sends as
+            # body.model. Pin a deterministic served alias (never a path,
+            # never DB order), and make every other reported non-path name an
+            # extra profile name — boxes serving the same artifact under
+            # different --served-model-name stay schedulable on one entry.
+            served = _pick_served_alias(cand.names, res.source_ref)
+            if served is None:
+                logger.info(
+                    "auto-adopt: no unambiguous served name for %s (names=%s) — "
+                    "leaving quarantined for a human",
+                    cand.digest[:12], sorted(set(cand.names)),
+                )
+                continue
+            extra_names = [n for n in sorted(set(cand.names))
+                           if n != served and not n.startswith(("/", "./", "~"))]
         quant = details.get("quantization")
         task_type, capabilities = infer_task_and_capabilities(served, details)
         size_gb = round(cand.size_bytes / (1024 ** 3), 2) if cand.size_bytes else None
@@ -281,6 +314,7 @@ def auto_adopt_pass(db, resolver: IdentityResolver, *, enabled: Optional[bool] =
                 display_name=served,
                 runtime=cand.runtime,
                 runtime_model_id=served,
+                extra_names=extra_names,
                 vram_gb=estimate_vram_gb(cand.size_bytes),
                 quantization=quant,
                 task_type=task_type,
