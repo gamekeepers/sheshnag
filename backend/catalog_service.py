@@ -37,8 +37,18 @@ AUTO_ADOPT_REGISTRY = "registry-confirmed"
 _VRAM_FACTOR = 1.2
 _VRAM_OVERHEAD_GB = 0.5
 
-_EMBEDDING_FAMILIES = {"nomic-bert", "bert", "xlm-roberta"}
-_VISION_FAMILIES = {"gemma3", "gemma4", "qwen2vl", "qwen25vl", "llava", "mllama", "mistral3", "pixtral"}
+def _norm(s: str) -> str:
+    """Family words with punctuation stripped: HF `model_type` and Ollama's
+    `details.family` are the same words with different punctuation
+    (`qwen2_5_vl` vs `qwen25vl`, `xlm-roberta` vs `xlmroberta`), so the
+    sets below are normalized and so is whatever arrives."""
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+_EMBEDDING_FAMILIES = {_norm(f) for f in {"nomic-bert", "bert", "xlm-roberta", "bge"}}
+_VISION_FAMILIES = {_norm(f) for f in {
+    "gemma3", "gemma3n", "gemma4", "qwen2_vl", "qwen2_5_vl", "qwen3_vl",
+    "llava", "mllama", "mistral3", "mistral3vision", "pixtral"}}
 
 
 def auto_adopt_mode() -> str:
@@ -103,7 +113,7 @@ def estimate_vram_gb(size_bytes) -> Optional[float]:
 
 def infer_task_and_capabilities(local_name: str, details: Optional[dict]) -> tuple:
     """(task_type, capabilities) from the runtime's family and the name."""
-    family = ((details or {}).get("family") or "").lower()
+    family = _norm((details or {}).get("family"))
     name = local_name.lower()
     if family in _EMBEDDING_FAMILIES or "embed" in name:
         return "embedding", {"embeddings": True, "json_mode": False, "vision": False}

@@ -97,6 +97,14 @@ def test_slug_vram_and_capability_helpers():
         "embedding", {"embeddings": True, "json_mode": False, "vision": False})
     assert infer_task_and_capabilities("gemma3:4b", {"family": "gemma3"})[1]["vision"] is True
     assert infer_task_and_capabilities("qwen2.5vl:3b", {"family": "qwen25vl"})[1]["vision"] is True
+    # HF model_type and Ollama's family are the same words, different punctuation
+    assert infer_task_and_capabilities("qwen:7b", {"family": "qwen2_5_vl"})[1]["vision"] is True
+    assert infer_task_and_capabilities("qwen:7b", {"family": "qwen3_vl"})[1]["vision"] is True
+    assert infer_task_and_capabilities("gemma:12b", {"family": "gemma3n"})[1]["vision"] is True
+    assert infer_task_and_capabilities("xlmr:3b", {"family": "xlm-roberta"}) == (
+        "embedding", {"embeddings": True, "json_mode": False, "vision": False})
+    assert infer_task_and_capabilities("bge:base", {"family": "bge"}) == (
+        "embedding", {"embeddings": True, "json_mode": False, "vision": False})
     assert infer_task_and_capabilities("qwen3:4b", {"family": "qwen3"}) == (
         "chat", {"json_mode": True, "vision": False, "embeddings": False})
 
