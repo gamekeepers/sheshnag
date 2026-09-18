@@ -34,11 +34,17 @@ from daemon.worker import Worker
 
 class FakeExecutor(BaseExecutor):
     """A runtime that serves a fixed set of names, optionally with
-    digests (Ollama-like) and/or an explicit inventory."""
+    digests (Ollama-like) and/or an explicit inventory.
 
-    def __init__(self, runtime, names, healthy=True, detailed=True, inventory=None):
+    `names` is what the runtime can serve; `running` is what it holds in
+    VRAM. They default to the same list — a test that cares about the
+    difference passes `running` explicitly."""
+
+    def __init__(self, runtime, names, healthy=True, detailed=True, inventory=None,
+                 running=None):
         self.runtime_name = runtime
         self._names = list(names)
+        self._running = list(names) if running is None else list(running)
         self._healthy = healthy
         self._inventory = inventory if inventory is not None else [
             {"local_name": n, "sha256": None, "size_bytes": None} for n in names
@@ -68,6 +74,9 @@ class FakeExecutor(BaseExecutor):
 
     async def list_models(self):
         return list(self._names)
+
+    async def list_running_models(self):
+        return list(self._running)
 
     async def inventory(self):
         return self.tag_inventory([dict(i) for i in self._inventory])
@@ -108,6 +117,9 @@ class FakeOllama(OllamaExecutor):
         return True
 
     async def list_models(self):
+        return list(self._names)
+
+    async def list_running_models(self):
         return list(self._names)
 
     async def pull_model(self, model_name, progress_callback=None):
@@ -539,9 +551,12 @@ class TestHeartbeatViews:
         assert await worker._get_loaded_models() == ["a", "b"]
 
     @pytest.mark.asyncio
-    async def test_bare_executor_falls_back_to_config(self, tmp_path):
+    async def test_bare_executor_reports_no_residence(self, tmp_path):
+        """The configured model list names what the worker MAY serve. A
+        runtime that cannot report what is in VRAM reports nothing rather
+        than dressing that list up as residence."""
         worker = _worker({"bare": BareExecutor()}, tmp_path, models=["static"])
-        assert await worker._get_loaded_models() == ["static"]
+        assert await worker._get_loaded_models() == []
 
     @pytest.mark.asyncio
     async def test_mixed_worker_unions_across_runtimes(self, tmp_path):
@@ -553,13 +568,12 @@ class TestHeartbeatViews:
     @pytest.mark.asyncio
     async def test_inventory_union_tagged_and_loaded_scoped(self, tmp_path):
         ollama = FakeExecutor(
-            "ollama", ["a"],
+            "ollama", ["a"], running=["a"],
             inventory=[{"local_name": "a", "sha256": "a" * 64, "size_bytes": 1}],
         )
-        # vLLM holds model "a" on disk too, but has NOT loaded it --
-        # only ollama has it in its model list.
+        # vLLM holds model "a" on disk too, but has NOT loaded it.
         vllm = FakeExecutor(
-            "vllm", ["b"],
+            "vllm", ["a", "b"], running=["b"],
             inventory=[
                 {"local_name": "b", "sha256": "b" * 64, "size_bytes": 1},
                 {"local_name": "a", "sha256": "a" * 64, "size_bytes": 1},
@@ -578,6 +592,42 @@ class TestHeartbeatViews:
         assert by_name["a"][1]["loaded"] is True    # loaded on ollama
         assert by_name["b"][0]["runtime"] == "vllm"
         assert by_name["b"][0]["loaded"] is True
+
+    @pytest.mark.asyncio
+    async def test_on_disk_but_idle_is_not_loaded(self, tmp_path):
+        """Two models installed, one resident -> exactly one `loaded`.
+
+        Stamping `loaded` from the on-disk listing made this test pass with
+        both flags true: an on-disk name is always in the on-disk listing.
+        """
+        ollama = FakeExecutor(
+            "ollama", ["hot:1b", "cold:1b"], running=["hot:1b"],
+            inventory=[
+                {"local_name": "hot:1b", "sha256": "a" * 64, "size_bytes": 1},
+                {"local_name": "cold:1b", "sha256": "b" * 64, "size_bytes": 1},
+            ],
+        )
+        worker = _worker({"ollama": ollama}, tmp_path)
+
+        by_name = {i["local_name"]: i for i in await worker._get_inventory()}
+        assert by_name["hot:1b"]["loaded"] is True
+        assert by_name["cold:1b"]["loaded"] is False
+        assert await worker._get_loaded_models() == ["hot:1b"]
+
+    @pytest.mark.asyncio
+    async def test_residence_query_failure_loads_nothing(self, tmp_path):
+        """A failed residence query is not "everything is resident"."""
+        ollama = FakeExecutor(
+            "ollama", ["a"],
+            inventory=[{"local_name": "a", "sha256": "a" * 64, "size_bytes": 1}],
+        )
+
+        async def raise_running():
+            raise RuntimeError("runtime down")
+
+        ollama.list_running_models = raise_running
+        worker = _worker({"ollama": ollama}, tmp_path)
+        assert (await worker._get_inventory())[0]["loaded"] is False
 
     @pytest.mark.asyncio
     async def test_heartbeat_preserves_per_item_loaded(self, monkeypatch):

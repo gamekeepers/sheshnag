@@ -122,6 +122,20 @@ class BaseExecutor(ABC):
             results.append(result)
         return results
 
+    async def list_running_models(self) -> List[str]:
+        """Model names resident in the runtime right now, not merely on disk.
+
+        Distinct from `list_models()`, which answers "what could this runtime
+        serve" and drives routing. This answers "what is in VRAM", which is
+        what the scheduler's already-loaded preference and the provider-facing
+        `loaded` flag mean.
+
+        A runtime that cannot tell residence from availability returns [] —
+        claiming everything is resident is the failure that makes the
+        preference worthless. Must never raise.
+        """
+        return []
+
     async def inventory(self) -> List[dict]:
         """
         Every model artifact this runtime holds on disk, with file hashes.

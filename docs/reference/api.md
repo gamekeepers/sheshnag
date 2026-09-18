@@ -210,6 +210,12 @@ assigned to (403 otherwise).
 }
 ```
 
+`loaded_models` and `inventory[].loaded` both mean **resident in VRAM right
+now**, not present on disk — Ollama reads them from `/api/ps`, vLLM from the
+models it serves. `loaded_models` carries no runtime tag, so on a mixed worker
+the backend can only apply it as a union; `inventory[].loaded` is tagged and
+therefore authoritative, and a daemon that sends no inventory keeps the union.
+
 `inventory` (additive; older daemons omit it) is the full on-disk artifact
 list with FILE hashes — Ollama manifest-layer digests, which equal the GGUF
 file's sha256 and join against `model_catalog.digest` (#116). It is resent

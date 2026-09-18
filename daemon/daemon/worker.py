@@ -112,22 +112,16 @@ class Worker:
         self._work_dir.mkdir(parents=True, exist_ok=True)
 
     async def _get_loaded_models(self) -> List[str]:
+        """Models resident in VRAM, union across runtimes, for the heartbeat.
+
+        The scheduler prefers a worker that already holds the model, so this
+        is residence and not availability: the configured model list and the
+        on-disk catalogue both name models this worker merely *could* serve,
+        and reporting either makes the preference meaningless.
         """
-        Models currently served by the runtimes, reported in heartbeats
-        so the scheduler can prefer workers that already host a model.
-        A single-runtime worker keeps its existing behavior (dynamic
-        list, or the static config list when the runtime can't be
-        queried); a mixed worker reports the union across runtimes.
-        """
-        if len(self._executors) == 1:
-            executor = next(iter(self._executors.values()))
-            if hasattr(executor, "list_models"):
-                return await executor.list_models()
-            return list(self._config.models)
         names: List[str] = []
         for executor in self._executors.values():
-            if hasattr(executor, "list_models"):
-                names.extend(await executor.list_models())
+            names.extend(await executor.list_running_models())
         return list(dict.fromkeys(names))
 
     async def _get_loaded_model_digests(self) -> dict:
@@ -153,19 +147,21 @@ class Worker:
         live on ollama is not "loaded" on the vllm row, even though the
         union loaded_models list contains it. BaseExecutor.inventory()
         never raises and returns [] where the runtime can't report.
+
+        `loaded` is residence, so it is stamped from list_running_models()
+        and not from the inventory itself: testing an on-disk listing for
+        membership of an on-disk listing is true by construction.
         """
         items: List[dict] = []
         for executor in self._executors.values():
-            loaded: set = set()
-            if hasattr(executor, "list_models"):
-                try:
-                    loaded = set(await executor.list_models())
-                except Exception:
-                    loaded = set()
+            try:
+                resident = set(await executor.list_running_models())
+            except Exception:
+                resident = set()
             for item in await executor.inventory():
                 stamped = dict(item)
                 if "loaded" not in stamped:
-                    stamped["loaded"] = stamped.get("local_name") in loaded
+                    stamped["loaded"] = stamped.get("local_name") in resident
                 items.append(stamped)
         return items
 

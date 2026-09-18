@@ -197,6 +197,10 @@ def apply_inventory(db, worker, items) -> None:
     of runtimes that appear in THIS report — a daemon only inventories its
     own runtime, so a second runtime's rows must not be marked gone every
     beat. An empty report (old daemon, runtime unreachable) changes nothing.
+
+    The report is authoritative for `loaded`, which the heartbeat can only
+    set from a runtime-blind union: residence is per-runtime, so a model in
+    VRAM on ollama must not light up the vllm row.
     """
     if not items or not worker.runtimes:
         return
@@ -223,6 +227,9 @@ def apply_inventory(db, worker, items) -> None:
             rows[key] = row
         elif item.sha256 and row.digest != item.sha256:
             row.digest = item.sha256
+            row.updated_at = unix_now()
+        if row.loaded != item.loaded:
+            row.loaded = item.loaded
             row.updated_at = unix_now()
         details = getattr(item, "details", None)
         if details and row.details != details:

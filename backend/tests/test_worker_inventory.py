@@ -426,3 +426,86 @@ def test_unavailable_runtime_is_catalogued_but_not_dispatchable(auth_client, db_
     dispatchable = {n for n, _digest in worker.advertised_models()}
     assert "on-disk:8b" not in dispatchable, "a down runtime must not be given work"
     assert "served:7b" in dispatchable
+
+
+def test_heartbeat_loaded_is_scoped_per_runtime(auth_client, db_session):
+    """`loaded_models` carries no runtime tag, so on a mixed worker it can
+    only be applied as a union. The tagged inventory re-scopes it: a model
+    resident on ollama must not light up the vllm row for the same name."""
+    key = _worker_key(auth_client, "Loaded Scope Org")
+    payload = _mixed_registration(key, "scope-box", [
+        ("vllm", ["shared:1b"], [
+            {"local_name": "shared:1b", "sha256": "a" * 64,
+             "size_bytes": 1, "loaded": False, "runtime": "vllm"},
+        ]),
+        ("ollama", ["shared:1b"], [
+            {"local_name": "shared:1b", "sha256": "b" * 64,
+             "size_bytes": 2, "loaded": False, "runtime": "ollama"},
+        ]),
+    ])
+    resp = auth_client.post(
+        "/workers/register", json=payload, headers={"Authorization": f"Bearer {key}"}
+    )
+    assert resp.status_code == 200, resp.text
+    worker_id = resp.json()["worker_id"]
+
+    hb = auth_client.post(
+        f"/workers/{worker_id}/heartbeat",
+        json={
+            "worker_id": worker_id,
+            "activity": "idle",
+            "loaded_models": ["shared:1b"],       # union: resident *somewhere*
+            "inventory": [
+                {"local_name": "shared:1b", "sha256": "a" * 64,
+                 "size_bytes": 1, "loaded": False, "runtime": "vllm"},
+                {"local_name": "shared:1b", "sha256": "b" * 64,
+                 "size_bytes": 2, "loaded": True, "runtime": "ollama"},
+            ],
+        },
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert hb.status_code == 200, hb.text
+
+    rows = _rows_by_runtime(db_session, worker_id)
+    assert rows["ollama"]["shared:1b"].loaded is True
+    assert rows["vllm"]["shared:1b"].loaded is False
+
+
+def test_heartbeat_inventory_outranks_the_union_flag(auth_client, db_session):
+    """A model unloaded from VRAM but still on disk goes back to loaded=False
+    on an EXISTING row, even while the untagged `loaded_models` union still
+    names it. The tagged inventory is the authority; the union is what the
+    backend falls back to for daemons that send no inventory at all."""
+    key = _worker_key(auth_client, "Evict Org")
+    resp = auth_client.post(
+        "/workers/register",
+        json={
+            "hostname": "evict-box",
+            "runtimes": [{
+                "type": "ollama", "endpoint": "localhost", "models": ["hot:1b"],
+                "inventory": [{"local_name": "hot:1b", "sha256": "e" * 64,
+                               "size_bytes": 1, "loaded": True, "runtime": "ollama"}],
+            }],
+        },
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    worker_id = resp.json()["worker_id"]
+    assert _rows(db_session, worker_id)["hot:1b"].loaded is True
+
+    hb = auth_client.post(
+        f"/workers/{worker_id}/heartbeat",
+        json={
+            "worker_id": worker_id,
+            "activity": "idle",
+            "loaded_models": ["hot:1b"],          # stale union still claims it
+            "inventory": [{"local_name": "hot:1b", "sha256": "e" * 64,
+                           "size_bytes": 1, "loaded": False, "runtime": "ollama"}],
+        },
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert hb.status_code == 200, hb.text
+
+    row = _rows(db_session, worker_id)["hot:1b"]
+    assert row.loaded is False
+    assert row.status != "missing"      # still on disk, just not resident

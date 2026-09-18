@@ -324,6 +324,11 @@ class VLLMExecutor(BaseExecutor):
             logger.warning(f"vLLM inventory failed: {exc}")
             return []
 
+    async def list_running_models(self) -> List[str]:
+        """vLLM holds its served models in VRAM for the process lifetime, so
+        what it serves and what is resident are the same list."""
+        return await self.list_models()
+
     async def list_models(self) -> List[str]:
         """Names this server serves — the same names inventory() reports
         (served id + root of each non-adapter entry).

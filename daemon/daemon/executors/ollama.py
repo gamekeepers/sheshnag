@@ -428,6 +428,23 @@ class OllamaExecutor(BaseExecutor):
         """List locally available model names via GET /api/tags."""
         return [m["name"] for m in await self.list_models_detailed()]
 
+    async def list_running_models(self) -> List[str]:
+        """Models loaded in VRAM via GET /api/ps.
+
+        /api/tags answers a different question — every model on disk — so
+        using it here reports an idle machine as fully loaded.
+        """
+        client = self._get_client()
+        try:
+            response = await client.get("/api/ps", timeout=5.0)
+            response.raise_for_status()
+            return [
+                m["name"] for m in response.json().get("models", []) if m.get("name")
+            ]
+        except Exception as e:
+            logger.debug(f"Could not list running Ollama models: {e}")
+            return []
+
     # ── On-disk inventory (registry identity) ─────────────────
 
     def _is_local_server(self) -> bool:

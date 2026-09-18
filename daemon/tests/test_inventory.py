@@ -711,3 +711,46 @@ def test_weight_selection_single_file_ignores_other_bins(tmp_path):
     snap = _file_snapshot(tmp_path, {"model.safetensors": M, "optimizer.bin": O})
     files = hf_cache.describe(snap)["files"]
     assert [(f["file"], f["sha256"]) for f in files] == [("model.safetensors", M)]
+
+
+# ─── Ollama: residence comes from /api/ps ────────────────────
+
+def _ps_client(running, paths=None, fail=False):
+    """Mock Ollama /api/ps. `running` = names reported as in VRAM."""
+    def handler(request):
+        if paths is not None:
+            paths.append(request.url.path)
+        if fail:
+            return httpx.Response(500, json={"error": "nope"})
+        return httpx.Response(200, json={
+            "models": [{"name": n, "size_vram": 1} for n in running]
+        })
+    return httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://ollama.test")
+
+
+@pytest.mark.asyncio
+async def test_list_running_models_reads_api_ps():
+    paths = []
+    ex = OllamaExecutor()
+    ex._client = _ps_client(["qwen3:4b"], paths=paths)
+    assert await ex.list_running_models() == ["qwen3:4b"]
+    assert paths == ["/api/ps"]      # never /api/tags — that is the on-disk set
+
+
+@pytest.mark.asyncio
+async def test_list_running_models_empty_when_runtime_errors():
+    ex = OllamaExecutor()
+    ex._client = _ps_client([], fail=True)
+    assert await ex.list_running_models() == []
+
+
+@pytest.mark.asyncio
+async def test_vllm_serves_what_it_holds():
+    """vLLM keeps its served models in VRAM, so residence == /v1/models."""
+    def handler(request):
+        return httpx.Response(200, json={"data": [{"id": "facebook/opt-125m"}]})
+    ex = VLLMExecutor(base_url="http://vllm.test")
+    ex._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://vllm.test")
+    assert await ex.list_running_models() == ["facebook/opt-125m"]

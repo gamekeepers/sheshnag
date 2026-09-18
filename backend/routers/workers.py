@@ -217,7 +217,10 @@ def worker_heartbeat(
     worker.vram_total_gb = req.vram_total_gb
     worker.vram_available_gb = req.vram_available_gb
 
-    # Map reported loaded models onto runtime_models.loaded flags. The
+    # Map reported loaded models onto runtime_models.loaded flags. This list
+    # carries no runtime tag, so on a mixed worker it can only be applied as a
+    # union; `apply_inventory` below re-scopes `loaded` per runtime from the
+    # tagged inventory, and daemons too old to send one keep the union. The
     # legacy `loaded_model_digests` map is accepted but ignored: it carries
     # /api/tags MANIFEST digests, which never equal a catalogue file-hash
     # pin, so writing them into `digest` would starve every pinned model on
