@@ -630,6 +630,70 @@ class TestHeartbeatViews:
         assert (await worker._get_inventory())[0]["loaded"] is False
 
     @pytest.mark.asyncio
+    async def test_no_residence_query_when_nothing_to_stamp(self, tmp_path):
+        """A runtime reporting no inventory is the shape of one that is
+        down. Querying its residence anyway buys nothing and pays a failed
+        call — or a timeout — on every beat."""
+        ollama = FakeExecutor("ollama", ["a"], inventory=[])
+        calls = []
+
+        async def counted():
+            calls.append(1)
+            return ["a"]
+
+        ollama.list_running_models = counted
+        worker = _worker({"ollama": ollama}, tmp_path)
+
+        assert await worker._get_inventory() == []
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_residence_queried_once_per_runtime(self, tmp_path):
+        """Stamping N items costs one residence query, not N."""
+        ollama = FakeExecutor(
+            "ollama", ["a", "b"], running=["a"],
+            inventory=[
+                {"local_name": "a", "sha256": "a" * 64, "size_bytes": 1},
+                {"local_name": "b", "sha256": "b" * 64, "size_bytes": 1},
+            ],
+        )
+        calls = []
+        inner = ollama.list_running_models
+
+        async def counted():
+            calls.append(1)
+            return await inner()
+
+        ollama.list_running_models = counted
+        worker = _worker({"ollama": ollama}, tmp_path)
+
+        by_name = {i["local_name"]: i for i in await worker._get_inventory()}
+        assert by_name["a"]["loaded"] is True
+        assert by_name["b"]["loaded"] is False
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_pre_stamped_inventory_skips_the_query(self, tmp_path):
+        """An executor that already knows residence per item is taken at
+        its word — the flag it set is not second-guessed or recomputed."""
+        ollama = FakeExecutor(
+            "ollama", ["a"], running=[],
+            inventory=[{"local_name": "a", "sha256": "a" * 64,
+                        "size_bytes": 1, "loaded": True}],
+        )
+        calls = []
+
+        async def counted():
+            calls.append(1)
+            return []
+
+        ollama.list_running_models = counted
+        worker = _worker({"ollama": ollama}, tmp_path)
+
+        assert (await worker._get_inventory())[0]["loaded"] is True
+        assert calls == []
+
+    @pytest.mark.asyncio
     async def test_heartbeat_preserves_per_item_loaded(self, monkeypatch):
         from daemon.heartbeat import HeartbeatManager
 

@@ -151,16 +151,23 @@ class Worker:
         `loaded` is residence, so it is stamped from list_running_models()
         and not from the inventory itself: testing an on-disk listing for
         membership of an on-disk listing is true by construction.
+
+        The residence query runs once per runtime and only when an item
+        actually needs stamping, so a runtime that reports no inventory —
+        the shape of one that is down — costs one failed call per beat
+        instead of two.
         """
         items: List[dict] = []
         for executor in self._executors.values():
-            try:
-                resident = set(await executor.list_running_models())
-            except Exception:
-                resident = set()
+            resident: Optional[set] = None
             for item in await executor.inventory():
                 stamped = dict(item)
                 if "loaded" not in stamped:
+                    if resident is None:
+                        try:
+                            resident = set(await executor.list_running_models())
+                        except Exception:
+                            resident = set()
                     stamped["loaded"] = stamped.get("local_name") in resident
                 items.append(stamped)
         return items
