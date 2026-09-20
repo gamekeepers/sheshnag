@@ -9,7 +9,7 @@ lists words to stop using for that concept.
 | Term | Definition | Aliases to avoid |
 | --- | --- | --- |
 | **User** | An authenticated person on a deployment, identified by one record regardless of what they do with it | Account, member account, provider account |
-| **Organization** | The ownership and authorization boundary that holds API keys, workers and jobs | Org unit, team, lab, group, account |
+| **Organization** | The ownership and authorization boundary that holds API keys and workers | Org unit, team, lab, group, account |
 | **Personal Organization** | The organization created for a user at signup, so they can register a worker or submit a batch without creating anything else | Personal account, default org |
 | **Membership** | A user's `owner`, `admin` or `viewer` role inside one organization | Org permission, access level |
 | **Platform role** | A user's global standing — `user` or `superadmin` — independent of any membership | Admin flag, global role |
