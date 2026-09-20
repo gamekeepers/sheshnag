@@ -124,7 +124,7 @@ def test_unknown_hash_is_quarantined_and_not_advertised(auth_client, db):
 
     worker = db.get(Worker, wid)
     advertised = {name for name, _ in worker.advertised_models()}
-    assert advertised == {"known:4b"}          # quarantined row never reaches the picker
+    assert advertised == {"known:4b"}          # quarantined row never reaches the scheduler
 
 
 def test_drift_is_flagged_and_excluded(auth_client, db):

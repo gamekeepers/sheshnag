@@ -4,7 +4,7 @@ Reconcile what workers report they hold against what the registry pins (#116).
 The catalogue is desired state ("this slug means exactly these bytes");
 a worker's inventory is observed state ("this box holds these bytes").
 Every reported artifact lands in one of four states on its `runtime_models`
-row, and the picker routes only to the first:
+row, and the scheduler routes only to the first:
 
   available     hash matches a catalogue pin (catalog_id set), or the row
                 is unverifiable (no hash reported: old daemon, vLLM) and its
@@ -13,10 +13,10 @@ row, and the picker routes only to the first:
                 entry either): quarantined until an admin adopts it
                 (POST /v1/models/adopt) or the blob is replaced. Rows with
                 no hash at all are never quarantined — there is no identity
-                to adopt, and the picker already requires a catalogue entry
+                to adopt, and the scheduler already requires a catalogue entry
                 for the name, so nothing unknown can be scheduled anyway
   drift         name claims a pinned entry but the bytes differ from every
-                pin under that name — never served; the picker also logs it
+                pin under that name — never served; the scheduler also logs it
   missing       present in the DB but absent from a full inventory the
                 worker just sent (e.g. `ollama rm`) — never served
 
@@ -47,7 +47,7 @@ def find_entry_by_hash(db, sha256) -> Optional[ModelCatalog]:
 
     Deliberately ignores `enabled`/`status`: a disabled or deprecated entry
     still IDENTIFIES the bytes ("known, not offered"). Whether the entry may
-    be scheduled is the picker's `get_catalog_entry` filter, not identity."""
+    be scheduled is the scheduler's `get_catalog_entry` filter, not identity."""
     d = _norm(sha256)
     if not d:
         return None
@@ -155,7 +155,7 @@ def _set_state(row: RuntimeModel, status: str, entry, worker_id: str) -> bool:
     catalog_id = entry.id if entry is not None else None
     transitioning = not (row.status == status and row.catalog_id == catalog_id)
     if entry is not None:
-        # Hash-verified, but the picker matches on the entry's target ids.
+        # Hash-verified, but the scheduler matches on the entry's target ids.
         # A row whose local name is none of them is `available` yet would
         # never be dispatched — self-heal by extending the entry's profile
         # for the row's runtime with the name (the digest match proves the

@@ -12,7 +12,7 @@ from schemas import (
 from pydantic import BaseModel
 from typing import Optional
 from auth import get_worker_context
-from provider_picker import picker, get_catalog_entry, resolve_runtime_model_id
+from scheduler import scheduler, get_catalog_entry, resolve_runtime_model_id
 from reconciliation import apply_inventory, classify
 from sweeper import MAX_BATCH_ATTEMPTS, requeue_or_fail_batch
 from services.usage_ingest import ingest_usage_records
@@ -120,7 +120,7 @@ def register_worker(
             # the on-disk inventory. Only the inventory's FILE hash is stored
             # as `digest`: the legacy `model_digests` map carries /api/tags
             # MANIFEST digests, which never equal a catalogue pin — storing
-            # them would make the picker's guard reject every pinned model
+            # them would make the scheduler's guard reject every pinned model
             # on a not-yet-upgraded daemon. Old daemons therefore keep a
             # null digest and name-match, exactly as before pins existed.
             inv_by_name = {i.local_name: i for i in r.inventory}
@@ -202,7 +202,7 @@ def worker_heartbeat(
 
     Updates liveness (`status`/`last_heartbeat`), the daemon-reported
     `activity`, and the dynamic capability data (VRAM, loaded models)
-    that the provider picker matches on during /workers/poll.
+    that the scheduler matches on during /workers/poll.
     """
     _api_key, org = ctx
 
@@ -241,7 +241,7 @@ def worker_heartbeat(
             known.add(model.name)
     # A loaded model we've never seen (e.g. pulled on the fly): record it.
     # Old daemons report no hash here, so classify() leaves it name-matched
-    # (the picker still requires a catalogue entry for the name); the hashed
+    # (the scheduler still requires a catalogue entry for the name); the hashed
     # inventory path below is where quarantine/drift decisions happen.
     #
     # Which runtime does the row belong to? A single-runtime worker has
@@ -314,8 +314,8 @@ def poll_job(
         return {"job": None}
 
     # Catalogue-aware matching (VRAM fit + hosts the artifact), handling
-    # both the heartbeated and never-heartbeated worker inside the picker.
-    batch = picker.find_best_batch(db, worker, available_batches)
+    # both the heartbeated and never-heartbeated worker inside the scheduler.
+    batch = scheduler.find_best_batch(db, worker, available_batches)
 
     if not batch:
         return {"job": None}
@@ -338,7 +338,7 @@ def poll_job(
 
     # The daemon runs the runtime's own model id, not our catalogue slug.
     # Multi-profile entries answer to several ids — send the one THIS
-    # worker hosts (the picker may have matched on any of them).
+    # worker hosts (the scheduler may have matched on any of them).
     entry = get_catalog_entry(db, batch.model)
     runtime_model_id = (
         resolve_runtime_model_id(entry, worker.advertised_models())

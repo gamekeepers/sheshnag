@@ -76,7 +76,7 @@ def _run_validator(batch_id: str, filepath: str, runtime: str) -> bool:
     catalog_entry = _mock_catalog_entry(runtime) if runtime is not None else None
 
     with patch("services.batch_validator.SessionLocal", return_value=mock_db), \
-         patch("provider_picker.get_catalog_entry", return_value=catalog_entry):
+         patch("scheduler.get_catalog_entry", return_value=catalog_entry):
         result = validate_batch_file(batch_id, filepath)
 
     return result, mock_batch

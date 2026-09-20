@@ -462,7 +462,7 @@ class TestModelRouting:
 
     @pytest.mark.asyncio
     async def test_mixed_worker_pulls_model_not_yet_on_box(self, tmp_path):
-        # The picker dispatched a catalogue model this worker registered
+        # The scheduler dispatched a catalogue model this worker registered
         # but Ollama has not pulled yet: absent from every runtime's
         # list, hence absent from the routing map. A single-runtime
         # Ollama worker always reached ensure_model and pulled it; the

@@ -29,7 +29,7 @@ from models import (
     WorkerRuntime,
     unix_now,
 )
-from provider_picker import can_serve
+from scheduler import can_serve
 from sweeper import HEARTBEAT_TIMEOUT_SECONDS
 
 router = APIRouter()

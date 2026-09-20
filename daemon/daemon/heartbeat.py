@@ -132,7 +132,7 @@ class HeartbeatManager:
         # a provider can lend less than the card holds. It is also the only
         # way a host we cannot probe reports anything but 0 — and 0 makes the
         # scheduler's VRAM guard reject this worker for every batch, silently
-        # and permanently (provider_picker.find_best_batch).
+        # and permanently (scheduler.find_best_batch).
         if self._declared_vram_gb:
             memory_total = self._declared_vram_gb
         if not memory_total and not self._warned_zero_vram:

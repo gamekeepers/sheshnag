@@ -154,7 +154,7 @@ whose. Per-worker rows stay on the superadmin `GET /v1/admin/workers`.
 - **`models_servable`** is what the *scheduler* would dispatch, not what the
   catalogue lists: an entry appears only when some online worker both hosts
   the artifact and satisfies that runtime's fit rule, decided by
-  `provider_picker.can_serve` — the same predicate `POST /workers/poll`
+  `scheduler.can_serve` — the same predicate `POST /workers/poll`
   matches on.
 - **`vram_total_gb` is the fleet sum; `vram_largest_gpu_gb` is what one job
   can actually have.** A batch runs on a single worker, and on a
@@ -268,9 +268,9 @@ listed it. Limiting what a box offers is the provider-control work in #104.
 {"job": null}
 ```
 
-> **Matching:** the picker offers a batch only to a worker that hosts the
+> **Matching:** the scheduler offers a batch only to a worker that hosts the
 > artifact *and* satisfies the fit rule of the runtime hosting it
-> (`provider_picker.FIT_RULES`), then prefers workers that already have the
+> (`scheduler.FIT_RULES`), then prefers workers that already have the
 > model loaded.
 >
 > Fit is per-card, not per-machine: a single-device runtime needs one GPU
@@ -358,7 +358,7 @@ the full design, scheduling, and curation runbook.
 requirement), `size_gb`, `task_type`, `source_*`/`homepage_url` (provenance),
 `org_id` (NULL = public), `status`, `enabled`.
 
-**Scheduling** (`provider_picker.py`): `poll` resolves `batch.model` → entry,
+**Scheduling** (`scheduler.py`): `poll` resolves `batch.model` → entry,
 then matches a worker that fits `vram_gb` **and** hosts `runtime_model_id`,
 enforcing digest equality when both sides carry a digest (same tag +
 different digest ⇒ not matched); prefers a worker already serving it.
@@ -442,7 +442,7 @@ backend/
 ├── models.py              # SQLAlchemy models
 ├── schemas.py             # Pydantic request/response models
 ├── auth.py                # JWT, hashing, key contexts (worker/personal/human)
-├── provider_picker.py     # Job-to-worker matching (VRAM + loaded models)
+├── scheduler.py           # Job-to-worker matching (VRAM + loaded models)
 ├── sweeper.py             # Requeue logic + stale-worker sweeper (spec §12)
 ├── rate_limit.py          # Key-creation rate limiting
 ├── requirements.txt

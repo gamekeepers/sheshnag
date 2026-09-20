@@ -13,7 +13,7 @@ from catalog_service import auto_adopt_pass
 from identity_resolver import Confirmed, IdentityResolver, Unconfirmed
 from models import (CatalogArtifactFile, ModelCatalog, RuntimeModel,
                     ServingProfile, WorkerRuntime)
-from provider_picker import can_serve, resolve_runtime_model_id
+from scheduler import can_serve, resolve_runtime_model_id
 from reconciliation import AVAILABLE, UNREGISTERED
 
 SHARD1 = "1" * 64
@@ -171,7 +171,7 @@ def test_auto_adopt_builds_vllm_entry_from_hints(auth_client, db):
 
 # ─── Multi-name serving (#124 review) ───────────────────────
 # One artifact, several boxes, several --served-model-name aliases: one entry
-# whose profile answers to every reported name, and a picker that follows the
+# whose profile answers to every reported name, and a scheduler that follows the
 # digest, not just the profiled ids.
 
 MSHARD = "9f" * 32
@@ -227,7 +227,7 @@ def test_auto_adopt_pins_every_reported_alias(auth_client, db):
     assert rows["ab"].status == AVAILABLE and rows["ab"].catalog_id == entry.id
 
 
-def test_picker_digest_join_for_unprofiled_alias(auth_client, db):
+def test_scheduler_digest_join_for_unprofiled_alias(auth_client, db):
     """A box hosting the byte-identical artifact under a name the entry does
     not profile is still a host (digest IS the identity), and dispatch sends
     the name that box actually answers to — never a profiled id it doesn't

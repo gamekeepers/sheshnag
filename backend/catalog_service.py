@@ -163,7 +163,7 @@ def adopt(
             f"(status={existing.status}, enabled={existing.enabled}) — "
             "enable/activate that entry instead of adopting again",
         )
-    # The picker matches worker rows on the entry's runtime ids, so an id no
+    # The scheduler matches worker rows on the entry's runtime ids, so an id no
     # worker reports for this hash would flip rows to available yet never
     # dispatch — a false success.
     names = local_names_for_hash(db, sha256)

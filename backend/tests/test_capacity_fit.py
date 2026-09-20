@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from provider_picker import (
+from scheduler import (
     Capacity,
     DEFAULT_FIT_RULE,
     FIT_RULES,
@@ -20,10 +20,10 @@ from provider_picker import (
 
 
 def _entry(vram_gb=8.0, runtime_model_id="m:latest", digest=None, runtime="ollama"):
-    """A catalogue entry as the picker reads it.
+    """A catalogue entry as the scheduler reads it.
 
     `serving_targets()` is the real contract: an artifact answers to one id per
-    serving profile, so the picker matches on all of them rather than a single
+    serving profile, so the scheduler matches on all of them rather than a single
     column.
     """
     return SimpleNamespace(

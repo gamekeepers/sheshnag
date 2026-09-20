@@ -52,7 +52,7 @@ def test_register_persists_inventory_hashes(auth_client, db_session):
 def test_register_without_inventory_still_works(auth_client, db_session):
     """Older daemons omit `inventory`; the field is additive — and their
     legacy `model_digests` (/api/tags MANIFEST digests) must NOT be stored
-    as identity, or the picker's guard would reject every pinned model on
+    as identity, or the scheduler's guard would reject every pinned model on
     a not-yet-upgraded daemon. They stay on name matching (digest null)."""
     key = _worker_key(auth_client, "Inv Org Legacy")
     payload = {
@@ -144,11 +144,11 @@ def test_digest_mismatch_rejects_and_warns_once(caplog):
     scheduled — and the rejection is logged (once per distinct mismatch),
     so a silent starve is discoverable without reading the code."""
     import logging
-    import provider_picker
-    from provider_picker import _hosts
+    import scheduler
+    from scheduler import _hosts
 
-    provider_picker._warned_mismatches.clear()
-    with caplog.at_level(logging.WARNING, logger="provider_picker"):
+    scheduler._warned_mismatches.clear()
+    with caplog.at_level(logging.WARNING, logger="scheduler"):
         assert not _hosts([("qwen3:4b", "a" * 64)], ["qwen3:4b"], "b" * 64)
         assert not _hosts([("qwen3:4b", "a" * 64)], ["qwen3:4b"], "b" * 64)
     mismatch_logs = [r for r in caplog.records if "Digest mismatch" in r.getMessage()]

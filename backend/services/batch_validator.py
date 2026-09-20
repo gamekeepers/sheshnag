@@ -414,7 +414,7 @@ def validate_batch_file(batch_id: str, filepath: str) -> bool:
     # 4. Model must be a selectable catalogue entry (reproducibility gate:
     #    users pick a pinned model, not a free-form id).
     if result.valid and result.model:
-        from provider_picker import get_catalog_entry
+        from scheduler import get_catalog_entry
         db = SessionLocal()
         try:
             entry = get_catalog_entry(db, result.model)

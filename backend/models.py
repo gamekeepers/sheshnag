@@ -271,7 +271,7 @@ class Worker(Base):
         """(name, digest) pairs this worker's runtimes host AND may be
         scheduled: quarantined (unregistered), drifted, and missing rows are
         excluded, as is every model of a runtime that is not itself
-        schedulable, so every picker/capacity path shares the rule.
+        schedulable, so every scheduler/capacity path shares the rule.
 
         `advertised_model_names` deliberately does not filter — cataloguing
         what a worker holds is a different question from what it can be given."""
@@ -308,7 +308,7 @@ class WorkerRuntime(Base):
 
     # A runtime that is draining or was never reached still lists its models —
     # they are on that worker's disk and that is worth cataloguing — but it
-    # cannot be given work. Mirrors RuntimeModel.schedulable so every picker
+    # cannot be given work. Mirrors RuntimeModel.schedulable so every scheduler
     # and capacity path applies one rule.
     SCHEDULABLE_STATUSES = frozenset({"ready"})
 
@@ -362,7 +362,7 @@ class RuntimeModel(Base):
     # available | downloading | not_downloaded | error — plus the reconcile
     # states: unregistered (hash matches no entry; quarantined), drift (name
     # claims a pinned entry, bytes differ), missing (dropped from a full
-    # inventory — e.g. `ollama rm` on the box). The picker never routes to
+    # inventory — e.g. `ollama rm` on the box). The scheduler never routes to
     # NON_SCHEDULABLE rows; see reconciliation.py.
     status     = Column(String, default="available")
     loaded     = Column(Boolean, default=False)
@@ -423,7 +423,7 @@ class ModelCatalog(Base):
     `digest` is the reproducibility anchor and the intended join key
     against a worker's advertised models; until the daemon reports
     digests, availability is matched on `runtime_model_id` (see
-    provider_picker). `org_id` NULL = public; reserved for org-private
+    scheduler). `org_id` NULL = public; reserved for org-private
     entries (tier 2, not wired yet).
     """
     __tablename__ = "model_catalog"

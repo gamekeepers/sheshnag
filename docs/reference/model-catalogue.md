@@ -84,9 +84,9 @@ Renames are one-shot: give the entry its new `id` plus
 place. There is no aliases table — `batches.model` is a plain string, so
 historical rows keep the retired slug.
 
-## Scheduling (`provider_picker.py`)
+## Scheduling (`scheduler.py`)
 
-At `POST /workers/poll`, for each `validated` batch the picker:
+At `POST /workers/poll`, for each `validated` batch the scheduler:
 
 1. resolves `batch.model` → catalogue entry (skips if not found);
 2. requires the worker to fit `vram_gb` (when the worker has heartbeated);
@@ -108,7 +108,7 @@ their descriptive + provenance fields, so users know valid ids.
 ## Reconciliation — worker rows vs catalogue pins
 
 Every artifact a worker reports lands in one state on its `runtime_models`
-row (`backend/reconciliation.py`); the picker routes **only** to `available`:
+row (`backend/reconciliation.py`); the scheduler routes **only** to `available`:
 
 | State | Meaning | How it clears |
 | --- | --- | --- |
@@ -118,7 +118,7 @@ row (`backend/reconciliation.py`); the picker routes **only** to `available`:
 | `missing` | dropped from a full inventory (`ollama rm` on the box) | reappears in a later inventory → re-classified |
 
 Rows without a hash are never quarantined: there is nothing to adopt and the
-picker already requires a catalogue entry for the name. `missing` is scoped
+scheduler already requires a catalogue entry for the name. `missing` is scoped
 to the runtimes present in a report — a daemon inventories only its own
 runtime, so a second runtime's rows are left alone. A hash-verified row
 whose local name is none of the entry's serving names is **self-healed**:
@@ -163,7 +163,7 @@ The artifact **file's** sha256 — for Ollama, the manifest's model-layer
 digest, which is exactly what daemons report in their inventory (#116).
 It is **not** `/api/tags`' `digest`: that hashes the manifest file itself and
 matches nothing a worker sends, so a catalogue pinned to it silently starves
-every digest-pinned model (the picker logs `Digest mismatch` once per pair).
+every digest-pinned model (the scheduler logs `Digest mismatch` once per pair).
 `capture_catalog` reads the file hash from the local manifests tree
 (`--models-dir`, auto-detected) and falls back to `registry.ollama.ai`'s
 manifest API for models not pulled locally — no blob download needed.

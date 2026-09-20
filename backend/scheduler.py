@@ -1,5 +1,5 @@
 """
-Provider Picker — job-to-worker matching over the curated model catalogue.
+Scheduler — job-to-worker matching over the curated model catalogue.
 
 `batch.model` is a `model_catalog.id` (a platform slug the user picked),
 not a raw runtime string. Matching resolves that id to the catalogue
@@ -128,7 +128,7 @@ def resolve_runtime_model_id(entry, worker_models) -> str:
     """The runtime_model_id to hand THIS worker for `entry` at dispatch.
 
     A multi-profile entry answers to several ids (`qwen3:4b` to Ollama, an
-    HF repo path to vLLM, an extra alias per box); the picker matched the
+    HF repo path to vLLM, an extra alias per box); the scheduler matched the
     worker on ANY of them, so dispatch must send the one this worker
     actually hosts — not the legacy column. Three ways, in order:
 
@@ -262,7 +262,7 @@ def fit_vram_plus_ram(required_gb: float, cap: Capacity) -> bool:
 
 
 # Fit is a property of the runtime, not of the scheduler. A new engine
-# registers a rule here; the picker is never edited.
+# registers a rule here; the scheduler is never edited.
 FIT_RULES = {
     "ollama": fit_vram_only,
     "vllm": fit_vram_only,
@@ -318,7 +318,7 @@ def can_serve(entry, worker) -> bool:
     return rule(entry.vram_gb or 0, Capacity.of(worker))
 
 
-class ProviderPicker:
+class Scheduler:
     """
     Matches a polling worker to the best available batch.
 
@@ -357,4 +357,4 @@ class ProviderPicker:
         return None
 
 
-picker = ProviderPicker()
+scheduler = Scheduler()

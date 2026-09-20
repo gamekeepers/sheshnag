@@ -7,7 +7,7 @@ size, parameter size, context length) and fills the catalogue manifest.
 
 `digest` is the artifact FILE's sha256 — the Ollama manifest's model-layer
 digest, which is what daemons report in their inventory and what the
-picker's reproducibility guard compares. It is read from the local
+scheduler's reproducibility guard compares. It is read from the local
 manifests tree (--models-dir, auto-detected) and, for models not present
 locally, from registry.ollama.ai's manifest API — never from /api/tags,
 whose `digest` hashes the manifest file itself and matches nothing a worker

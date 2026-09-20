@@ -4,7 +4,7 @@ Re-estimate size_gb / vram_gb for vLLM catalogue entries.
 
 One-shot repair after the daemon started reporting the model's TOTAL weight
 size (every shard) instead of shard 1's: entries auto-adopted before that
-carry a VRAM estimate computed from one shard, so the picker happily fits a
+carry a VRAM estimate computed from one shard, so the scheduler happily fits a
 70B model on an 8 GB worker. This script sums the shard sizes each worker
 row reports for the entry's digest and re-estimates from that total.
 

@@ -238,10 +238,10 @@ def test_renamed_from_is_noop_without_old_row(db, monkeypatch, tmp_path):
     ).one().display_name == "fresh"
 
 
-# ─── Picker integration ──────────────────────────────────────
+# ─── Scheduler integration ───────────────────────────────────
 
 def test_hosts_matches_any_serving_target(db, monkeypatch, tmp_path):
-    from provider_picker import can_serve
+    from scheduler import can_serve
 
     _seed(monkeypatch, tmp_path, [{
         "id": "zztest-dual-q4km",
@@ -265,7 +265,7 @@ def test_hosts_matches_any_serving_target(db, monkeypatch, tmp_path):
     assert not can_serve(entry, _worker_hosting([("dual:4b", None)], 2.0))
 
     # Dispatch hands each worker the id IT hosts — not the legacy column.
-    from provider_picker import resolve_runtime_model_id
+    from scheduler import resolve_runtime_model_id
     assert resolve_runtime_model_id(entry, [("dual:4b", None)]) == "dual:4b"
     assert resolve_runtime_model_id(
         entry, [("repo/dual-Q4_K_M.gguf", None)]
