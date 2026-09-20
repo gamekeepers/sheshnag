@@ -80,7 +80,7 @@ lists words to stop using for that concept.
 
 | Term | Definition | Aliases to avoid |
 | --- | --- | --- |
-| **Scheduler** | The component that resolves a batch's catalogue entry and chooses an eligible worker for it | Picker, matcher, dispatcher, load balancer |
+| **Scheduler** | The component that resolves a batch's catalogue entry and matches it to an eligible polling worker | Picker, matcher, dispatcher, load balancer |
 | **Poll** | A worker's request for a batch it can serve | Pull, fetch, dequeue |
 | **Claim** | A worker taking ownership of a `validated` batch, moving it to `in_progress` | Lock, reserve, accept, assign |
 | **Eligibility** | Whether a worker may be offered a batch at all — it hosts the artifact and satisfies the runtime's fit rule | Suitability, ranking, scoring |
