@@ -15,8 +15,8 @@ most machines and the wrong one for several. This page is how to tell which you 
 | One NVIDIA GPU, 8 GB or more | **Ollama** — the default, nothing to do | Jobs for any model that fits the card |
 | One NVIDIA GPU, 24 GB or more, and you want throughput | **vLLM** | Higher tokens/sec under load; you run the server |
 | Several GPUs | **Ollama**, and read [Several GPUs](#several-gpus) | Less than you expect — see below |
-| Small GPU, plenty of system RAM | **Ollama**, capped at your VRAM | Small models only, for now |
-| No GPU | Nothing useful yet | The daemon runs and stays idle |
+| Small GPU, plenty of system RAM | **llama.cpp** | Models far larger than your card, slowly |
+| No GPU, 32 GB RAM or more | **llama.cpp** | Small models on CPU; tens of seconds per prompt |
 | AMD GPU | **Ollama**, installed by hand | See [AMD](#amd-gpus) |
 | Apple Silicon | Not supported by the installer | The installer exits on non-Linux |
 
@@ -24,18 +24,24 @@ most machines and the wrong one for several. This page is how to tell which you 
 
 ## The rule the scheduler applies
 
-Before tuning anything, know how work is handed out. A batch is offered to your worker when
-**one single GPU** can hold the whole model:
+Before tuning anything, know how work is handed out. **The fit rule depends on the runtime**,
+because what a runtime can do with your hardware differs:
 
-```
-largest single card  >=  the model's footprint
-```
+| Runtime | A batch is offered when |
+|---|---|
+| Ollama, vLLM | `largest single card >= the model's footprint` |
+| llama.cpp | `largest single card + usable system RAM >= the model's footprint` |
 
-Not the sum of your cards. Not your VRAM plus your system RAM. The largest card, by itself.
+Note *largest single card*, never the sum: neither Ollama nor vLLM splits a model across
+cards unless told to, so a box with 2 × 12 GB is not offered a 20 GB model.
 
-Two consequences catch providers out, and both are covered below: a multi-GPU box is worth
-less than its total VRAM suggests, and a box with a small card and 128 GB of RAM is worth
-only what the small card holds.
+Only llama.cpp counts your RAM, because only llama.cpp lets you declare the split with
+`--n-gpu-layers`. Ollama will also spill into RAM, but it decides that itself at load time
+and does it silently, so the platform cannot promise a job will fit.
+
+**Usable RAM is free RAM minus headroom** — the larger of 4 GB or 20% of the total, kept for
+the OS and anything else on the machine. If the daemon cannot read free RAM it counts none,
+so a llama.cpp worker that reports no RAM figure is treated as VRAM-only.
 
 A worker is also skipped entirely until its first heartbeat lands, which takes about thirty
 seconds after startup. A machine that has just registered and received nothing is normal.
@@ -117,17 +123,99 @@ Leave `hf_hub_cache` alone unless your cache is in an unusual place — the daem
 `$HF_HUB_CACHE`, `$HF_HOME/hub`, then `~/.cache/huggingface/hub`, and reads it to identify
 what you are serving.
 
-### Running both
+## llama.cpp hygiene
 
-A machine can drive both runtimes:
+llama.cpp is the only runtime that can serve a model larger than your VRAM. It is also the
+only one where a single wrong flag produces a worker that looks perfectly healthy and is
+never given work.
 
-```yaml
-runtime: [vllm, ollama]
+**Everything is yours to run**, as with vLLM. The daemon attaches to a `llama-server` you
+started and never launches, restarts or tunes one.
+
+### The `--alias` is a contract, not a label
+
+`llama-server` reports whatever `--alias` says, and the platform dispatches by that name. Get
+it wrong and your worker registers, passes its health check, shows **online** with a model
+listed — and matches nothing in the catalogue, forever.
+
+Take the name from the catalogue entry you intend to serve and pass it exactly:
+
+```
+llama-server -m /path/to/model.gguf \
+  --alias qwen36-27b-q4kxl \
+  --host 127.0.0.1 --port 8080 \
+  --ctx-size 4096 --parallel 1
 ```
 
-Each is registered separately with its own model list, and a job is routed to whichever
-runtime hosts the model. Useful when vLLM holds one large model permanently and Ollama covers
-everything else on demand.
+Then point the daemon at it in `config.yaml`:
+
+```yaml
+runtime: "llamacpp"
+llamacpp_url: "http://127.0.0.1:8080"
+```
+
+Confirm the name the server is actually using before you start the daemon:
+
+```
+curl -s localhost:8080/v1/models | grep -o '"id":"[^"]*"'
+```
+
+### Flags worth setting
+
+| Flag | Why |
+|---|---|
+| `--alias` | The dispatch name. See above — this is the one that silently costs you all your work. |
+| `--n-gpu-layers` | How many layers go on the GPU; the rest stream from RAM. `0` is pure CPU, a high number offloads everything that fits. Raise it until the GPU is nearly full. |
+| `--ctx-size` | Context per slot. Larger costs RAM for little benefit on batch work. |
+| `--parallel` | Decode slots. Match `max_concurrent_prompts` to it — see below. |
+| `--embeddings` | Required for embedding models. Without it `/v1/embeddings` returns **501** and every embedding row fails. |
+
+### Tuning `--n-gpu-layers`
+
+This is the lever that decides whether a hybrid machine is useful or merely functional, and
+the platform cannot set it for you.
+
+- **No GPU:** leave it unset.
+- **Small card (2–6 GB):** start low, raise until `nvidia-smi` shows the card nearly full
+  during a run. Every layer moved to the GPU is a real speedup.
+- **Card large enough to hold the model:** offload everything and use llama.cpp only if you
+  want GGUF specifically; Ollama is less work for the same result.
+
+### Match the daemon to the slots
+
+`llama-server` reports its slot count, and the daemon logs it at startup:
+
+```
+llama-server b10759 — 1 slot(s), model /path/to/model.gguf
+```
+
+Set `max_concurrent_prompts` to that number. Sending more only queues them and inflates the
+per-prompt latency the platform records against you.
+
+### Raise the timeout
+
+`inference_timeout` defaults to 300 seconds. CPU and hybrid generation is measured in tens of
+seconds per prompt and a long one will exceed that. Raise it well past your slowest expected
+prompt — a job that times out is requeued elsewhere and counts an attempt against a cap of
+three.
+
+---
+
+## Running more than one
+
+A machine can drive any combination:
+
+```yaml
+runtime: [vllm, ollama, llamacpp]
+```
+
+Each registers separately with its own model list and its own fit rule, and a job is routed
+to whichever runtime hosts the model. A runtime that is down registers as unavailable and is
+skipped; the others keep working.
+
+The combination worth knowing: **Ollama for what fits the card, llama.cpp for what does
+not.** One machine then covers both ends of the catalogue instead of being capped by its
+VRAM.
 
 ---
 
@@ -151,29 +239,35 @@ KV cache is what decides whether you get four concurrent slots or one.
 
 ### Small VRAM, plenty of RAM
 
-**A 2–6 GB card with 64 GB or more of system RAM.** Today you are limited to models that fit
-the card, and your RAM does nothing.
+**A 2–6 GB card with 64 GB or more of system RAM.** This is the case llama.cpp exists for: it
+puts as many layers on the GPU as fit and streams the rest from system RAM, so a card that
+cannot hold a model can still serve it.
 
-This is a known gap, not a misconfiguration. The platform's scheduler can already express
-"this model fits in VRAM **plus** system RAM", but the runtime that would use it — llama.cpp,
-which streams the layers that do not fit on the GPU from RAM — is not yet supported.
+A 2 GB card beside 128 GB of RAM is offered a 25 GB model. The same machine on Ollama is
+capped at 2 GB.
 
-!!! note "Do not set `runtime: llamacpp`"
-
-    The daemon rejects unknown runtimes at startup and will refuse to start. Support is
-    tracked in [issue #133](https://github.com/gamekeepers/sheshnag/issues/133).
-
-Until then, run Ollama and expect small models. Ollama will also silently spill a too-large
-model into RAM and run it very slowly, which is why the scheduler does not count your RAM as
-capacity for it.
+Set it up with [llama.cpp](#llamacpp-hygiene) below. The scheduler applies the hybrid rule
+only to llama.cpp — Ollama decides the GPU/RAM split itself at load time and spills silently,
+so the platform cannot promise a job will fit there.
 
 ### No GPU
 
-**A CPU-only machine**, however much RAM it has, cannot currently be given work. The daemon
-installs, registers, reports no GPU, and idles.
+**A CPU-only machine can take work**, through llama.cpp, if it has the RAM. There is no GPU
+path to configure and nothing about the setup differs.
 
-The same llama.cpp work above is what changes this. There is nothing to configure in the
-meantime.
+**Size the model against your RAM, not against the disk file.** A 27B Q4 GGUF is 16.4 GB on
+disk and needs about **25 GB** resident — the overhead is roughly half again, and it barely
+moves with context length. The platform reserves the larger of 4 GB or 20% of your RAM for
+the OS and other tenants, so:
+
+| Your RAM | Reserved | Usable | Realistic |
+|---|---|---|---|
+| 32 GB | 6.4 GB | 23.6 GB | 3B–8B comfortably; a 27B Q4 does **not** fit |
+| 64 GB | 12.8 GB | 51.2 GB | up to ~32B Q4 |
+| 128 GB | 25.6 GB | 102.4 GB | anything in the catalogue |
+
+Expect **tens of seconds per prompt**, not hundreds of milliseconds. That is the trade: the
+machine is slow but it is not idle.
 
 ### Several GPUs
 
@@ -241,8 +335,11 @@ A worker that is online and never receives a job is usually one of:
 | Symptom | Cause |
 |---|---|
 | No models listed | The runtime is reachable but serving nothing |
-| Models listed, no jobs | No catalogue model fits your largest card |
+| One model listed, never any jobs | **On llama.cpp, almost always the `--alias`** — the served name does not match a catalogue entry. Compare `curl localhost:8080/v1/models` against the entry you meant to serve. |
+| Models listed, no jobs | No catalogue model fits — check your largest card, and on llama.cpp your free RAM after headroom |
 | Jobs fail immediately | Advertised VRAM exceeds what the card holds |
+| Every embedding row fails with 501 | `llama-server` was started without `--embeddings` |
+| Jobs start, then time out | `inference_timeout` is below what CPU or hybrid generation needs |
 
 Per-setting detail is in [Configuration](reference/configuration.md); the full daemon
 surface is in [Daemon internals](reference/daemon.md).
