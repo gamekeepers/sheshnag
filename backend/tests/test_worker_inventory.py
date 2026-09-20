@@ -1,7 +1,8 @@
 """Worker inventory reporting (#116): registration and heartbeats carry
 on-disk artifact file hashes; availability rows track the disk."""
 
-from models import RuntimeModel, Worker, WorkerRuntime
+from models import ModelCatalog, RuntimeModel, ServingProfile, Worker, WorkerRuntime
+from scheduler import can_serve
 
 
 def _worker_key(auth_client, org_name):
@@ -509,3 +510,133 @@ def test_heartbeat_inventory_outranks_the_union_flag(auth_client, db_session):
     row = _rows(db_session, worker_id)["hot:1b"]
     assert row.loaded is False
     assert row.status != "missing"      # still on disk, just not resident
+
+
+# ── llama.cpp: the day-one path ──────────────────────────────────
+#
+# `LlamaCppExecutor.inventory()` reports `sha256: None` deliberately. These
+# pin both halves of that decision: the null-hash row stays schedulable, and
+# a hash no catalogue entry carries does not.
+
+def _llamacpp_registration(hostname, sha256):
+    return {
+        "hostname": hostname,
+        "gpus": [{"index": 0, "vendor": "nvidia", "name": "GTX 750 Ti", "vram_gb": 2.0}],
+        "ram": {"total_gb": 128.0},
+        "runtimes": [{
+            "type": "llamacpp", "endpoint": "localhost",
+            "models": [],
+            "model_digests": {},
+            "inventory": [{
+                "local_name": "qwen36-27b-q4kxl", "sha256": sha256,
+                "size_bytes": 17601570816, "loaded": True, "runtime": "llamacpp",
+            }],
+        }],
+    }
+
+
+def test_llamacpp_registers_as_a_schedulable_runtime(auth_client, db_session):
+    key = _worker_key(auth_client, "Llamacpp Org One")
+    resp = auth_client.post(
+        "/workers/register", json=_llamacpp_registration("gguf-box", None),
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    worker_id = resp.json()["worker_id"]
+
+    runtimes = db_session.query(WorkerRuntime).filter_by(worker_id=worker_id).all()
+    assert [rt.engine for rt in runtimes] == ["llamacpp"]
+    assert runtimes[0].schedulable
+
+    row = _rows(db_session, worker_id)["qwen36-27b-q4kxl"]
+    assert row.status == "available"      # no hash ⇒ name matching, never quarantine
+    assert row.schedulable
+    assert row.digest is None
+    assert row.loaded is True             # llama-server holds it for its lifetime
+
+
+def test_a_hash_the_catalogue_cannot_place_strands_the_worker(auth_client, db_session):
+    """Why `inventory()` reports no hash. Either way the row stops being
+    schedulable while the worker still registers and still looks healthy —
+    which is the failure mode worth avoiding, not the label on it.
+
+    Both branches are reached by the same reported hash; only the name
+    differs, because the catalogue pins one of the two.
+    """
+    key = _worker_key(auth_client, "Llamacpp Org Two")
+
+    # A name the catalogue pins, reported with a different artifact: drift.
+    # The reproducibility guard — same tag, different bytes.
+    drifted = auth_client.post(
+        "/workers/register", json=_llamacpp_registration("hashed-box", "f" * 64),
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert drifted.status_code == 200, drifted.text
+    row = _rows(db_session, drifted.json()["worker_id"])["qwen36-27b-q4kxl"]
+    assert row.status == "drift"
+    assert not row.schedulable
+
+    # A name the catalogue has never heard of: unregistered.
+    payload = _llamacpp_registration("hashed-box-2", "f" * 64)
+    payload["runtimes"][0]["inventory"][0]["local_name"] = "some-unseeded.gguf"
+    unknown = auth_client.post(
+        "/workers/register", json=payload,
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert unknown.status_code == 200, unknown.text
+    row = _rows(db_session, unknown.json()["worker_id"])["some-unseeded.gguf"]
+    assert row.status == "unregistered"
+    assert not row.schedulable
+
+
+def test_registered_llamacpp_worker_is_served_a_model_larger_than_its_card(
+    auth_client, db_session,
+):
+    """The whole chain on real rows: a 2 GB card plus system RAM is offered a
+    25 GB model, and the identical hardware on Ollama is not."""
+    entry = ModelCatalog(
+        id="zztest-gguf-27b-q4kxl", display_name="gguf 27b",
+        runtime="llamacpp", runtime_model_id="zztest-gguf-27b",
+        quantization="Q4_K_XL", vram_gb=25.0, size_gb=16.4,
+    )
+    db_session.add(entry)
+    db_session.flush()
+    db_session.add(ServingProfile(
+        catalog_id=entry.id, runtime="llamacpp",
+        runtime_model_id="zztest-gguf-27b",
+    ))
+    db_session.commit()
+
+    try:
+        key = _worker_key(auth_client, "Llamacpp Org Three")
+        payload = _llamacpp_registration("hybrid-box", None)
+        payload["runtimes"][0]["inventory"][0]["local_name"] = "zztest-gguf-27b"
+        worker_id = auth_client.post(
+            "/workers/register", json=payload,
+            headers={"Authorization": f"Bearer {key}"},
+        ).json()["worker_id"]
+
+        # Free RAM arrives on the heartbeat, not at registration, and the
+        # hybrid rule counts nothing without it.
+        hb = auth_client.post(
+            f"/workers/{worker_id}/heartbeat",
+            json={"worker_id": worker_id, "activity": "idle",
+                  "vram_total_gb": 2.0, "ram_available_gb": 126.0},
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        assert hb.status_code == 200, hb.text
+
+        db_session.expire_all()
+        worker = db_session.query(Worker).filter_by(id=worker_id).one()
+        assert can_serve(entry, worker) is True
+
+        # Same rows, same hardware, different engine: Ollama fits on VRAM
+        # alone, so 2 GB cannot take a 25 GB model.
+        worker.runtimes[0].engine = "ollama"
+        db_session.flush()
+        assert can_serve(entry, worker) is False
+    finally:
+        db_session.rollback()
+        db_session.query(ServingProfile).filter_by(catalog_id=entry.id).delete()
+        db_session.query(ModelCatalog).filter_by(id=entry.id).delete()
+        db_session.commit()
