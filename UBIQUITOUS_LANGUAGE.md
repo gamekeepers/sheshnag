@@ -64,7 +64,7 @@ lists words to stop using for that concept.
 | **Catalogue id** | The stable platform slug a user puts in `body.model` | Model name, tag, model id |
 | **Runtime model id** | The raw string a runtime knows an artifact by, such as an Ollama tag or a Hugging Face repo id | Model name, tag, model id |
 | **Serving profile** | How one catalogue entry is served by one runtime, including every alternative name that entry answers to | Runtime mapping, model config |
-| **Digest** | The artifact's content hash, serving as both the reproducibility pin and the join key between a catalogue entry and a worker's copy | Hash, checksum, sha, version |
+| **Digest** | When present, the primary weights file's content hash, serving as the reproducibility pin and join key between a catalogue entry and a worker's copy; multi-file artifacts carry additional file hashes | Hash, checksum, sha, version |
 | **Availability row** | A worker's record of holding one artifact, carrying its on-disk state and whether it is loaded | Worker model, installed model |
 | **Loaded** | Resident in VRAM right now | Available, installed, downloaded, ready, active |
 | **Present** | On the worker's disk, whether or not it is loaded | Available, downloaded, cached |
