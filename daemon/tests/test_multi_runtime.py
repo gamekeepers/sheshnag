@@ -19,6 +19,7 @@ from daemon.executors.base import BaseExecutor
 from daemon.executors.ollama import OllamaExecutor
 from daemon.executors.vllm import VLLMExecutor
 from daemon.executor_factory import create_executors
+from daemon.executors.llamacpp import LlamaCppExecutor
 from daemon.main import _build_cli_overrides, _build_parser, _collect_runtime_bundles
 from daemon.models import (
     CompletionResult,
@@ -262,6 +263,25 @@ class TestCreateExecutors:
         config = DaemonConfig(runtime=["vllm"], models=["llama3:8b"])
         executor = create_executors(config)["vllm"]
         assert executor._supported_models == {"llama3:8b"}
+
+    def test_llamacpp_is_a_known_runtime(self):
+        config = DaemonConfig(runtime=["llamacpp"])
+        executors = create_executors(config)
+        assert list(executors) == ["llamacpp"]
+        assert isinstance(executors["llamacpp"], LlamaCppExecutor)
+
+    def test_llamacpp_url_reaches_the_executor(self):
+        config = DaemonConfig(
+            runtime=["llamacpp"], llamacpp_url="http://gics3:9000",
+        )
+        assert create_executors(config)["llamacpp"]._base_url == "http://gics3:9000"
+
+    def test_llamacpp_beside_ollama(self):
+        """A small card can serve via Ollama while llama.cpp takes the
+        models too large for it."""
+        config = DaemonConfig(runtime=["llamacpp", "ollama"])
+        executors = create_executors(config)
+        assert list(executors) == ["llamacpp", "ollama"]
 
     def test_vllm_supported_models_skipped_mixed(self):
         # The flat config.models list is ambiguous on a mixed node --

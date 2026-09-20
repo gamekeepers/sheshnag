@@ -49,6 +49,7 @@ _ENV_MAP: Dict[str, str] = {
     "vllm_url": "DAEMON_VLLM_URL",
     "hf_hub_cache": "DAEMON_HF_HUB_CACHE",
     "ollama_url": "DAEMON_OLLAMA_URL",
+    "llamacpp_url": "DAEMON_LLAMACPP_URL",
     "ollama_models_dir": "DAEMON_OLLAMA_MODELS_DIR",
     "poll_interval": "DAEMON_POLL_INTERVAL",
     "log_level": "DAEMON_LOG_LEVEL",
@@ -67,7 +68,7 @@ _INT_FIELDS = frozenset({"poll_interval", "heartbeat_interval", "max_concurrent_
 _FLOAT_FIELDS = frozenset({"vram_gb", "inference_timeout", "progress_interval_seconds"})
 
 # Inference runtimes the daemon knows how to drive.
-_KNOWN_RUNTIMES = frozenset({"ollama", "vllm"})
+_KNOWN_RUNTIMES = frozenset({"ollama", "vllm", "llamacpp"})
 
 
 def _normalize_runtime(value: Any) -> List[str]:
@@ -160,9 +161,10 @@ class DaemonConfig(BaseModel):
         vram_gb:        Advertised GPU memory in GB. When > 0 it overrides
                         probing in both registration and every heartbeat.
         models:         List of model names available on this worker (spec §8).
+        llamacpp_url:   Base URL of a provider-run llama-server.
         runtime:        Inference runtime(s) this daemon drives — "ollama"
-                        (default) and/or "vllm". A list (e.g. ["vllm", "ollama"])
-                        runs both on one worker.
+                        (default), "vllm" and/or "llamacpp". A list
+                        (e.g. ["vllm", "ollama"]) runs both on one worker.
         inference_timeout: Per-prompt inference timeout in seconds (any runtime).
         max_concurrent_prompts: Prompts executed concurrently per job.
     """
@@ -179,6 +181,10 @@ class DaemonConfig(BaseModel):
     # None = auto-detect ($OLLAMA_MODELS, ~/.ollama/models, the systemd
     # service store). Read-only; unreadable degrades to name-only.
     ollama_models_dir: Optional[str] = None
+    # llama-server the provider started. The daemon attaches; it never
+    # launches, restarts or tunes one, and the model, the GPU/RAM split and
+    # the slot count are all fixed on that server's command line.
+    llamacpp_url: str = "http://localhost:8080"
     poll_interval: int = Field(default=5, gt=0, description="Seconds between poll attempts, must be > 0")
     log_level: str = "INFO"
     work_dir: str = Field(default_factory=lambda: str(Path.home() / ".gpu-daemon" / "jobs"))
@@ -195,7 +201,7 @@ class DaemonConfig(BaseModel):
     # ["ollama"] (default) or ["vllm", "ollama"] for a mixed node.
     runtime: List[str] = Field(
         default_factory=lambda: ["ollama"],
-        description="Inference runtime(s) to drive: any of ollama, vllm",
+        description="Inference runtime(s) to drive: any of ollama, vllm, llamacpp",
     )
 
     # ── Executor tuning ──────────────────────────────────────────

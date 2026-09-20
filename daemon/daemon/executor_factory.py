@@ -4,6 +4,7 @@ from typing import Dict
 from daemon.config import DaemonConfig
 from daemon.executors.base import BaseExecutor
 from daemon.executors.vllm import VLLMExecutor
+from daemon.executors.llamacpp import LlamaCppExecutor
 from daemon.executors.ollama import OllamaExecutor
 from daemon.hardware import gpu_vendors_present
 
@@ -46,6 +47,12 @@ def create_executors(config: DaemonConfig) -> Dict[str, BaseExecutor]:
                 hf_hub_cache=config.hf_hub_cache,
                 timeout=config.inference_timeout,
                 supported_models=supported or None,
+                max_concurrent=config.max_concurrent_prompts,
+            )
+        elif runtime == "llamacpp":
+            executors[runtime] = LlamaCppExecutor(
+                base_url=config.llamacpp_url,
+                timeout=config.inference_timeout,
                 max_concurrent=config.max_concurrent_prompts,
             )
         else:

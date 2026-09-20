@@ -88,6 +88,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--llamacpp-url",
+        type=str,
+        default=None,
+        help="llama-server URL (default: http://localhost:8080)",
+    )
+
+    parser.add_argument(
         "--worker-id",
         type=str,
         default=None,
@@ -208,6 +215,7 @@ def _build_cli_overrides(args: argparse.Namespace) -> dict:
         "backend_url": args.backend_url,
         "vllm_url": args.vllm_url,
         "ollama_url": args.ollama_url,
+        "llamacpp_url": args.llamacpp_url,
         "worker_id": args.worker_id,
         "poll_interval": args.poll_interval,
         "heartbeat_interval": args.heartbeat_interval,

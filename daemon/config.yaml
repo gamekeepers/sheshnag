@@ -18,6 +18,8 @@ backend_url: "https://sheshnag-api.dau.ac.in"
 # Local vLLM server URL (OpenAI-compatible API)
 vllm_url: "http://localhost:8100"
 ollama_url: "http://localhost:11434"
+# llama-server you started yourself — the daemon attaches, never launches
+# llamacpp_url: "http://localhost:8080"
 # How often to poll for new jobs (seconds)
 poll_interval: 5
 
@@ -55,7 +57,7 @@ log_level: "INFO"
 
 # Inference runtime(s) to drive. A single runtime as a scalar, or a list
 # to run both on one worker (a mixed node).
-# runtime: "ollama"            # or "vllm"
+# runtime: "ollama"            # or "vllm", or "llamacpp"
 # runtime: [vllm, ollama]      # drive both on one worker
 
 # ─────────────────────────────────────────────────────────────
