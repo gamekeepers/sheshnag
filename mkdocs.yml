@@ -67,6 +67,7 @@ nav:
   - Home: index.md
   - Run your prompts: using-sheshnag.md
   - Lend your GPU: provider.md
+  - Match the runtime to your machine: provider-hardware.md
   - Host your deployment: self-host.md
   - Change the code: develop.md
   # The contribution process lives at the repository root and is linked, not

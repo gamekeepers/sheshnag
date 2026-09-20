@@ -271,6 +271,10 @@ then environment, then this file, then the built-in defaults.
 The full list, including flags a provider rarely needs, is in the
 [Daemon internals](reference/daemon.md).
 
+Which runtime suits your hardware, and how to tune it once chosen, is in
+[Match the runtime to your machine](provider-hardware.md) — worth reading if you have
+several GPUs, an AMD card, or a small GPU beside a lot of system RAM.
+
 ---
 
 ## When something is wrong
