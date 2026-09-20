@@ -71,7 +71,7 @@ lists words to stop using for that concept.
 | **Reconciliation** | Classifying every artifact a worker reports against the catalogue as `available`, `unregistered`, `drift` or `missing` | Sync, matching, refresh |
 | **Drift** | A worker's artifact claiming a pinned entry's name while its bytes match no pin under that name | Mismatch, stale model, conflict |
 | **Quarantine** | The set of worker-reported hashes the scheduler will not route to | Blocklist, pending models, unknown models |
-| **Adoption** | Promoting a quarantined hash into a catalogue entry, making every worker row holding it schedulable | Approval, registration, whitelisting |
+| **Adoption** | Promoting a quarantined hash into a catalogue entry, making rows holding it eligible once their runtime is schedulable | Approval, registration, whitelisting |
 | **Self-heal** | Appending a name a worker uses to a catalogue entry's serving profile, once the digest has proved the artifact is the pinned one | Auto-fix, repair, rename |
 | **Lineage** | The upstream base weights that group several quantizations of the same model, for display only | Family, parent model, base model |
 | **Model picker** | The dashboard control where a user chooses a catalogue entry for a batch | Model list, model dropdown, model selector |
