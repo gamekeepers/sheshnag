@@ -48,6 +48,27 @@ seconds after startup. A machine that has just registered and received nothing i
 
 ---
 
+## Getting the runtimes
+
+Sheshnag does not package, build or version inference runtimes, and this page deliberately
+carries no installation steps for them — upstream changes theirs faster than we could track
+it, and a stale copy here is worse than a link.
+
+| Runtime | Install from |
+|---|---|
+| Ollama | [ollama.com/download](https://ollama.com/download) — or let the Sheshnag installer fetch it |
+| vLLM | [vLLM installation guide](https://docs.vllm.ai/en/latest/getting_started/installation.html) |
+| llama.cpp | [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) · [build guide](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md) |
+
+Ollama is the exception only because the installer can fetch a prebuilt binary into your home
+directory. For vLLM and llama.cpp, **you install it, you start it, and you keep it running**;
+the daemon attaches to a URL and does nothing else.
+
+What follows is how to *configure* a runtime you already have, which is the part Sheshnag
+knows about.
+
+---
+
 ## Ollama hygiene
 
 Ollama is the default and the installer provisions it. Out of the box it is tuned for one
@@ -92,7 +113,8 @@ under `OLLAMA_MAX_QUEUE` (default 512), or the server returns 503 under load.
 vLLM is worth the extra work on a large card under sustained load. It is not worth it on a
 12 GB laptop GPU, and it cannot fetch models on demand.
 
-**Everything is yours to run.** The installer does nothing for vLLM. You install it, you
+**Everything is yours to run.** The installer does nothing for vLLM —
+[install it yourself](https://docs.vllm.ai/en/latest/getting_started/installation.html),
 start the server, and whatever it is serving when it starts is the complete set of models
 that worker can ever run.
 
@@ -130,7 +152,11 @@ only one where a single wrong flag produces a worker that looks perfectly health
 never given work.
 
 **Everything is yours to run**, as with vLLM. The daemon attaches to a `llama-server` you
-started and never launches, restarts or tunes one.
+started and never launches, restarts or tunes one. Get it from
+[ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp); their
+[build guide](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md) covers the
+CPU, CUDA, ROCm and Metal builds, and which one you want depends on the hardware sections
+below.
 
 ### The `--alias` is a contract, not a label
 
