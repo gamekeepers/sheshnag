@@ -51,8 +51,9 @@ Configured via a three-layer system: CLI > env (`DAEMON_*` prefix) > YAML file >
 | `DAEMON_BACKEND_URL` | `http://localhost:8000` | Control plane API URL |
 | `DAEMON_API_KEY` | _(required)_ | Org worker API key (created in dashboard) |
 | `DAEMON_WORKER_ID` | auto-generated | Unique worker ID with hostname prefix |
-| `DAEMON_RUNTIME` | `ollama` | Inference runtime(s) to drive: `ollama` or `vllm`, or a comma-separated pair (`vllm,ollama`) to run both on one worker |
+| `DAEMON_RUNTIME` | `ollama` | Inference runtime(s) to drive: `ollama`, `vllm` or `llamacpp`, comma-separated (`vllm,ollama`) to run several on one worker |
 | `DAEMON_OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
+| `DAEMON_LLAMACPP_URL` | `http://localhost:8080` | `llama-server` URL. The provider starts and keeps it running; the daemon only attaches. |
 | `DAEMON_VLLM_URL` | `http://localhost:8100` | vLLM server URL |
 | `DAEMON_HF_HUB_CACHE` | auto-detect | HF hub cache vLLM serves from, for on-disk model identity (shard hashes, repo + commit). Auto-detect order: `$HF_HUB_CACHE`, `$HF_HOME/hub`, `~/.cache/huggingface/hub`. Read-only. |
 | `DAEMON_POLL_INTERVAL` | 5 | Seconds between job polls |
@@ -111,8 +112,8 @@ never being handed a single batch. The daemon logs one warning
 > `MemAvailable` on Linux, free plus inactive pages on macOS, and `null`
 > anywhere neither is readable. `null` means *unknown*, never *none left*.
 > It is fitted against only by a runtime whose offload split is *declared*
-> rather than inferred — `llamacpp`, for which no daemon exists yet. The
-> runtimes in use today are fitted on VRAM alone: Ollama chooses its own
+> rather than inferred — `llamacpp`, which declares it with `--n-gpu-layers`.
+> The other runtimes are fitted on VRAM alone: Ollama chooses its own
 > split at load time and spills to RAM silently rather than failing, so the
 > platform can neither predict the slowdown nor be sure the job fits, and
 > vLLM has no hybrid mode at all.

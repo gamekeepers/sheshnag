@@ -7,8 +7,8 @@ changing the daemon's code.
 *Verified against code: 2026-08-26.*
 
 A lightweight polling daemon: it asks the control plane for work, downloads the
-input file, runs the prompts through a local runtime (**Ollama** by default, or
-**vLLM**), uploads results, and reports heartbeats and progress throughout.
+input file, runs the prompts through a local runtime (**Ollama** by default,
+or **vLLM** or **llama.cpp**), uploads results, and reports heartbeats and progress throughout.
 
 ---
 
@@ -73,7 +73,8 @@ daemon/
 │   ├── executors/
 │   │   ├── base.py          # BaseExecutor ABC
 │   │   ├── ollama.py        # OllamaExecutor (default)
-│   │   └── vllm.py          # VLLMExecutor (OpenAI-compatible)
+│   │   ├── vllm.py          # VLLMExecutor (OpenAI-compatible)
+│   │   └── llamacpp.py      # LlamaCppExecutor (GGUF, VRAM+RAM offload)
 │   └── main.py              # CLI entry point
 ├── tests/
 │   ├── sample_input.jsonl

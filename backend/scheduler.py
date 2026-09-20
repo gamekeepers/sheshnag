@@ -287,6 +287,15 @@ def _hosting_engine(worker, runtime_model_ids, catalog_digest):
     drifted or missing row is not dispatchable, and neither is any row of a
     runtime that is down or draining. Both filters have to be repeated here
     rather than inherited, which is the cost of needing the engine.
+
+    First match wins, and `worker.runtimes` is ordered by `position`, which is
+    the order the daemon listed them in its `runtime:` config. When two
+    runtimes on one worker answer to the SAME name, that order therefore picks
+    the fit rule — `[llamacpp, ollama]` fits the pair against VRAM plus RAM,
+    `[ollama, llamacpp]` against VRAM alone. Names normally differ per runtime
+    (an Ollama tag against a llama.cpp `--alias`), so the collision needs a
+    provider to create it deliberately; selecting by the engine the catalogue
+    entry actually profiles would remove the ambiguity.
     """
     for runtime in worker.runtimes:
         if not runtime.schedulable:

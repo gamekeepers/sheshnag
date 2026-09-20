@@ -223,3 +223,40 @@ async def test_inventory_never_raises():
     assert await ex.inventory() == []
     assert await ex.list_models() == []
     assert await ex.list_running_models() == []
+
+
+# ── The zero-VRAM warning ────────────────────────────────────────
+#
+# It exists to name the #53 failure: online, healthy, never assigned. The
+# hybrid fit rule makes it false for llama.cpp, which is dispatchable on
+# system RAM alone.
+
+def _hb(runtimes):
+    from daemon.heartbeat import HeartbeatManager
+    return HeartbeatManager(client=None, worker_id="w", runtimes=runtimes)
+
+
+@pytest.mark.parametrize("runtimes,never", [
+    (["ollama"], True),
+    (["vllm", "ollama"], True),
+    (["llamacpp"], False),
+    (["llamacpp", "ollama"], False),
+])
+def test_zero_vram_warning_matches_the_fit_rule(caplog, runtimes, never):
+    import logging
+    hb = _hb(runtimes)
+    with caplog.at_level(logging.WARNING):
+        hb._maybe_warn_zero_vram()
+
+    assert len(caplog.records) == 1
+    text = caplog.records[0].message
+    assert ("never assign" in text) is never, text
+    if not never:
+        assert "system RAM" in text
+
+
+def test_zero_vram_warning_is_said_once():
+    hb = _hb(["llamacpp"])
+    hb._maybe_warn_zero_vram()
+    assert hb._warned_zero_vram
+    hb._maybe_warn_zero_vram()   # second call must be a no-op

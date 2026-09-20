@@ -26,6 +26,7 @@ class HeartbeatManager:
         get_loaded_model_digests: Optional[Callable[[], Awaitable[Dict]]] = None,
         get_inventory: Optional[Callable[[], Awaitable[List[Dict]]]] = None,
         declared_vram_gb: float = 0.0,
+        runtimes: Optional[List[str]] = None,
     ):
         self._client = client
         self._worker_id = worker_id
@@ -34,6 +35,9 @@ class HeartbeatManager:
         self._get_loaded_model_digests = get_loaded_model_digests
         self._get_inventory = get_inventory
         self._declared_vram_gb = declared_vram_gb
+        # Which engines this worker drives. Only used to keep the
+        # zero-VRAM warning honest: llama.cpp is dispatchable without a GPU.
+        self._runtimes = list(runtimes or [])
         self._warned_zero_vram = False
         self._running = False
         self._task: Optional[asyncio.Task] = None
@@ -42,6 +46,34 @@ class HeartbeatManager:
         self._current_job_id: Optional[str] = None
         self._progress: Optional[Dict] = None
         self._start_time = time.time()
+
+    def _maybe_warn_zero_vram(self) -> None:
+        """Say once that this worker advertises no VRAM, and what follows.
+
+        The #53 failure mode is registering fine, heartbeating fine, showing
+        "online" and never getting a batch, with nothing logged.
+
+        What follows depends on the runtime. llama.cpp fits against VRAM plus
+        free system RAM, so a host with no GPU is dispatchable for anything
+        that fits in RAM; every other runtime fits on VRAM alone and this
+        worker is unreachable to them.
+        """
+        if self._warned_zero_vram:
+            return
+        self._warned_zero_vram = True
+        if "llamacpp" in self._runtimes:
+            logger.warning(
+                "Advertising 0 GB VRAM. llama.cpp can still be assigned models "
+                "that fit in free system RAM; any other runtime on this worker "
+                "will never be assigned a batch. Set DAEMON_VRAM_GB if GPU "
+                "probing is not supported here."
+            )
+        else:
+            logger.warning(
+                "Advertising 0 GB VRAM — the scheduler will never assign this "
+                "worker a batch. Set DAEMON_VRAM_GB if GPU probing is not "
+                "supported on this host."
+            )
 
     async def start(self):
         """Start the heartbeat background loop."""
@@ -135,15 +167,8 @@ class HeartbeatManager:
         # and permanently (scheduler.find_best_batch).
         if self._declared_vram_gb:
             memory_total = self._declared_vram_gb
-        if not memory_total and not self._warned_zero_vram:
-            # The #53 failure mode: register fine, heartbeat fine, show
-            # "online", never get a batch — with nothing logged. Say it once.
-            self._warned_zero_vram = True
-            logger.warning(
-                "Advertising 0 GB VRAM — the scheduler will never assign this "
-                "worker a batch. Set DAEMON_VRAM_GB if GPU probing is not "
-                "supported on this host."
-            )
+        if not memory_total:
+            self._maybe_warn_zero_vram()
 
         # Available memory is only meaningful when "used" is a real machine-
         # wide reading. Unified memory (Apple Silicon) has none → None, so

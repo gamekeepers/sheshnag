@@ -255,9 +255,10 @@ installer writes is deliberately minimal; these are the values worth knowing.
 |---|---|---|
 | `backend_url` | — | The control plane. Set at install. |
 | `api_key` | — | Your `gk-…` key. Set at install. |
-| `runtime` | `ollama` | `ollama` or `vllm`, or a list — `[vllm, ollama]` — to run both on one worker. |
+| `runtime` | `ollama` | `ollama`, `vllm` or `llamacpp`, or a list — `[vllm, ollama]` — to run several on one worker. |
 | `ollama_url` | `http://localhost:11434` | Where your Ollama is listening. |
 | `vllm_url` | `http://localhost:8100` | Only when `runtime: vllm`. |
+| `llamacpp_url` | `http://localhost:8080` | Only when `runtime: llamacpp`. You start `llama-server`; the daemon attaches. |
 | `poll_interval` | `5` | Seconds between "any work?" checks. |
 | `heartbeat_interval` | `30` | Seconds between liveness reports. |
 | `inference_timeout` | `300.0` | Per-prompt ceiling, in seconds. |

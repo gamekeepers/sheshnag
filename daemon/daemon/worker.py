@@ -92,6 +92,7 @@ class Worker:
             get_loaded_model_digests=self._get_loaded_model_digests,
             get_inventory=self._get_inventory,
             declared_vram_gb=config.vram_gb,
+            runtimes=list(executors),
         )
 
         # Ollama is the only runtime that can pull models on demand.
@@ -859,6 +860,18 @@ class Worker:
         # The routing map must exist before the first poll, or a job that
         # lands in the gap would have no route on a mixed worker.
         await self._refresh_model_map()
+
+        # Name the models each runtime actually answers to. Dispatch matches
+        # on these, so a name that is not in the catalogue means this worker
+        # is online, healthy and unreachable — llama.cpp's `--alias` being
+        # the easiest way to get there. Printing them is what lets a provider
+        # compare against the catalogue without reading the database.
+        for engine in ready:
+            names = await self._executors[engine].list_models()
+            logger.info(
+                "Runtime '%s' serves: %s",
+                engine, ", ".join(names) if names else "(nothing)",
+            )
         return ready
 
     async def _wait_one_runtime(self, name: str, executor: BaseExecutor) -> bool:
