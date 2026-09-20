@@ -5,9 +5,11 @@ All rows created here use the `zztest-` prefix and are deleted afterwards:
 the test database is session-scoped with no per-test truncation, and
 test_models.py's seed fixture skips seeding when the catalogue is non-empty.
 """
+import os
 from types import SimpleNamespace
 
 import pytest
+import yaml
 from sqlalchemy.orm import sessionmaker
 
 import catalog_seed
@@ -290,3 +292,50 @@ def _worker_hosting(models, vram_gb, engine="ollama"):
         )],
         vram_total_gb=vram_gb, ram_total_gb=None, ram_available_gb=None,
     )
+
+
+# ── The shipped manifest ─────────────────────────────────────────
+#
+# These read `catalog/models.yaml` itself and never seed it: the test
+# database is session-scoped, so inserting the real catalogue would leave
+# rows behind and suppress test_models.py's seed fixture.
+
+def _manifest():
+    path = os.path.join(os.path.dirname(catalog_seed.__file__), "catalog", "models.yaml")
+    with open(path) as fh:
+        return yaml.safe_load(fh)
+
+
+def test_shipped_manifest_ids_all_validate():
+    """A hand-edit that breaks a naming rule is a silently skipped entry —
+    the model disappears from the catalogue without the boot failing."""
+    offenders = {
+        entry["id"]: validate_entry_id(entry["id"], entry)
+        for entry in _manifest()
+        if validate_entry_id(entry["id"], entry)
+    }
+    assert offenders == {}
+
+
+def test_shipped_manifest_profiles_all_normalise():
+    """Every entry yields at least one profile, whether it declares
+    `profiles:` or relies on the legacy runtime pair."""
+    for entry in _manifest():
+        assert catalog_seed._entry_profiles(entry), entry["id"]
+
+
+def test_llamacpp_entry_is_servable_as_written():
+    entry = next(e for e in _manifest() if e["id"] == "qwen36-27b-q4kxl")
+
+    # NOT NULL on both columns: an entry with only `profiles:` fails to insert.
+    assert entry["runtime"] and entry["runtime_model_id"]
+
+    profiles = catalog_seed._entry_profiles(entry)
+    assert [(p["runtime"], p["runtime_model_id"]) for p in profiles] == [
+        ("llamacpp", "qwen36-27b-q4kxl")
+    ]
+    # The served name is a contract on the provider's --alias flag.
+    assert entry["runtime_model_id"] == profiles[0]["runtime_model_id"]
+    # Weighed against VRAM + usable RAM, so it is the whole footprint and
+    # must exceed the weights on disk.
+    assert entry["vram_gb"] > entry["size_gb"]

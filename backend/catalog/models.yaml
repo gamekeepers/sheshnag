@@ -271,3 +271,42 @@
   source_revision: null
   homepage_url: https://ollama.com/library/nomic-embed-text
   enabled: true
+# First llama.cpp entry, and the first to use `profiles:`. llama-server is
+# attached, not launched, so `runtime_model_id` is a contract on the flag the
+# provider passes: `--alias qwen36-27b-q4kxl`. Without it llama-server answers
+# to the GGUF path and nothing here matches.
+- id: qwen36-27b-q4kxl
+  display_name: Qwen3.6 27B (Q4_K_XL)
+  runtime: llamacpp
+  runtime_model_id: qwen36-27b-q4kxl
+  digest: ff6941ded525b34eb159496762c29dd0ec6e71dc31b74d57e75d871a03eec259
+  quantization: Q4_K_XL
+  parameter_size: 26.9B
+  context_length: 262144
+  # Measured peak RSS of llama-server serving this file on CPU: 25.0 GiB at
+  # one slot / 4096 ctx, 25.7 GiB at four slots / 8192. The weights are 16.4
+  # of that, so the fixed overhead dominates and context barely moves it.
+  # Under the hybrid fit rule this is weighed against VRAM + usable RAM, not
+  # VRAM alone.
+  vram_gb: 25.0
+  size_gb: 16.4
+  task_type: chat
+  capabilities:
+    json_mode: true
+    vision: false
+    # llama-server returns 501 for /v1/embeddings unless started with
+    # --embeddings, and this profile does not ask for it.
+    embeddings: false
+  # HF commit 82d411acf4a06cfb8d9b073a5211bf410bfc29bf; the source repo is
+  # unrecorded, and these fields are provenance rather than matching keys.
+  source_type: huggingface
+  source_ref: null
+  source_revision: null
+  homepage_url: null
+  profiles:
+    - runtime: llamacpp
+      runtime_model_id: qwen36-27b-q4kxl
+      params:
+        n_ctx: 4096
+        parallel: 1
+  enabled: true
