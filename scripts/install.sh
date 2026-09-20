@@ -123,7 +123,19 @@ PY
   fi
   if [ -n "$missing" ]; then
     echo "Missing:$missing"
-    echo "Ask an admin to run: sudo apt-get install -y python3 python3-venv python3-pip git curl"
+    echo
+    echo "Install these, then re-run. Package names vary by distribution:"
+    echo "  Debian/Ubuntu  sudo apt-get install -y python3 python3-venv python3-pip git curl"
+    echo "  Fedora/RHEL    sudo dnf install -y python3 python3-pip git curl"
+    echo "  Arch           sudo pacman -S --needed python python-pip git curl"
+    case "$missing" in
+      *python3'>='*)
+        echo
+        echo "Python 3.10 or newer is required and older distributions do not"
+        echo "package it. pyenv, conda, or a source build all work; the daemon"
+        echo "needs nothing from the system Python."
+        ;;
+    esac
     exit 1
   fi
 
