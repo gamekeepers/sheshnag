@@ -1,8 +1,10 @@
 # GPU Worker Daemon — Dependencies
 # Install: pip install -r requirements.txt
 
-# HTTP client (async)
-httpx>=0.27.0
+# HTTP client (async). The [socks] extra pulls in socksio, which a worker on a
+# network with no outbound route needs: its only path to the control plane is a
+# proxy, commonly an SSH dynamic forward (socks5h://).
+httpx[socks]>=0.27.0
 
 # Data validation
 pydantic>=2.0.0

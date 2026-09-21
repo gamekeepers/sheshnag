@@ -21,6 +21,7 @@ API contract (all calls authenticated with an org worker API key):
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -37,6 +38,20 @@ _POLL_TIMEOUT = 10.0
 
 # Default timeout for non-poll requests
 _DEFAULT_TIMEOUT = 30.0
+
+# Proxy environment variables, most specific first. A worker on a network with
+# no outbound route reaches the control plane through a proxy or an SSH SOCKS
+# forward, and this is the only channel that carries it.
+_PROXY_ENV_VARS = ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
+
+
+def _env_proxy() -> Optional[str]:
+    """The proxy URL to reach the control plane through, or None."""
+    for name in _PROXY_ENV_VARS:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
 
 
 class BackendClient:
@@ -103,8 +118,16 @@ class BackendClient:
                     max_connections=10,
                     max_keepalive_connections=5,
                 ),
-                # Retry on transient transport-level failures
-                transport=httpx.AsyncHTTPTransport(retries=3),
+                # Retry on transient transport-level failures. Naming a
+                # transport is what makes the proxy explicit: httpx reads
+                # HTTPS_PROXY/ALL_PROXY from the environment only when it
+                # builds the transport itself, so a worker behind a proxy
+                # would otherwise resolve the backend hostname locally and
+                # fail with "Name or service not known".
+                transport=httpx.AsyncHTTPTransport(
+                    retries=3,
+                    proxy=_env_proxy(),
+                ),
             )
         return self._client
 
