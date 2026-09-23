@@ -1395,3 +1395,158 @@ h2.batch-detail-id {
   padding-top: 1.2rem;
   border-top: 1px solid var(--border-soft);
 }
+
+/* ─── Playground ──────────────────────────────────────────────────────────── */
+
+.playground-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .playground-grid { grid-template-columns: minmax(0, 1fr); }
+}
+.field textarea {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.65rem 0.8rem;
+  color: var(--fg);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  resize: vertical;
+}
+.field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.field textarea:disabled, .field select:disabled, .field input:disabled {
+  opacity: 0.6;
+}
+.playground-params {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
+  gap: 0.75rem;
+}
+.playground-params .field { margin-bottom: 0.5rem; }
+.field textarea.mono {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.8rem;
+}
+.playground-output.mono {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.82rem;
+}
+.playground-actions {
+  display: flex;
+  gap: 0.6rem;
+  margin: 0.25rem 0 1rem;
+}
+.playground-hint {
+  font-size: 0.8rem;
+  color: var(--dim);
+  margin-top: 0.5rem;
+  line-height: 1.45;
+}
+.playground-hint.warn { color: var(--busy); }
+
+/* Upload → Validate → Queue → Run → Done. The batch lifecycle, on purpose. */
+.playground-steps {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+.playground-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dimmer);
+}
+.playground-step + .playground-step::before {
+  content: '';
+  width: 14px;
+  height: 1px;
+  background: var(--border);
+  margin-right: 0.35rem;
+}
+.playground-step-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border);
+}
+.playground-step.done { color: var(--dim); }
+.playground-step.done .playground-step-dot { background: var(--online); }
+.playground-step.active { color: var(--fg); }
+.playground-step.active .playground-step-dot {
+  background: var(--busy);
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.18);
+}
+.playground-step.failed { color: var(--danger); }
+.playground-step.failed .playground-step-dot { background: var(--danger); }
+
+.playground-output {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.92rem;
+  line-height: 1.55;
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
+  margin: 0 0 1rem;
+  max-height: 28rem;
+  overflow: auto;
+}
+.playground-error .playground-output {
+  color: var(--danger);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.8rem;
+}
+.playground-empty { padding: 2rem 1rem; text-align: center; }
+.playground-reasoning { margin-bottom: 0.75rem; }
+.playground-reasoning summary {
+  cursor: pointer;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: 0.4rem;
+}
+.playground-reasoning .playground-output { color: var(--dim); }
+.playground-facts { margin-bottom: 1.25rem; }
+.playground-scale { margin-top: 0.5rem; }
+
+.playground-history { display: flex; flex-direction: column; gap: 0.35rem; }
+.playground-history-row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) minmax(0, 4fr) auto;
+  gap: 1rem;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  color: var(--fg);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.playground-history-row:hover { background: var(--bg-panel-hover); }
+.playground-history-prompt {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -15,21 +15,30 @@ from services.sse_manager import sse_manager
 router = APIRouter()
 
 
-def _assigned_at(db: Session, batch_ids) -> dict:
-    """batch_id -> the moment a worker took the job, for the ids given.
+_NOT_ASSIGNED = (None, None)
 
-    The dispatch time is on BatchAssignment, not Batch, so the lifecycle a
-    reader wants ("created, queued, started, finished") is spread across two
-    tables. One query for the whole page rather than one per row.
+
+def _assignments(db: Session, batch_ids) -> dict:
+    """batch_id -> (assigned_at, worker_id), for the ids given.
+
+    The dispatch time and the serving worker are on BatchAssignment, not
+    Batch, so the lifecycle a reader wants ("created, queued, started on host
+    X, finished") is spread across two tables. One query for the whole page
+    rather than one per row. Ids with no assignment are absent; read with
+    `.get(id, _NOT_ASSIGNED)`.
     """
     if not batch_ids:
         return {}
     rows = (
-        db.query(BatchAssignment.batch_id, BatchAssignment.assigned_at)
+        db.query(
+            BatchAssignment.batch_id,
+            BatchAssignment.assigned_at,
+            BatchAssignment.worker_id,
+        )
         .filter(BatchAssignment.batch_id.in_(batch_ids))
         .all()
     )
-    return {batch_id: assigned_at for batch_id, assigned_at in rows}
+    return {batch_id: (assigned_at, worker_id) for batch_id, assigned_at, worker_id in rows}
 
 
 async def _validate_and_notify(batch_id: str, filepath: str) -> None:
@@ -134,7 +143,7 @@ def get_batch(
     if user.platform_role == "user" and batch.user_id != user.id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    return BatchOut.from_batch(batch, _assigned_at(db, [batch.id]).get(batch.id))
+    return BatchOut.from_batch(batch, *_assignments(db, [batch.id]).get(batch.id, _NOT_ASSIGNED))
 
 
 @router.get("/batches/{batch_id}/usage")
@@ -179,9 +188,9 @@ def list_batches(
         query = query.filter(Batch.user_id == user.id)
 
     batches = query.order_by(Batch.created_at.desc()).all()
-    started = _assigned_at(db, [b.id for b in batches])
+    assigned = _assignments(db, [b.id for b in batches])
 
     return {
         "object": "list",
-        "data": [BatchOut.from_batch(b, started.get(b.id)) for b in batches],
+        "data": [BatchOut.from_batch(b, *assigned.get(b.id, _NOT_ASSIGNED)) for b in batches],
     }

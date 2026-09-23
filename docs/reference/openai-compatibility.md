@@ -36,6 +36,7 @@ state exactly what is supported.
 | `tools` | top-level | **translated** — passed top-level (Ollama native since ~0.3) | **native** — accepted top-level †|
 | `tool_choice` | top-level | **ignored** — warn-and-drop; Ollama does not support `tool_choice` — tool selection is determined by the model from the `tools` list | **native** — accepted top-level †|
 | `stream` | top-level | **rejected** — batch execution cannot honour streaming; response shape is incompatible | **rejected** — batch execution cannot honour streaming; response shape is incompatible |
+| `chat_template_kwargs.enable_thinking` (or top-level `think`) | non-standard | **translated** → `think` (Ollama ≥ 0.9); the trace comes back as `message.thinking` and is mirrored to `message.reasoning_content` | **native** — `chat_template_kwargs` is a vLLM request field; honoured by templates that read `enable_thinking` (Qwen3 family), ignored by others |
 | `response_format` | top-level | **translated** → `format` (implemented in issue #41, structured outputs) | **native** — accepted top-level †|
 
 > **† UNVERIFIED** — The vLLM column was built from vLLM's OpenAI-compatible server documentation, not from a live server. No vLLM instance was available in this environment (no GPU, no vllm package). Entries marked native † are doc-derived and must be confirmed against a running server before being treated as ground truth.

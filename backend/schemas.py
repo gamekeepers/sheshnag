@@ -85,12 +85,21 @@ class BatchOut(BaseModel):
     # which is the difference between a batch that is queued and one that is
     # running, and the two look identical without it.
     in_progress_at: Optional[int] = None
+    # Id of the worker that took the job, from the assignment row, so it still
+    # resolves after the worker is gone. An opaque id rather than the hostname:
+    # the consumer learns which machine answered, not whose. None until dispatched.
+    worker_id: Optional[str] = None
     completed_at: Optional[int] = None
     request_counts: RequestCounts = RequestCounts()
     usage: Optional[UsageStats] = None
 
     @classmethod
-    def from_batch(cls, batch, in_progress_at: Optional[int] = None):
+    def from_batch(
+        cls,
+        batch,
+        in_progress_at: Optional[int] = None,
+        worker_id: Optional[str] = None,
+    ):
         has_usage = (
             getattr(batch, "prompt_tokens", None) is not None
             or getattr(batch, "completion_tokens", None) is not None
@@ -110,6 +119,7 @@ class BatchOut(BaseModel):
             expires_at=batch.expires_at,
             requested_at=batch.requested_at,
             in_progress_at=in_progress_at,
+            worker_id=worker_id,
             completed_at=batch.completed_at,
             request_counts=RequestCounts(
                 total=batch.request_counts_total or 0,

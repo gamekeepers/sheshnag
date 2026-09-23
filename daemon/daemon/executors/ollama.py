@@ -799,15 +799,32 @@ class OllamaExecutor(BaseExecutor):
                 if schema is not None:
                     translated["format"] = schema
 
+        # ── thinking → think (Ollama ≥ 0.9) ──────────────────
+        # Two spellings reach here and mean the same switch: Ollama's own
+        # top-level `think`, and `chat_template_kwargs.enable_thinking`,
+        # which is how vLLM/Qwen-style templates take it. Accepting both
+        # lets one JSONL line drive either runtime.
+        think = openai_body.get("think")
+        if think is None:
+            think = (openai_body.get("chat_template_kwargs") or {}).get("enable_thinking")
+        if isinstance(think, bool):
+            translated["think"] = think
+
         return translated
         
     def _translate_response(self, ollama_response: dict) -> dict:
         """Ollama response -> OpenAI-compatible response format."""
         choices = []
         if "message" in ollama_response and ollama_response["message"]:
+            message = dict(ollama_response["message"])
+            # Ollama returns a reasoning model's trace as `thinking`; vLLM's
+            # reasoning parser calls it `reasoning_content`. Expose both so a
+            # reader of the output file has one field to look at.
+            if message.get("thinking") and not message.get("reasoning_content"):
+                message["reasoning_content"] = message["thinking"]
             choices.append({
                 "index": 0,
-                "message": ollama_response.get("message", {}),
+                "message": message,
                 "finish_reason": "stop" if ollama_response.get("done") else "length",
             })
         return {

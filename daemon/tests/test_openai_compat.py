@@ -42,6 +42,39 @@ OLLAMA_CHAT_OK = {
 # ════════════════════════════════════════════════════════════════
 
 
+class TestOllamaThinking:
+    """The playground's thinking switch must reach Ollama as `think` and the
+    trace must come back under the field vLLM readers already look for."""
+
+    def test_think_passes_through(self):
+        executor = OllamaExecutor()
+        translated = executor._translate_request({"model": "m", "messages": [], "think": False})
+        assert translated["think"] is False
+
+    def test_enable_thinking_kwarg_maps_to_think(self):
+        executor = OllamaExecutor()
+        body = {"model": "m", "messages": [], "chat_template_kwargs": {"enable_thinking": True}}
+        translated = executor._translate_request(body)
+        assert translated["think"] is True
+        assert "chat_template_kwargs" not in translated
+
+    def test_absent_switch_leaves_runtime_default(self):
+        executor = OllamaExecutor()
+        translated = executor._translate_request({"model": "m", "messages": []})
+        assert "think" not in translated
+
+    def test_thinking_is_exposed_as_reasoning_content(self):
+        executor = OllamaExecutor()
+        response = executor._translate_response({
+            **OLLAMA_CHAT_OK,
+            "message": {"role": "assistant", "content": "4", "thinking": "2+2 is 4"},
+        })
+        message = response["choices"][0]["message"]
+        assert message["reasoning_content"] == "2+2 is 4"
+        assert message["thinking"] == "2+2 is 4"
+        assert message["content"] == "4"
+
+
 class TestOllamaOptionTranslation:
     """Every OpenAI sampling parameter must land in options.*."""
 

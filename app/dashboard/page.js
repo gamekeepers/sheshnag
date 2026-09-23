@@ -10,6 +10,7 @@ import PortalSwitch from '../components/PortalSwitch';
 import DocsLink from '../components/DocsLink';
 import { changePassword } from '../lib/changePassword';
 import SheshnagLogo from '../components/SheshnagLogo';
+import Playground from './Playground';
 import './dashboard.css';
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
@@ -501,6 +502,8 @@ export default function DashboardPage() {
       loadModels();  // the first-batch sample names a live catalogue id
     } else if (activeTab === 'models') {
       loadModels();
+    } else if (activeTab === 'playground') {
+      loadModels();  // the picker lists the live catalogue
     } else if (activeTab === 'files') {
       loadFiles();
       loadModels();  // the dropzone sample line names a live catalogue id
@@ -1140,6 +1143,7 @@ export default function DashboardPage() {
       apikeys: 'API Keys',
       usage: 'Usage',
       models: 'Models',
+      playground: 'Playground',
       workers: 'Workers',
       files: 'Files',
       batches: 'Batches',
@@ -1325,6 +1329,9 @@ export default function DashboardPage() {
           </div>
           <div className={`nav-item ${activeTab === 'models' ? 'active' : ''}`} onClick={() => setActiveTab('models')}>
             <span className="ic">🧠</span> Models
+          </div>
+          <div className={`nav-item ${activeTab === 'playground' ? 'active' : ''}`} onClick={() => setActiveTab('playground')}>
+            <span className="ic">🧪</span> Playground
           </div>
           <div className={`nav-item ${activeTab === 'usage' ? 'active' : ''}`} onClick={() => setActiveTab('usage')}>
             <span className="ic">📈</span> Usage
@@ -2173,6 +2180,22 @@ export default function DashboardPage() {
                 </table>
               </div>
             </div>
+          </div>
+
+          {/* ============ PLAYGROUND PAGE ============ */}
+          <div className={`page-panel ${activeTab === 'playground' ? 'active' : ''}`}>
+            <h1 className="page-title">Playground</h1>
+            <p className="page-sub">One prompt, one model, one answer — run as a one-line batch, so what you see is what a full batch does.</p>
+            {activeTab === 'playground' && (
+              <Playground
+                backend={BACKEND}
+                getHeaders={getHeaders}
+                catalog={modelCatalog}
+                servableIds={servableIds}
+                modelsLoaded={modelsLoaded}
+                onBatchCreated={loadBatches}
+              />
+            )}
           </div>
 
           {/* ============ BATCHES PAGE ============ */}

@@ -144,3 +144,35 @@ def test_list_batches_carries_in_progress_at_per_row(auth_client, _engine, _test
     rows = {b["id"]: b for b in auth_client.get("/v1/batches").json()["data"]}
     assert rows[running.id]["in_progress_at"] == 1_700_000_500
     assert rows[queued.id]["in_progress_at"] is None
+
+
+# ── worker_id ───────────────────────────────────────────────────────────────
+# The playground shows which worker answered a prompt. The id lives on
+# BatchAssignment, so it rides the same query as in_progress_at and is absent,
+# not blank, for a batch nobody has taken. The id and not the hostname: a
+# consumer may learn which machine answered, never whose.
+
+def test_queued_batch_reports_no_worker(auth_client, _engine, _test_user, seeded_file):
+    batch = _seed_batch(_engine, _test_user.id, seeded_file.id)
+
+    body = auth_client.get(f"/v1/batches/{batch.id}").json()
+    assert body["worker_id"] is None
+
+
+def test_worker_id_comes_from_the_assignment(auth_client, _engine, _test_user, seeded_file):
+    batch = _seed_batch(_engine, _test_user.id, seeded_file.id, status="in_progress")
+    _assign(_engine, batch.id, 1_700_000_000)
+
+    body = auth_client.get(f"/v1/batches/{batch.id}").json()
+    assert body["worker_id"] == "wrk_test"
+    assert body["in_progress_at"] == 1_700_000_000
+
+
+def test_list_batches_carries_worker_id_per_row(auth_client, _engine, _test_user, seeded_file):
+    queued = _seed_batch(_engine, _test_user.id, seeded_file.id)
+    running = _seed_batch(_engine, _test_user.id, seeded_file.id, status="in_progress")
+    _assign(_engine, running.id, 1_700_000_500)
+
+    rows = {b["id"]: b for b in auth_client.get("/v1/batches").json()["data"]}
+    assert rows[running.id]["worker_id"] == "wrk_test"
+    assert rows[queued.id]["worker_id"] is None

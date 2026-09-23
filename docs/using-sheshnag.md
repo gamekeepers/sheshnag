@@ -27,6 +27,14 @@ Your key authenticates *you*, not a machine. It is not the same thing as the
 worker keys providers use — those live under the Provider portal and are only
 accepted on worker endpoints.
 
+## Try one prompt first
+
+The dashboard's **Playground** tab runs a single prompt on any catalogue model
+with no JSONL and no API key. Under the hood it is a one-line batch — upload,
+validate, queue, run — and the result shows the answer, the tokens used, the
+worker that served it, and the exact JSONL line that produced it. Copy that
+line, add one per prompt, and you have your first batch file.
+
 ## Point your code at it
 
 The base URL is your deployment's host plus `/v1`:
