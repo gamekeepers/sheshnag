@@ -174,6 +174,7 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
   const [schemaText, setSchemaText] = useState(SCHEMA_SAMPLE);
 
   const [phase, setPhase] = useState('idle');        // idle | uploading | submitting | <batch status>
+  const [errorAt, setErrorAt] = useState(null);      // phase when the run errored, for the step row
   const [batch, setBatch] = useState(null);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -182,6 +183,15 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
 
   const runRef = useRef(0);          // bumps per run so a stale poll loop exits
   const startedRef = useRef(null);
+  const phaseRef = useRef('idle');   // last lifecycle phase reached; phase itself becomes 'error'
+
+  // Record the phase for the step row, but only values that name a step: a
+  // server-side 'failed' status should not move the marker past the last step
+  // actually reached (the run failed *while in* that step).
+  const toPhase = (p) => {
+    if (STEP_INDEX[p] != null) phaseRef.current = p;
+    setPhase(p);
+  };
 
   // A model is resident when an online worker can serve it now; only those
   // are selectable. The default is the first resident one, never a
@@ -231,19 +241,20 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
 
     setError(null);
     setResult(null);
+    setErrorAt(null);
     setBatch(null);
     setElapsed(null);
     startedRef.current = Date.now();
 
     try {
-      setPhase('uploading');
+      toPhase('uploading');
       const fd = new FormData();
       fd.append('file', new File([line], `${customId}.jsonl`, { type: 'application/jsonl' }));
       const up = await fetch(`${backend}/v1/files`, { method: 'POST', headers: authOnlyHeaders(), body: fd });
       if (!up.ok) throw new Error(`Upload failed (${up.status}).`);
       const file = await up.json();
 
-      setPhase('submitting');
+      toPhase('submitting');
       const cr = await fetch(`${backend}/v1/batches`, {
         method: 'POST',
         headers: getHeaders(),
@@ -255,7 +266,7 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
       }
       let b = await cr.json();
       setBatch(b);
-      setPhase(b.status);
+      toPhase(b.status);
       onBatchCreated?.();
 
       while (!TERMINAL.has(b.status)) {
@@ -265,7 +276,7 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
         if (!r.ok) throw new Error(`Could not read batch status (${r.status}).`);
         b = await r.json();
         setBatch(b);
-        setPhase(b.status);
+        toPhase(b.status);
         setElapsed(Date.now() - startedRef.current);
       }
       const took = Date.now() - startedRef.current;
@@ -303,11 +314,12 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
     } catch (e) {
       if (runRef.current !== runId) return;
       setError(e.message || String(e));
+      setErrorAt(phaseRef.current);
       setPhase('error');
     }
   };
 
-  const stepIndex = STEP_INDEX[phase] ?? -1;
+  const stepIndex = STEP_INDEX[phase === 'error' ? errorAt : phase] ?? -1;
 
   return (
     <div className="playground">
