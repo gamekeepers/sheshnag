@@ -6,6 +6,10 @@
 #   scripts/build-offline-bundle.sh                 # wheels only
 #   WITH_PYTHON=1 scripts/build-offline-bundle.sh   # add a portable CPython
 #
+# It carries software, not configuration: config.yaml, .env and whatever
+# supervises the daemon are the target's own and are left untouched, so the
+# same bundle installs a new host and updates an existing one.
+#
 # The wheels are resolved for the *target*, not for this machine. A host on
 # glibc 2.17 (CentOS 7, the GICS boxes) cannot load a manylinux_2_28 wheel, so
 # the tags below are part of the contract, not a default worth drifting.
@@ -28,15 +32,21 @@ echo "[1/4] Building the daemon wheel..."
 python3 -m pip wheel --no-deps -q -w "$STAGE/wheels" "$REPO_ROOT/daemon"
 
 echo "[2/4] Resolving dependencies for $PLATFORM / $ABI..."
+# Resolved from the wheel just built, so the bundle carries what the installer
+# will ask for. Reading a separate requirements file instead lets a dependency
+# added to pyproject.toml be missing from the archive, which surfaces as an
+# ImportError on a host that cannot reach an index to repair itself.
+#
 # --only-binary=:all: because the target has no compiler; a source
 # distribution here becomes a build failure on the far side, hours later.
+DAEMON_WHEEL="$(ls "$STAGE"/wheels/gpu_daemon-*.whl)"
 python3 -m pip download -q -d "$STAGE/wheels" \
     --only-binary=:all: \
     --platform "$PLATFORM" \
     --python-version "$PY_VERSION" \
     --implementation cp \
     --abi "$ABI" \
-    -r "$REPO_ROOT/daemon/requirements.txt" "httpx[socks]"
+    "$DAEMON_WHEEL"
 
 if [ "$WITH_PYTHON" = "1" ]; then
   echo "[3/4] Fetching portable CPython $CPYTHON_VERSION..."
@@ -82,15 +92,13 @@ if [ ! -x "$TARGET/venv/bin/python" ]; then
 fi
 
 echo "Installing from $HERE/wheels..."
-# Dependencies first; unchanged ones are left alone.
+# --force-reinstall, and without --no-deps, so the environment ends up matching
+# this bundle exactly. The daemon's version is pinned, so pip reads a newer
+# build as already satisfied and would otherwise install neither the new code
+# nor a dependency the release added — leaving a host that cannot reach an
+# index with an ImportError and no way to repair itself.
 "$TARGET/venv/bin/python" -m pip install -q --no-index \
-    --find-links "$HERE/wheels" gpu-daemon
-
-# Then the daemon itself, unconditionally. Its version is pinned at 0.1.0, so
-# pip cannot tell two builds apart and --upgrade would silently install
-# nothing over an existing install.
-"$TARGET/venv/bin/python" -m pip install -q --no-index \
-    --find-links "$HERE/wheels" --force-reinstall --no-deps gpu-daemon
+    --find-links "$HERE/wheels" --force-reinstall gpu-daemon
 
 echo
 echo "Installed: $("$TARGET/venv/bin/gpu-daemon" --version)"
