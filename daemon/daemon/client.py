@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -39,15 +40,53 @@ _POLL_TIMEOUT = 10.0
 # Default timeout for non-poll requests
 _DEFAULT_TIMEOUT = 30.0
 
-# Proxy environment variables, most specific first. A worker on a network with
-# no outbound route reaches the control plane through a proxy or an SSH SOCKS
-# forward, and this is the only channel that carries it.
-_PROXY_ENV_VARS = ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
+# Proxy environment variables, most specific first, per scheme. A worker on a
+# network with no outbound route reaches the control plane through a proxy or
+# an SSH SOCKS forward, and this is the only channel that carries it. Like
+# curl and requests, the scheme-specific variable applies to the control
+# plane's scheme and ALL_PROXY covers both.
+_PROXY_ENV_VARS = {
+    "http": ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"),
+    "https": ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"),
+}
 
 
-def _env_proxy() -> Optional[str]:
-    """The proxy URL to reach the control plane through, or None."""
-    for name in _PROXY_ENV_VARS:
+def _no_proxy_matches(host: str) -> bool:
+    """Whether NO_PROXY excludes `host` from proxying (curl semantics)."""
+    value = os.environ.get("NO_PROXY") or os.environ.get("no_proxy")
+    if not value or not host:
+        return False
+    host = host.lower().rstrip(".")
+    for entry in value.split(","):
+        entry = entry.strip().lower()
+        if not entry:
+            continue
+        if entry == "*":
+            return True
+        if entry.startswith("."):
+            # ".example.edu" — subdomains only, not the bare domain
+            if host.endswith("." + entry[1:]):
+                return True
+        elif host == entry or host.endswith("." + entry):
+            # "example.edu" — the domain and its subdomains, but not
+            # "wwwexample.edu" (label-boundary match)
+            return True
+    return False
+
+
+def _env_proxy(base_url: str) -> Optional[str]:
+    """
+    The proxy URL for reaching `base_url`, or None to connect directly.
+
+    NO_PROXY always wins: hosts it names are reached directly even when a
+    proxy is configured, so a control plane on this machine or on the local
+    network works with a proxy set for everything else.
+    """
+    parsed = urlparse(base_url)
+    if _no_proxy_matches(parsed.hostname or ""):
+        return None
+    scheme = (parsed.scheme or "http").lower()
+    for name in _PROXY_ENV_VARS.get(scheme, _PROXY_ENV_VARS["http"]):
         value = os.environ.get(name)
         if value:
             return value
@@ -120,13 +159,15 @@ class BackendClient:
                 ),
                 # Retry on transient transport-level failures. Naming a
                 # transport is what makes the proxy explicit: httpx reads
-                # HTTPS_PROXY/ALL_PROXY from the environment only when it
-                # builds the transport itself, so a worker behind a proxy
-                # would otherwise resolve the backend hostname locally and
-                # fail with "Name or service not known".
+                # proxy variables from the environment only when it builds
+                # the transport itself, so a worker behind a proxy would
+                # otherwise resolve the backend hostname locally and fail
+                # with "Name or service not known". _env_proxy applies the
+                # scheme-specific variable (HTTP_PROXY vs HTTPS_PROXY),
+                # ALL_PROXY, and NO_PROXY.
                 transport=httpx.AsyncHTTPTransport(
                     retries=3,
-                    proxy=_env_proxy(),
+                    proxy=_env_proxy(self._base_url),
                 ),
             )
         return self._client

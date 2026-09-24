@@ -78,9 +78,15 @@ standard variables, read straight from the environment.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `HTTPS_PROXY` / `https_proxy` | _(unset)_ | Proxy for control-plane calls. Checked first. |
-| `ALL_PROXY` / `all_proxy` | _(unset)_ | Used when neither `HTTPS_PROXY` form is set. `socks5h://host:port` for an SSH `-D` forward. |
-| `NO_PROXY` | _(unset)_ | Hosts to reach directly. Include `127.0.0.1,localhost` so the daemon's calls to its own runtime stay local. |
+| `HTTPS_PROXY` / `https_proxy` | _(unset)_ | Proxy for a TLS (`https://`) control plane. Checked first for that scheme. |
+| `HTTP_PROXY` / `http_proxy` | _(unset)_ | Proxy for a plain-http control plane. Checked first for that scheme. |
+| `ALL_PROXY` / `all_proxy` | _(unset)_ | Used when neither scheme-specific form is set, for either scheme. `socks5h://host:port` for an SSH `-D` forward. |
+| `NO_PROXY` / `no_proxy` | _(unset)_ | Hosts to reach directly even when a proxy is set, always — a control plane on this machine or the local network works alongside a proxied one. Include `127.0.0.1,localhost` so the daemon's calls to its own runtime stay local. |
+
+The scheme-specific pair works like curl and requests: a `https://` control
+plane reads `HTTPS_PROXY`, a plain `http://` one reads `HTTP_PROXY`.
+`NO_PROXY` takes curl's semantics — `example.edu` covers subdomains,
+`.example.edu` covers only subdomains, `*` covers everything.
 
 Prefer the `socks5h` scheme over `socks5`: the hostname is resolved at the
 proxy, so certificate verification behaves as it would on a direct connection.
