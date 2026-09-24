@@ -33,6 +33,7 @@ theme:
     # code blocks — the provider install line and the batch-user snippets are
     # meant to be copied, not retyped.
     - content.code.copy
+    - navigation.indexes
     - navigation.sections
     - navigation.tabs
     - navigation.top
@@ -66,8 +67,13 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Run your prompts: using-sheshnag.md
-  - Lend your GPU: provider.md
-  - Match the runtime to your machine: provider-hardware.md
+  # One audience, three documents: the guide, the hardware decision it defers
+  # to, and the path for hosts that cannot reach the internet. The section
+  # keeps the fork on the home page pointing at one door.
+  - Lend your GPU:
+      - provider.md
+      - Match the runtime to your machine: provider-hardware.md
+      - Lend a GPU offline: offline-worker.md
   - Host your deployment: self-host.md
   - Change the code: develop.md
   # The contribution process lives at the repository root and is linked, not

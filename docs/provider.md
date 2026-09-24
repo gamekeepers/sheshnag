@@ -84,6 +84,11 @@ curl -fsSL https://raw.githubusercontent.com/gamekeepers/sheshnag/develop/script
 Some deployments serve their own copy at `https://<their-host>/install.sh` — if
 the operator gave you a URL, use theirs. Both fetch the same script.
 
+If your machine has no route to the internet, cannot run `systemctl --user`, or
+shares its home directory with other machines, follow
+[Lend a GPU offline](offline-worker.md) instead — that path carries the daemon
+in as an archive and supervises it with cron.
+
 !!! tip "Read it first if you like"
     Piping a script into `bash` deserves scepticism. Drop the `| bash` to read
     it — it is about 150 lines, installs only under `~/.gpu-daemon/`, and exits
