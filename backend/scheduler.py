@@ -306,12 +306,6 @@ def _hosting_runtime(worker, runtime_model_ids, catalog_digest):
     return None
 
 
-def _hosting_engine(worker, runtime_model_ids, catalog_digest):
-    """The engine name of `_hosting_runtime`, or None."""
-    runtime = _hosting_runtime(worker, runtime_model_ids, catalog_digest)
-    return runtime.engine if runtime is not None else None
-
-
 def runtime_has(runtime, needs) -> bool:
     """True when the runtime row advertises every capability in `needs`.
 

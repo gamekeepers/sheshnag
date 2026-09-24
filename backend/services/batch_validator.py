@@ -232,6 +232,14 @@ def _validate_chat_body(body: dict, line_number: int) -> List[ValidationError]:
                     f"body.messages[{i}].content is required"
                 ))
 
+    if "echo" in body:
+        # Chat completions cannot echo the prompt on any runtime; accepting
+        # the field here would dispatch the row and return 200 without the
+        # prompt-token data it asked for.
+        errors.append(ValidationError(
+            "unsupported_parameter", line_number, "body.echo",
+            "body.echo is only accepted on /v1/completions (prompt scoring)"
+        ))
     errors.extend(_validate_logprob_fields(body, line_number, chat=True))
     return errors
 
@@ -253,7 +261,7 @@ def _validate_logprob_fields(body: dict, line_number: int, *, chat: bool) -> Lis
         errors.append(ValidationError("invalid_type", line_number, "body.top_logprobs",
                                       "body.top_logprobs must be an integer 0-20"))
     echo = body.get("echo")
-    if echo is not None and not isinstance(echo, bool):
+    if not chat and echo is not None and not isinstance(echo, bool):
         errors.append(ValidationError("invalid_type", line_number, "body.echo",
                                       "body.echo must be a boolean"))
     return errors
@@ -383,6 +391,57 @@ def _online_hosts(db, entry):
         .all()
     )
     return [w for w in workers if can_serve(entry, w)]
+
+
+def backfill_required_capabilities() -> int:
+    """Stamp `required_capabilities` on queued batches validated before the
+    column existed, so the scheduler gates them like new ones instead of
+    reading NULL as plain chat. Runs once at startup; returns the count
+    updated. A file that cannot be read leaves its batch untouched."""
+    from models import File as FileModel
+
+    db = SessionLocal()
+    updated = 0
+    try:
+        stale = (
+            db.query(Batch)
+            .filter(Batch.status == "validated", Batch.required_capabilities.is_(None))
+            .all()
+        )
+        for batch in stale:
+            input_file = db.query(FileModel).filter(FileModel.id == batch.input_file_id).first()
+            if input_file is None or not input_file.filepath:
+                continue
+            needs: dict = {}
+            try:
+                with open(input_file.filepath, "r", encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        body = entry.get("body") if isinstance(entry, dict) else None
+                        if isinstance(body, dict):
+                            for cap in wanted_capabilities(entry.get("url", ""), body):
+                                needs.setdefault(cap, True)
+            except OSError as exc:
+                logger.warning("Backfill skipped batch %s: %s", batch.id, exc)
+                continue
+            batch.required_capabilities = list(needs)   # [] marks "scanned, needs nothing"
+            updated += 1
+        if updated:
+            db.commit()
+            logger.info("Backfilled required_capabilities on %d queued batch(es)", updated)
+        return updated
+    except Exception:
+        logger.exception("required_capabilities backfill failed")
+        db.rollback()
+        return updated
+    finally:
+        db.close()
 
 
 def _persist_result(batch_id: str, result: ValidationResult) -> bool:
@@ -552,17 +611,23 @@ def validate_batch_file(batch_id: str, filepath: str) -> bool:
                 if result.valid and needs:
                     hosts = _online_hosts(db, entry)
                     if hosts and not any(can_serve(entry, w, needs) for w in hosts):
+                        # Empty when every need is met by *some* host but no host
+                        # meets all of them; the rows still cannot run anywhere.
                         missing = [c for c in needs if not any(can_serve(entry, w, [c]) for w in hosts)]
-                        first = missing[0]
+                        first = (missing or needs)[0]
+                        reason = (
+                            f"supports {', '.join(missing)}" if missing
+                            else f"supports {', '.join(needs)} together"
+                        )
                         _fail(
                             result,
                             "unsupported_capability",
                             context.required_capabilities[first],
                             CAPABILITY_FIELDS[first],
-                            f"No online runtime serving '{result.model}' supports "
-                            f"{', '.join(missing)}. Pick a model on a runtime that does "
-                            f"(vLLM serves all three; Ollama ≥ 0.12.11 returns logprobs "
-                            f"on chat), or remove the field.",
+                            f"No online runtime serving '{result.model}' {reason}. "
+                            f"Pick a model on a runtime that does (vLLM serves all "
+                            f"three; Ollama ≥ 0.12.11 returns logprobs on chat), or "
+                            f"remove the field.",
                         )
                 if result.valid:
                     result.required_capabilities = needs

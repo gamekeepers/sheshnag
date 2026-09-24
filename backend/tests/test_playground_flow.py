@@ -166,10 +166,15 @@ def test_grid_is_a_group_of_batches_found_by_metadata(auth_client, db_session):
     mine = [b for b in auth_client.get("/v1/batches").json()["data"] if (b["metadata"] or {}).get("grid_id") == grid_id]
     assert sorted(b["metadata"]["arm"] for b in mine) == ["0", "1"]
 
-    # FIFO: the worker gets arm 0 first, then arm 1.
-    for expected in arms:
+    # The worker takes the arms one at a time. created_at is whole seconds,
+    # so two arms made in the same second tie on FIFO order; assert on the
+    # set, not the sequence.
+    by_id = {a["id"]: a for a in arms}
+    taken = []
+    for _ in arms:
         poll = auth_client.post("/workers/poll", json={"worker_id": worker_id}, headers=worker_auth)
-        assert poll.json()["job"]["job_id"] == expected["id"]
+        expected = by_id[poll.json()["job"]["job_id"]]
+        taken.append(expected["id"])
         out = json.dumps({"custom_id": f"{grid_id}-a{expected['metadata']['arm']}-p0", "error": None,
                           "response": {"model": "poll-model:latest",
                                        "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
@@ -179,6 +184,7 @@ def test_grid_is_a_group_of_batches_found_by_metadata(auth_client, db_session):
                                files={"file": ("out.jsonl", io.BytesIO(out.encode()), "application/jsonl")},
                                headers=worker_auth)
         assert res.status_code == 200, res.text
+    assert sorted(taken) == sorted(by_id)
 
     done = {b["id"]: b for b in auth_client.get("/v1/batches").json()["data"]}
     for arm in arms:

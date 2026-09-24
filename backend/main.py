@@ -47,6 +47,14 @@ app.include_router(workers.router,   prefix="/workers",  tags=["Workers"])
 
 
 @app.on_event("startup")
+def stamp_pre_upgrade_batches():
+    """Batches queued before required_capabilities existed carry NULL, which
+    the scheduler reads as plain chat. Stamp them from their input files."""
+    from services.batch_validator import backfill_required_capabilities
+    backfill_required_capabilities()
+
+
+@app.on_event("startup")
 async def start_worker_sweeper():
     """Reclaim batches from workers whose heartbeats stopped"""
     asyncio.create_task(run_sweeper())

@@ -188,3 +188,63 @@ def test_completions_body_shape(auth_client, db_session):
     assert body["status"] == "failed"
     assert sorted(e["field"] for e in _errors(body)) == ["body.echo", "body.logprobs", "body.prompt"]
     _reset(db_session)
+
+
+def test_echo_on_a_chat_row_is_rejected(auth_client, db_session):
+    """Chat cannot echo the prompt anywhere; the row must not reach a worker."""
+    _reset(db_session)
+    _catalog(db_session)
+    body = _settle(auth_client, _submit(auth_client, _row(echo=True)))
+    assert body["status"] == "failed"
+    err = _errors(body)[0]
+    assert (err["code"], err["field"]) == ("unsupported_parameter", "body.echo")
+    _reset(db_session)
+
+
+def test_needs_met_only_across_hosts_still_fails_cleanly(auth_client, db_session):
+    """One host has logprobs, another has completions; no host has both, so a
+    completions+logprobs row cannot run anywhere. Must be a clean
+    unsupported_capability, not an IndexError."""
+    _reset(db_session)
+    key = _worker_key(auth_client)
+    _register(auth_client, key, hostname="lp-only", capabilities={"logprobs": True, "completions": False})
+    _register(auth_client, key, hostname="comp-only", capabilities={"logprobs": False, "completions": True})
+    _catalog(db_session)
+
+    body = _settle(auth_client, _submit(auth_client, _row(url="/v1/completions", logprobs=1), endpoint="/v1/completions"))
+    assert body["status"] == "failed"
+    err = _errors(body)[0]
+    assert err["code"] == "unsupported_capability"
+    assert "together" in err["message"]
+    _reset(db_session)
+
+
+def test_backfill_stamps_pre_upgrade_batches(auth_client, db_session, _engine, tmp_path):
+    """A batch validated before the column existed has NULL; startup scans its
+    file and stamps it, so the scheduler gates it like a new batch."""
+    from models import File as FileModel
+    from services.batch_validator import backfill_required_capabilities
+    from tests.test_batches import _seed_batch
+
+    _reset(db_session)
+    needs_lp = tmp_path / "lp.jsonl"
+    needs_lp.write_text(_row(logprobs=True))
+    plain = tmp_path / "plain.jsonl"
+    plain.write_text(_row())
+
+    SM = sessionmaker(bind=_engine, expire_on_commit=False)
+    db = SM()
+    try:
+        f1 = FileModel(user_id="u", filename="lp.jsonl", purpose="batch", bytes=1, filepath=str(needs_lp))
+        f2 = FileModel(user_id="u", filename="plain.jsonl", purpose="batch", bytes=1, filepath=str(plain))
+        db.add_all([f1, f2]); db.commit(); db.refresh(f1); db.refresh(f2)
+    finally:
+        db.close()
+    b1 = _seed_batch(_engine, "u", f1.id)          # status validated, required_capabilities NULL
+    b2 = _seed_batch(_engine, "u", f2.id)
+
+    assert backfill_required_capabilities() == 2
+    assert _required(_engine, b1.id) == ["logprobs"]
+    assert _required(_engine, b2.id) == []
+    assert backfill_required_capabilities() == 0      # idempotent: nothing left NULL
+    _reset(db_session)
