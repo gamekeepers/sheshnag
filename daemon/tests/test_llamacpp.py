@@ -45,7 +45,8 @@ def _client(ex, handler, base="http://llamacpp.test"):
     return ex
 
 
-def _server(chat=None, status=200, props=PROPS_BODY, health=200, seen=None):
+def _server(chat=None, status=200, props=PROPS_BODY, health=200, seen=None,
+            models=None):
     """A stand-in llama-server. `seen` collects the paths requested."""
     def handler(request: httpx.Request) -> httpx.Response:
         if seen is not None:
@@ -55,7 +56,7 @@ def _server(chat=None, status=200, props=PROPS_BODY, health=200, seen=None):
         if request.url.path == "/health":
             return httpx.Response(health, json={"status": "ok"})
         if request.url.path == "/v1/models":
-            return httpx.Response(200, json=MODELS_BODY)
+            return httpx.Response(200, json=models or MODELS_BODY)
         return httpx.Response(status, json=chat if chat is not None else {})
     return handler
 
@@ -197,6 +198,84 @@ async def test_served_is_resident():
     ex = _client(LlamaCppExecutor("http://llamacpp.test"), _server())
     assert await ex.list_models() == [SERVED]
     assert await ex.list_running_models() == [SERVED]
+
+
+# Router mode (`--models-dir`) serves a directory and loads entries on demand.
+# Each entry carries `status.value`; `meta` is absent until something loads.
+# Shape taken from a live router server, not documentation.
+ROUTER_BODY = {
+    "object": "list",
+    "data": [
+        {
+            "id": "nomic-embed-text",
+            "aliases": [],
+            "object": "model",
+            "owned_by": "llamacpp",
+            "status": {"value": "loaded", "args": [], "preset": ""},
+        },
+        {
+            "id": "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M",
+            "aliases": [],
+            "object": "model",
+            "owned_by": "llamacpp",
+            "status": {"value": "unloaded", "args": [], "preset": ""},
+        },
+    ],
+}
+
+
+@pytest.mark.asyncio
+async def test_router_reports_only_loaded_models_as_running():
+    """A directory of GGUFs is servable; only the loaded one occupies memory."""
+    ex = _client(LlamaCppExecutor("http://llamacpp.test"),
+                 _server(models=ROUTER_BODY))
+
+    assert await ex.list_models() == [
+        "nomic-embed-text", "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M",
+    ]
+    assert await ex.list_running_models() == ["nomic-embed-text"]
+
+
+@pytest.mark.asyncio
+async def test_router_with_nothing_loaded_reports_none_running():
+    body = {"object": "list", "data": [
+        dict(ROUTER_BODY["data"][0], status={"value": "unloaded"}),
+    ]}
+    ex = _client(LlamaCppExecutor("http://llamacpp.test"), _server(models=body))
+
+    assert await ex.list_models() == ["nomic-embed-text"]
+    assert await ex.list_running_models() == []
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_listing_refreshes_the_model_guard():
+    """
+    The heartbeat is the only listing on a schedule, so it carries the
+    guard's cache. A provider who restarts llama-server on a different GGUF
+    would otherwise be rejected for the rest of the daemon's life against
+    names the old process held.
+    """
+    current = {"body": MODELS_BODY}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/props":
+            return httpx.Response(200, json=PROPS_BODY)
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json=current["body"])
+        return httpx.Response(200, json={})
+
+    ex = _client(LlamaCppExecutor("http://llamacpp.test"), handler)
+    await ex.list_models()
+    assert ex._served == {SERVED}
+
+    current["body"] = {"object": "list", "data": [
+        {"id": "other-gguf", "aliases": [], "object": "model"},
+    ]}
+    await ex.list_running_models()
+
+    assert ex._served == {"other-gguf"}
 
 
 @pytest.mark.asyncio

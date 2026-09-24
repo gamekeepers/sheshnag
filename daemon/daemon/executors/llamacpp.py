@@ -7,9 +7,14 @@ forwards to the matching endpoint much as it does for vLLM.
 Architecture note:
     The daemon attaches to a server the provider started; it never
     launches, restarts or tunes one. Whatever `llama-server` was given on
-    its command line — the model, the GPU/RAM split via `--n-gpu-layers`,
-    the slot count, whether embeddings are enabled — is fixed for the
-    lifetime of that process and is the provider's decision.
+    its command line — the GPU/RAM split via `--n-gpu-layers`, the slot
+    count, whether embeddings are enabled — is fixed for the lifetime of
+    that process and is the provider's decision.
+
+    A server started with `--models-dir` is a router: it answers for every
+    GGUF in that directory and loads them on demand, so which model is in
+    memory changes over the process lifetime. Without it, one process holds
+    one model until it exits.
 
     This is what makes llama.cpp worth supporting: `--n-gpu-layers` puts
     as many layers on the GPU as fit and streams the rest from system RAM,
@@ -33,9 +38,10 @@ class LlamaCppExecutor(BaseExecutor):
     """
     Executor that forwards requests to a `llama-server` instance.
 
-    One server process serves exactly one model, held for the process
-    lifetime. Availability and residence are therefore the same question,
-    and both listing methods return the same single-entry list.
+    Availability and residence are separate questions. `list_models()`
+    returns every name the server answers to; `list_running_models()`
+    returns the subset held in memory. They differ only under a router
+    server, where entries load and unload on demand.
 
     Args:
         base_url:       Base URL of the llama-server (e.g. http://localhost:8080).
@@ -233,8 +239,8 @@ class LlamaCppExecutor(BaseExecutor):
         """Served names, refreshing the guard's cache as a side effect."""
         names: List[str] = []
         for entry in await self._models_payload():
-            for name in [entry.get("id"), *(entry.get("aliases") or [])]:
-                if name and name not in names:
+            for name in self._entry_names(entry):
+                if name not in names:
                     names.append(name)
         # Leave a previously-known set in place on a failed read: forgetting
         # it would silently disable the mismatch guard exactly when the
@@ -243,13 +249,46 @@ class LlamaCppExecutor(BaseExecutor):
             self._served = set(names)
         return names
 
+    @staticmethod
+    def _entry_names(entry: dict) -> List[str]:
+        """An entry's id and aliases, in that order, without duplicates."""
+        names: List[str] = []
+        for name in [entry.get("id"), *(entry.get("aliases") or [])]:
+            if name and name not in names:
+                names.append(name)
+        return names
+
     async def list_models(self) -> List[str]:
-        """Names this server answers to — its model plus any alias."""
+        """Every name this server answers to, loaded or not."""
         return await self._refresh_served()
 
     async def list_running_models(self) -> List[str]:
-        """One process, one model, held for its lifetime: served is resident."""
-        return await self._refresh_served()
+        """
+        The names actually held in memory.
+
+        A router server (`--models-dir`) serves a whole directory and loads
+        entries on demand, reporting each one's state as `status.value`; only
+        `loaded` occupies memory. A single-model server omits `status`
+        entirely, and its one model is resident for the process lifetime.
+        """
+        served: List[str] = []
+        running: List[str] = []
+        for entry in await self._models_payload():
+            names = self._entry_names(entry)
+            for name in names:
+                if name not in served:
+                    served.append(name)
+            status = entry.get("status")
+            if isinstance(status, dict) and status.get("value") != "loaded":
+                continue
+            running.extend(n for n in names if n not in running)
+        # The heartbeat calls this, and it is the only listing that runs on a
+        # schedule: refresh the guard's cache here or a provider who restarts
+        # llama-server on a different GGUF keeps being rejected against the
+        # names the old process held.
+        if served:
+            self._served = set(served)
+        return running
 
     async def inventory(self) -> List[dict]:
         """
