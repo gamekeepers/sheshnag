@@ -58,6 +58,16 @@ def _is_loaded(entry, workers) -> bool:
     return any(_hosts(w.loaded_models(), targets, entry.digest) for w in workers)
 
 
+CAPABILITY_KEYS = ("logprobs", "completions", "prompt_scoring")
+
+
+def _capabilities(entry, workers) -> dict:
+    """Which capabilities some online host of `entry` advertises — the
+    scheduler's own predicate per key, so the picker never offers a switch
+    that validation would then refuse."""
+    return {key: any(can_serve(entry, w, [key]) for w in workers) for key in CAPABILITY_KEYS}
+
+
 def _compute_snapshot(db: Session) -> dict:
     """Everything the endpoint can know, before per-caller filtering."""
     # The sweeper marks stale workers offline only once a minute, so a
@@ -111,6 +121,7 @@ def _compute_snapshot(db: Session) -> dict:
             "parameter_size": e.parameter_size,
             "org_id": e.org_id,
             "loaded": _is_loaded(e, workers),
+            "capabilities": _capabilities(e, workers),
         }
         for e in entries
         if any(can_serve(e, w) for w in workers)
@@ -185,6 +196,7 @@ def pool_capacity(
             "display_name": m["display_name"],
             "parameter_size": m["parameter_size"],
             "loaded": m.get("loaded", False),
+            "capabilities": m.get("capabilities", {}),
         }
         for m in snapshot["servable"]
         if m["org_id"] is None or is_super or m["org_id"] in member_org_ids

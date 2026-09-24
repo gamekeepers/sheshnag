@@ -45,6 +45,15 @@ The model picker labels each entry **loaded** (in memory on an online worker),
 **on disk, loads on first use** (the first prompt pays one model load), or
 **unavailable** (no online worker has it). Only the last cannot be picked.
 
+Set **Logprobs** to top 5, 10 or 20 to see the answer as the model saw it:
+every token shaded by its probability, a click on any token showing the
+alternatives it weighed, and a count of **flip-prone** positions — places
+where the top two candidates sit within one bf16 ulp (0.125 nats), so a
+different kernel, batch shape or GPU could have chosen the other. The switch
+is offered only when an online runtime for the model returns
+log-probabilities (vLLM, llama.cpp, Ollama ≥ 0.12.11). In grid mode it applies
+to every arm and the export carries the per-token data.
+
 ## Point your code at it
 
 The base URL is your deployment's host plus `/v1`:

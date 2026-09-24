@@ -61,7 +61,7 @@ def _catalog_entry(db, entry_id="pool-test-model", vram_gb=8.0, org_id=None):
 
 def _worker(db, org_id, hostname, *, vram=24.0, activity="idle",
             models=("pool-test-model:latest",), heartbeat_age=0, status="online",
-            gpus=1, loaded=()):
+            gpus=1, loaded=(), capabilities=None):
     worker = Worker(
         org_id=org_id,
         hostname=hostname,
@@ -78,6 +78,7 @@ def _worker(db, org_id, hostname, *, vram=24.0, activity="idle",
     runtime = WorkerRuntime(worker_id=worker.id, engine="ollama", base_url="localhost")
     db.add(runtime)
     db.flush()
+    runtime.capabilities = capabilities
     for name in models:
         db.add(RuntimeModel(runtime_id=runtime.id, name=name, loaded=name in loaded))
     db.commit()
@@ -211,3 +212,17 @@ def test_servable_carries_whether_the_model_is_loaded(auth_client, db_session):
     by_id = {m["id"]: m for m in auth_client.get("/v1/pool/capacity").json()["models_servable"]}
     assert by_id["pool-warm"]["loaded"] is True
     assert by_id["pool-cold"]["loaded"] is False
+
+
+def test_servable_carries_runtime_capabilities(auth_client, db_session):
+    """The picker offers a logprobs switch only where the pool can honour it."""
+    org = _org_id(auth_client, "Pool Org Caps")
+    _catalog_entry(db_session, "pool-caps", vram_gb=8.0)
+    _catalog_entry(db_session, "pool-nocaps", vram_gb=8.0)
+    _worker(db_session, org, "caps-box", vram=24.0, models=("pool-caps:latest",),
+            capabilities={"logprobs": True, "completions": True, "prompt_scoring": False})
+    _worker(db_session, org, "plain-box", vram=24.0, models=("pool-nocaps:latest",))
+
+    by_id = {m["id"]: m for m in auth_client.get("/v1/pool/capacity").json()["models_servable"]}
+    assert by_id["pool-caps"]["capabilities"] == {"logprobs": True, "completions": True, "prompt_scoring": False}
+    assert by_id["pool-nocaps"]["capabilities"] == {"logprobs": False, "completions": False, "prompt_scoring": False}

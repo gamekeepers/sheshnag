@@ -194,6 +194,20 @@ const CHART = {
 export default function DashboardPage() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState('home');
+  // Icon-only sidebar. A per-browser convenience, so it lives in localStorage;
+  // the lazy read means no effect and no second render. The server renders the
+  // expanded shell, the client may hydrate collapsed — the only difference is
+  // one class on the layout div, which suppressHydrationWarning covers.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return typeof window !== 'undefined' && localStorage.getItem('mk_sidebar_collapsed') === '1'; } catch { return false; }
+  });
+  // Under 900px the sidebar is an off-canvas drawer instead; this is its
+  // open state. Not persisted: a drawer left open across reloads is a trap.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const toggleSidebar = () => setSidebarCollapsed(c => {
+    try { localStorage.setItem('mk_sidebar_collapsed', c ? '0' : '1'); } catch { /* private mode: not persisted */ }
+    return !c;
+  });
   // Scopes both Usage charts and its table — one control, one slice.
   const [usageRange, setUsageRange] = useState(14);
   const [showUsageTable, setShowUsageTable] = useState(false);
@@ -1047,6 +1061,12 @@ export default function DashboardPage() {
     () => new Set((poolCapacity?.models_servable || []).filter(m => m.loaded).map(m => m.id)),
     [poolCapacity]
   );
+  // Servable by a runtime that returns token log-probabilities — the
+  // playground's logprobs switch is offered only for these.
+  const logprobsIds = useMemo(
+    () => new Set((poolCapacity?.models_servable || []).filter(m => m.capabilities?.logprobs).map(m => m.id)),
+    [poolCapacity]
+  );
 
   const modelRuntimes = useMemo(
     () => Array.from(new Set(modelCatalog.map(m => m.runtime).filter(Boolean))).sort(),
@@ -1318,34 +1338,45 @@ export default function DashboardPage() {
   const homeChartData = trimLeadingEmpty(homeSeries);
 
   return (
-    <div className="app-layout">
+    <div className={`app-layout${sidebarCollapsed ? ' sidebar-collapsed' : ''}${sidebarOpen ? ' sidebar-open' : ''}`} suppressHydrationWarning>
       {/* ================= SIDEBAR ================= */}
+      {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} aria-hidden="true" />}
       <aside className="sidebar">
         <div className="logo">
           <SheshnagLogo />
+          <button
+            type="button"
+            className="sidebar-toggle"
+            onClick={toggleSidebar}
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-expanded={!sidebarCollapsed}
+          >
+            {sidebarCollapsed ? '›' : '‹'}
+          </button>
         </div>
 
-        <nav className="nav">
-          <div className={`nav-item ${activeTab === 'home' ? 'active' : ''}`} onClick={() => setActiveTab('home')}>
-            <span className="ic">📊</span> Home
+        <nav className="nav" onClick={() => setSidebarOpen(false)}>
+          <div className={`nav-item ${activeTab === 'home' ? 'active' : ''}`} onClick={() => setActiveTab('home')} title="Home">
+            <span className="ic">📊</span> <span className="nav-label">Home</span>
           </div>
-          <div className={`nav-item ${activeTab === 'apikeys' ? 'active' : ''}`} onClick={() => setActiveTab('apikeys')}>
-            <span className="ic">🔑</span> API Keys
+          <div className={`nav-item ${activeTab === 'apikeys' ? 'active' : ''}`} onClick={() => setActiveTab('apikeys')} title="API Keys">
+            <span className="ic">🔑</span> <span className="nav-label">API Keys</span>
           </div>
-          <div className={`nav-item ${activeTab === 'models' ? 'active' : ''}`} onClick={() => setActiveTab('models')}>
-            <span className="ic">🧠</span> Models
+          <div className={`nav-item ${activeTab === 'models' ? 'active' : ''}`} onClick={() => setActiveTab('models')} title="Models">
+            <span className="ic">🧠</span> <span className="nav-label">Models</span>
           </div>
-          <div className={`nav-item ${activeTab === 'playground' ? 'active' : ''}`} onClick={() => setActiveTab('playground')}>
-            <span className="ic">🧪</span> Playground
+          <div className={`nav-item ${activeTab === 'playground' ? 'active' : ''}`} onClick={() => setActiveTab('playground')} title="Playground">
+            <span className="ic">🧪</span> <span className="nav-label">Playground</span>
           </div>
-          <div className={`nav-item ${activeTab === 'usage' ? 'active' : ''}`} onClick={() => setActiveTab('usage')}>
-            <span className="ic">📈</span> Usage
+          <div className={`nav-item ${activeTab === 'usage' ? 'active' : ''}`} onClick={() => setActiveTab('usage')} title="Usage">
+            <span className="ic">📈</span> <span className="nav-label">Usage</span>
           </div>
-          <div className={`nav-item ${activeTab === 'batches' ? 'active' : ''}`} onClick={() => setActiveTab('batches')}>
-            <span className="ic">📦</span> Batches
+          <div className={`nav-item ${activeTab === 'batches' ? 'active' : ''}`} onClick={() => setActiveTab('batches')} title="Batches">
+            <span className="ic">📦</span> <span className="nav-label">Batches</span>
           </div>
-          <div className={`nav-item ${activeTab === 'files' ? 'active' : ''}`} onClick={() => setActiveTab('files')}>
-            <span className="ic">📁</span> Files
+          <div className={`nav-item ${activeTab === 'files' ? 'active' : ''}`} onClick={() => setActiveTab('files')} title="Files">
+            <span className="ic">📁</span> <span className="nav-label">Files</span>
           </div>
         </nav>
 
@@ -1423,6 +1454,15 @@ export default function DashboardPage() {
       {/* ================= MAIN COLUMN ================= */}
       <div className="main-content">
         <div className="header">
+          <button
+            type="button"
+            className="menu-btn"
+            onClick={() => setSidebarOpen(o => !o)}
+            aria-label={sidebarOpen ? 'Close menu' : 'Open menu'}
+            aria-expanded={sidebarOpen}
+          >
+            ☰
+          </button>
           <div className="breadcrumbs">
             Dashboard / <span className="current">{getPageTitle()}</span>
           </div>
@@ -2198,6 +2238,7 @@ export default function DashboardPage() {
                 catalog={modelCatalog}
                 servableIds={servableIds}
                 loadedIds={loadedIds}
+                logprobsIds={logprobsIds}
                 modelsLoaded={modelsLoaded}
                 onBatchCreated={loadBatches}
               />

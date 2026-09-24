@@ -42,6 +42,12 @@ export function buildRow({ customId, model, system, prompt, params, responseForm
   if (params.thinking === 'on' || params.thinking === 'off') {
     body.chat_template_kwargs = { enable_thinking: params.thinking === 'on' };
   }
+  // 0 / blank = off. The row then carries `logprobs` and the validator routes
+  // it only to a runtime that advertises the capability.
+  if (num(params.logprobs) > 0) {
+    body.logprobs = true;
+    body.top_logprobs = Math.min(20, num(params.logprobs));
+  }
   if (responseFormat) body.response_format = responseFormat;
   return { custom_id: customId, method: 'POST', url: '/v1/chat/completions', body };
 }
@@ -109,13 +115,61 @@ export function extractAnswer(row) {
   if (row.error) return { text: '', reasoning: '', usage: null, servedModel: null, error: String(row.error) };
   const resp = row.response || {};
   const message = resp.choices?.[0]?.message || {};
+  const logprobs = resp.choices?.[0]?.logprobs?.content;
   return {
     text: typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? ''),
     reasoning: message.reasoning_content || message.reasoning || '',
     usage: resp.usage || null,
     servedModel: resp.model || null,
+    logprobs: Array.isArray(logprobs) && logprobs.length ? logprobs : null,
     error: null,
   };
+}
+
+// One bf16 ulp at the logit magnitudes these models run at (16–32): the
+// finest gap two logits can have. A top-2 gap at or under it is a tie that
+// any kernel or batch-shape change can resolve the other way.
+export const FLIP_GAP = 0.125;
+
+// Per-token view of `choices[0].logprobs.content`: probability, sorted
+// alternatives, top-2 gap, and whether the position is flip-prone. Reasoning
+// tokens come first in the array when the model thought; they are split off
+// at the closing think tag so each strip shows one thing.
+export function analyzeLogprobs(content) {
+  const tokens = (content || []).map((t, i) => {
+    const alts = (t.top_logprobs || []).slice().sort((a, b) => b.logprob - a.logprob);
+    const gap = alts.length >= 2 ? alts[0].logprob - alts[1].logprob : null;
+    return {
+      i,
+      token: t.token,
+      logprob: t.logprob,
+      p: Math.exp(t.logprob),
+      alts,
+      gap,
+      flipProne: gap != null && gap <= FLIP_GAP,
+      offArgmax: alts.length > 0 && alts[0].token !== t.token,
+    };
+  });
+  const end = tokens.findIndex(t => t.token === '</think>');
+  const reasoning = end >= 0 ? tokens.slice(0, end) : [];
+  const answer = end >= 0 ? tokens.slice(end + 1) : tokens;
+  const stats = (list) => {
+    const n = list.length;
+    if (!n) return { n: 0, flip: 0, offArgmax: 0, meanLogprob: null, minP: null };
+    const flip = list.filter(t => t.flipProne).length;
+    const offArgmax = list.filter(t => t.offArgmax).length;
+    const meanLogprob = list.reduce((s, t) => s + t.logprob, 0) / n;
+    const minP = list.reduce((m, t) => (t.p < m.p ? t : m), list[0]);
+    return { n, flip, offArgmax, meanLogprob, minP };
+  };
+  return { reasoning, answer, reasoningStats: stats(reasoning), answerStats: stats(answer) };
+}
+
+export function pct(p) {
+  if (p == null) return '—';
+  if (p >= 0.9995) return '>99.9%';
+  if (p < 0.0005) return '<0.05%';
+  return `${(p * 100).toFixed(p < 0.1 ? 2 : 1)}%`;
 }
 
 export function formatElapsed(ms) {

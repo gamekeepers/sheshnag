@@ -3,10 +3,11 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { CopyableCode } from '../components/Teaching';
 import PlaygroundGrid from './PlaygroundGrid';
+import LogprobStrip from './LogprobStrip';
 import {
   POLL_MS, TERMINAL, num, JSON_OBJECT_NUDGE, needsJsonNudge, buildRow, SCHEMA_SAMPLE,
   buildResponseFormat, prettyJson, downloadText, parseOutputRows, extractAnswer, formatElapsed,
-  sortByTier, modelOptionLabel, tierOf,
+  sortByTier, modelOptionLabel, tierOf, analyzeLogprobs,
 } from './playgroundLib';
 
 const HISTORY_LIMIT = 8;
@@ -38,7 +39,7 @@ STEP_INDEX.submitting = STEP_INDEX.uploading;
  * validation anyway. Polling `GET /v1/batches/{id}` covers the whole lifecycle.
  */
 
-export default function Playground({ backend, getHeaders, catalog, servableIds, loadedIds, modelsLoaded, onBatchCreated }) {
+export default function Playground({ backend, getHeaders, catalog, servableIds, loadedIds, logprobsIds, modelsLoaded, onBatchCreated }) {
   const [mode, setMode] = useState('single');   // single | grid
   const chatModels = useMemo(
     () => sortByTier(catalog.filter(m => m.task_type !== 'embedding'), servableIds, loadedIds),
@@ -56,6 +57,7 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
   const [topK, setTopK] = useState('');
   const [seed, setSeed] = useState('');
   const [thinking, setThinking] = useState('default'); // default | on | off — reasoning models only
+  const [logprobsK, setLogprobsK] = useState('0');    // 0 = off; else top_logprobs per position
   const [rfMode, setRfMode] = useState('text');          // text | json_object | json_schema
   const [schemaText, setSchemaText] = useState(SCHEMA_SAMPLE);
 
@@ -91,9 +93,10 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
   const selected = chatModels.find(m => m.id === model);
   const servable = selected ? servableIds.has(selected.id) : false;
 
+  const canLogprobs = Boolean(model) && logprobsIds?.has(model);
   const params = useMemo(
-    () => ({ temperature, maxTokens, topP, topK, seed, thinking }),
-    [temperature, maxTokens, topP, topK, seed, thinking]
+    () => ({ temperature, maxTokens, topP, topK, seed, thinking, logprobs: canLogprobs ? logprobsK : '0' }),
+    [temperature, maxTokens, topP, topK, seed, thinking, logprobsK, canLogprobs]
   );
   const { format: responseFormat, error: schemaError } = useMemo(
     () => buildResponseFormat(rfMode, schemaText),
@@ -191,6 +194,7 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
         text: answer.text,
         reasoning: answer.reasoning,
         usage: answer.usage,
+        logprobs: answer.logprobs ? analyzeLogprobs(answer.logprobs) : null,
         elapsedMs: took,
         line,
         structured: rfMode !== 'text',
@@ -224,6 +228,7 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
           chatModels={chatModels}
           servableIds={servableIds}
           loadedIds={loadedIds}
+          logprobsIds={logprobsIds}
           onBatchCreated={onBatchCreated}
         />
       </div>
@@ -322,6 +327,20 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
               </select>
               <div className="playground-hint">Reasoning models only; others ignore it. The trace shows above the answer.</div>
             </div>
+            <div className="field">
+              <label>Logprobs</label>
+              <select value={canLogprobs ? logprobsK : '0'} onChange={e => setLogprobsK(e.target.value)} disabled={busy || !canLogprobs}>
+                <option value="0">Off</option>
+                <option value="5">Top 5 per token</option>
+                <option value="10">Top 10 per token</option>
+                <option value="20">Top 20 per token</option>
+              </select>
+              <div className="playground-hint">
+                {canLogprobs
+                  ? 'Each token shaded by its probability, with the alternatives the model weighed. Flip-prone = top-2 within one bf16 ulp.'
+                  : model ? 'No online runtime serving this model returns log-probabilities (vLLM, llama.cpp, or Ollama ≥ 0.12.11 do).' : ''}
+              </div>
+            </div>
           </div>
 
           <div className="field">
@@ -406,9 +425,14 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
               <div className="section-title">Answer</div>
               {result.reasoning && (
                 <details className="playground-reasoning">
-                  <summary>Reasoning</summary>
-                  <pre className="playground-output">{result.reasoning}</pre>
+                  <summary>Reasoning{result.logprobs?.reasoningStats?.n ? ` · ${result.logprobs.reasoningStats.flip} flip-prone of ${result.logprobs.reasoningStats.n}` : ''}</summary>
+                  {result.logprobs?.reasoning?.length
+                    ? <LogprobStrip tokens={result.logprobs.reasoning} stats={result.logprobs.reasoningStats} />
+                    : <pre className="playground-output">{result.reasoning}</pre>}
                 </details>
+              )}
+              {result.logprobs?.answer?.length > 0 && (
+                <LogprobStrip tokens={result.logprobs.answer} stats={result.logprobs.answerStats} label="Answer tokens" />
               )}
               {result.structured ? (() => {
                 const shown = prettyJson(result.text);

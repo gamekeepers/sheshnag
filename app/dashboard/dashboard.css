@@ -1646,7 +1646,9 @@ h2.batch-detail-id {
   color: var(--fg);
   font-size: 0.8rem;
 }
-.grid-table-wrap { overflow: auto; max-height: 70vh; }
+/* One scroll surface: the page. Horizontal only, for grids wider than the
+   viewport (four or five arms); never a second vertical bar inside the page. */
+.grid-table-wrap { overflow-x: auto; overflow-y: visible; max-height: none; }
 .grid-table { width: 100%; border-collapse: separate; border-spacing: 0; }
 .grid-table th, .grid-table td {
   vertical-align: top;
@@ -1657,23 +1659,19 @@ h2.batch-detail-id {
   min-width: 16rem;
 }
 .grid-table th {
-  position: sticky;
-  top: 0;
   background: #0d0d13;
-  z-index: 1;
   font-weight: 500;
 }
-.grid-table .grid-prompt-col {
-  min-width: 12rem;
-  max-width: 18rem;
-  position: sticky;
-  left: 0;
-  background: #0d0d13;
-  z-index: 2;
-  font-size: 0.85rem;
+/* The prompt is one row spanning every arm: it is the same for all of them,
+   so the columns keep their full width for what differs. */
+.grid-table .grid-prompt-row td {
+  border-right: 0;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 0.9rem;
   white-space: pre-wrap;
+  padding: 0.55rem 0.7rem;
 }
-.grid-table th.grid-prompt-col { z-index: 3; }
+.grid-table .grid-prompt-row td .mono { margin-right: 0.5rem; }
 .grid-arm-title { font-family: 'Inter', sans-serif; font-size: 0.9rem; font-weight: 600; }
 .grid-arm-model, .grid-arm-worker { font-size: 0.7rem; margin: 0.15rem 0; }
 .grid-arm-export { margin-top: 0.35rem; }
@@ -1684,12 +1682,172 @@ h2.batch-detail-id {
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.5;
-  max-height: 14rem;
-  overflow: auto;
 }
 .grid-cell-meta { font-size: 0.68rem; margin-top: 0.35rem; }
 mark.grid-diverge {
   background: rgba(251, 191, 36, 0.22);
   color: inherit;
   border-radius: 2px;
+}
+
+
+/* ─── Playground: logprob strip ───────────────────────────────────────────── */
+
+.lp { margin: 0 0 1rem; }
+.lp-compact { margin: 0.35rem 0 0.25rem; }
+.lp-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.4rem;
+}
+.lp-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.lp-stats { font-size: 0.7rem; }
+.lp-stat-flip { color: var(--busy); }
+.lp-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  line-height: 1.6;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.8rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 0.5rem 0.6rem;
+}
+.lp-compact .lp-strip { font-size: 0.72rem; padding: 0.35rem 0.45rem; }
+.lp-tok {
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0 3px;
+  color: var(--fg);
+  cursor: pointer;
+  white-space: pre;
+  font: inherit;
+}
+.lp-tok:hover { border-color: var(--border); }
+.lp-tok.lp-flip { border-color: var(--danger); box-shadow: inset 0 -2px 0 var(--danger); }
+.lp-tok.lp-off { text-decoration: underline dotted var(--accent); }
+.lp-tok.lp-picked { border-color: var(--accent); }
+.lp-detail {
+  margin-top: 0.5rem;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 0.6rem 0.8rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+.lp-detail-head { font-size: 0.74rem; color: var(--dim); margin-bottom: 0.4rem; }
+.lp-alts { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 0.78rem; }
+.lp-alts td { padding: 0.15rem 0.5rem 0.15rem 0; vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lp-alts td:nth-child(1) { width: 32%; }
+.lp-alts td:nth-child(2) { width: 20%; }
+.lp-alts td:nth-child(3) { width: 48%; }
+.lp-alt-chosen td:first-child { color: var(--accent); }
+.lp-bar {
+  display: inline-block;
+  max-width: 60%;
+  height: 8px;
+  background: rgba(201, 196, 255, 0.35);
+  border-radius: 3px;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+}
+.lp-toggle {
+  margin: 0.25rem 0 0.35rem;
+  padding: 2px 9px;
+  font-size: 0.7rem;
+}
+
+/* ─── Collapsible sidebar ────────────────────────────────────────────────── */
+
+.logo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.sidebar-toggle {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--dim);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.sidebar-toggle:hover { color: var(--fg); background: var(--bg-panel); }
+
+/* Icon rail — desktop only. On a phone the sidebar is a drawer instead, and
+   a collapsed drawer would be an empty strip. */
+@media (min-width: 901px) {
+  .app-layout.sidebar-collapsed { grid-template-columns: 64px 1fr; }
+  .sidebar-collapsed .sidebar { padding: 1.2rem 0.6rem 1.5rem; }
+  .sidebar-collapsed .logo { padding: 0.4rem 0 1.3rem; justify-content: center; }
+  .sidebar-collapsed .logo > div > span { display: none; }   /* the wordmark; the mark stays */
+  .sidebar-collapsed .nav-item { justify-content: center; padding: 0.65rem 0; }
+  .sidebar-collapsed .nav-item .ic { width: auto; }
+  .sidebar-collapsed .nav-label { display: none; }
+  .sidebar-collapsed .sidebar-bottom > :not(.profile-dropdown-wrap) { display: none; }
+  .sidebar-collapsed .profile-icon-btn { padding: 6px !important; justify-content: center; }
+  .sidebar-collapsed .profile-icon-btn > :not(:first-child) { display: none; }
+}
+
+/* ─── Phone shell: off-canvas drawer ─────────────────────────────────────── */
+
+.menu-btn {
+  display: none;
+  width: 36px;
+  height: 36px;
+  margin-right: 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--fg);
+  font-size: 1.1rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 55;
+}
+@media (max-width: 900px) {
+  .app-layout { grid-template-columns: minmax(0, 1fr); }
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(280px, 85vw);
+    z-index: 60;
+    transform: translateX(-100%);
+    transition: transform 0.18s ease;
+    background: rgba(6, 6, 10, 0.97);
+    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.5);
+  }
+  .sidebar-open .sidebar { transform: none; }
+  .sidebar-open .sidebar-backdrop { display: block; }
+  .sidebar-toggle { display: none; }          /* the rail toggle means nothing here */
+  .menu-btn { display: inline-flex; align-items: center; justify-content: center; }
+  .header { padding: 0.8rem 1rem; gap: 0.5rem; flex-wrap: wrap; }
+  .content-body { padding: 1rem; }
+  .page-panel h1.page-title { font-size: 1.25rem; }
+  /* iOS zooms into any input under 16px; keep the layout from jumping. */
+  .field input, .field select, .field textarea, .search input { font-size: 16px; }
+  .grid-arms { grid-template-columns: minmax(0, 1fr); }
+  .playground-params { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

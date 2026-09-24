@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import LogprobStrip from './LogprobStrip';
 import {
   POLL_MS, TERMINAL, buildRow, downloadText, extractAnswer, formatElapsed,
-  parseOutputRows, sortByTier, modelOptionLabel, tierOf, firstDivergence,
+  parseOutputRows, sortByTier, modelOptionLabel, tierOf, firstDivergence, analyzeLogprobs,
 } from './playgroundLib';
 
 /**
@@ -40,9 +41,11 @@ function cellId(gridId, armIndex, promptIndex) {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-export default function PlaygroundGrid({ backend, getHeaders, chatModels, servableIds, loadedIds, onBatchCreated }) {
+export default function PlaygroundGrid({ backend, getHeaders, chatModels, servableIds, loadedIds, logprobsIds, onBatchCreated }) {
   const [promptsText, setPromptsText] = useState('');
   const [sharedSystem, setSharedSystem] = useState('');
+  const [logprobsK, setLogprobsK] = useState('0');   // shared by every arm; 0 = off
+  const [hiddenStrips, setHiddenStrips] = useState(() => new Set());   // answer strips the user collapsed
   const [arms, setArms] = useState(() => [newArm(), newArm({ temperature: '0' })]);
   const [grid, setGrid] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -67,9 +70,11 @@ export default function PlaygroundGrid({ backend, getHeaders, chatModels, servab
     () => arms.map(a => ({ ...a, model: a.model || resident[0]?.id || '' })),
     [arms, resident]
   );
+  const wantLogprobs = Number(logprobsK) > 0;
   const armProblems = effectiveArms.map(a => {
     if (!a.model) return 'no model';
     if (!servableIds.has(a.model)) return 'model unavailable';
+    if (wantLogprobs && !logprobsIds?.has(a.model)) return 'no online runtime for this model returns logprobs';
     return null;
   });
   const canRun = !busy && prompts.length > 0 && effectiveArms.length > 0 && armProblems.every(p => p === null);
@@ -99,7 +104,7 @@ export default function PlaygroundGrid({ backend, getHeaders, chatModels, servab
       model: arm.model,
       system: arm.system.trim() || sharedSystem,
       prompt: p,
-      params: arm,
+      params: { ...arm, logprobs: logprobsK },
       responseFormat: null,
     })))
     .join('\n') + '\n';
@@ -165,7 +170,10 @@ export default function PlaygroundGrid({ backend, getHeaders, chatModels, servab
             if (b.status === 'completed' && b.output_file_id) {
               const out = await fetch(`${backend}/v1/files/${b.output_file_id}/content`, { headers: authOnlyHeaders() });
               if (out.ok) {
-                for (const row of parseOutputRows(await out.text())) arm.answers[row.custom_id] = extractAnswer(row);
+                for (const row of parseOutputRows(await out.text())) {
+                  const ans = extractAnswer(row);
+                  arm.answers[row.custom_id] = { ...ans, analysis: ans.logprobs ? analyzeLogprobs(ans.logprobs) : null };
+                }
               } else {
                 arm.error = `Could not read the output file (${out.status}).`;
               }
@@ -222,6 +230,10 @@ export default function PlaygroundGrid({ backend, getHeaders, chatModels, servab
               ...(ans.servedModel ? { served_model: ans.servedModel } : {}),
               usage: ans.usage,
               ...(ans.error ? { error: ans.error } : {}),
+              ...(ans.analysis ? {
+                flip_prone: ans.analysis.answerStats.flip,
+                logprobs: ans.logprobs.map(t => ({ token: t.token, logprob: t.logprob, top: (t.top_logprobs || []).map(a => [a.token, a.logprob]) })),
+              } : {}),
             };
           }),
         };
@@ -250,9 +262,21 @@ export default function PlaygroundGrid({ backend, getHeaders, chatModels, servab
               disabled={busy}
             />
           </div>
-          <div className="field">
-            <label>Shared system prompt <span className="dim">(optional, arms can override)</span></label>
-            <textarea rows={6} value={sharedSystem} onChange={e => setSharedSystem(e.target.value)} placeholder="You are a concise assistant." disabled={busy} />
+          <div>
+            <div className="field">
+              <label>Shared system prompt <span className="dim">(optional, arms can override)</span></label>
+              <textarea rows={4} value={sharedSystem} onChange={e => setSharedSystem(e.target.value)} placeholder="You are a concise assistant." disabled={busy} />
+            </div>
+            <div className="field">
+              <label>Logprobs <span className="dim">(all arms)</span></label>
+              <select value={logprobsK} onChange={e => setLogprobsK(e.target.value)} disabled={busy}>
+                <option value="0">Off</option>
+                <option value="5">Top 5 per token</option>
+                <option value="10">Top 10 per token</option>
+                <option value="20">Top 20 per token</option>
+              </select>
+              {wantLogprobs && <div className="playground-hint">Cells gain a token strip and a flip-prone count. Arms on a runtime without logprobs are refused.</div>}
+            </div>
           </div>
         </div>
 
@@ -342,7 +366,6 @@ export default function PlaygroundGrid({ backend, getHeaders, chatModels, servab
             <table className="grid-table">
               <thead>
                 <tr>
-                  <th className="grid-prompt-col">Prompt</th>
                   {grid.arms.map(a => {
                     const st = armStatus(a);
                     return (
@@ -363,8 +386,11 @@ export default function PlaygroundGrid({ backend, getHeaders, chatModels, servab
                 {grid.prompts.map((p, j) => {
                   const base = grid.arms[baseArm]?.answers[cellId(grid.id, baseArm, j)];
                   return (
-                    <tr key={j}>
-                      <td className="grid-prompt-col">{p}</td>
+                    <React.Fragment key={j}>
+                    <tr className="grid-prompt-row">
+                      <td colSpan={grid.arms.length}><span className="dim mono">#{j + 1}</span> {p}</td>
+                    </tr>
+                    <tr>
                       {grid.arms.map(a => {
                         const ans = a.answers[cellId(grid.id, a.index, j)];
                         if (!ans) {
@@ -380,8 +406,29 @@ export default function PlaygroundGrid({ backend, getHeaders, chatModels, servab
                               {!ans.text && <span className="dim">(empty content)</span>}
                             </div>
                             {ans.reasoning && (
-                              <details className="playground-reasoning"><summary>Reasoning</summary><div className="grid-cell-answer dim">{ans.reasoning}</div></details>
+                              <details className="playground-reasoning">
+                                <summary>Reasoning{ans.analysis?.reasoningStats?.n ? ` · ${ans.analysis.reasoningStats.flip} flip-prone of ${ans.analysis.reasoningStats.n}` : ''}</summary>
+                                {ans.analysis?.reasoning?.length
+                                  ? <LogprobStrip tokens={ans.analysis.reasoning} compact />
+                                  : <div className="grid-cell-answer dim">{ans.reasoning}</div>}
+                              </details>
                             )}
+                            {ans.analysis && (() => {
+                              const key = cellId(grid.id, a.index, j);
+                              const open = !hiddenStrips.has(key);
+                              return (
+                                <>
+                                  {open && <LogprobStrip tokens={ans.analysis.answer} stats={ans.analysis.answerStats} label="Answer tokens" compact />}
+                                  <button
+                                    type="button"
+                                    className="btn lp-toggle"
+                                    onClick={() => setHiddenStrips(s => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; })}
+                                  >
+                                    {open ? 'Hide tokens' : `Show tokens · ${ans.analysis.answerStats.flip} flip-prone of ${ans.analysis.answerStats.n}`}
+                                  </button>
+                                </>
+                              );
+                            })()}
                             <div className="grid-cell-meta mono dim">
                               {ans.usage ? `${ans.usage.prompt_tokens ?? '?'} in · ${ans.usage.completion_tokens ?? '?'} out` : ''}
                               {a.index === baseArm && grid.arms.length > 1 ? ' · base' : at < 0 && a.index !== baseArm ? ' · identical' : ''}
@@ -390,6 +437,7 @@ export default function PlaygroundGrid({ backend, getHeaders, chatModels, servab
                         );
                       })}
                     </tr>
+                    </React.Fragment>
                   );
                 })}
               </tbody>
