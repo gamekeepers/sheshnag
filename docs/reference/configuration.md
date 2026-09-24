@@ -67,6 +67,24 @@ Configured via a three-layer system: CLI > env (`DAEMON_*` prefix) > YAML file >
 | `DAEMON_GPU_NAME` | `unknown` | GPU model name for registration |
 | `DAEMON_VRAM_GB` | 0.0 | Advertised GPU memory in GB. Overrides detection — see below |
 
+Copy `daemon/.env.example` to `daemon/.env` for a starting point; the systemd
+unit reads it through `EnvironmentFile`.
+
+#### Reaching the control plane through a proxy
+
+A worker on a network with no outbound route reaches the control plane through
+a proxy or an SSH SOCKS forward. These carry no `DAEMON_` prefix — they are the
+standard variables, read straight from the environment.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `HTTPS_PROXY` / `https_proxy` | _(unset)_ | Proxy for control-plane calls. Checked first. |
+| `ALL_PROXY` / `all_proxy` | _(unset)_ | Used when neither `HTTPS_PROXY` form is set. `socks5h://host:port` for an SSH `-D` forward. |
+| `NO_PROXY` | _(unset)_ | Hosts to reach directly. Include `127.0.0.1,localhost` so the daemon's calls to its own runtime stay local. |
+
+Prefer the `socks5h` scheme over `socks5`: the hostname is resolved at the
+proxy, so certificate verification behaves as it would on a direct connection.
+
 #### How a worker's VRAM is determined
 
 The scheduler filters a worker out of any batch whose model needs more VRAM
