@@ -144,7 +144,7 @@ def register_worker(
                 ))
             rows.append(WorkerRuntime(
                 engine=r.type, base_url=r.endpoint, models=models, position=position,
-                status=r.status,
+                status=r.status, capabilities=r.capabilities or {}, version=r.version,
             ))
         return rows
 

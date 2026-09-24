@@ -87,6 +87,10 @@ class WorkerRuntimeBundle(BaseModel):
     models: List[str] = Field(default_factory=list)
     model_digests: Dict[str, Any] = Field(default_factory=dict)
     inventory: List[Dict[str, Any]] = Field(default_factory=list)
+    # BaseExecutor.capabilities() as read after the readiness wait, and the
+    # server version it was read from. The control plane routes on the former.
+    capabilities: Dict[str, bool] = Field(default_factory=dict)
+    version: Optional[str] = None
 
 
 class WorkerInfo(BaseModel):

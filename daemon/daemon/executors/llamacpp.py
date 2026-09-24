@@ -171,6 +171,11 @@ class LlamaCppExecutor(BaseExecutor):
             logger.error(error, exc_info=True)
             return CompletionResult(custom_id=prompt.custom_id, error=error)
 
+    def capabilities(self) -> Dict[str, bool]:
+        # llama-server answers OpenAI-shaped logprobs on /v1/chat/completions
+        # and /v1/completions (llama.cpp PR #10783) but has no `echo`.
+        return {"logprobs": True, "completions": True, "prompt_scoring": False}
+
     async def health_check(self) -> bool:
         """
         Liveness, plus the server facts the rest of the daemon needs.

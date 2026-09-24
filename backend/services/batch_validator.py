@@ -21,8 +21,18 @@ MAX_STORED_ERRORS = 100
 
 SUPPORTED_ENDPOINTS = frozenset({
     "/v1/chat/completions",
+    "/v1/completions",
     "/v1/embeddings",
 })
+
+# Body fields that only some runtimes honour, and the capability each needs.
+# Collected per file; the batch then carries the set and the scheduler offers
+# it only to a runtime advertising all of them.
+CAPABILITY_FIELDS = {
+    "logprobs": "body.logprobs",
+    "completions": "url",
+    "prompt_scoring": "body.echo",
+}
 
 ALLOWED_TOP_LEVEL_KEYS = frozenset({
     "custom_id",
@@ -50,6 +60,8 @@ class ValidationResult:
     """Aggregated outcome of validating a batch file."""
     valid: bool = True
     model: Optional[str] = None
+    # Runtime capabilities the rows ask for; persisted on the batch.
+    required_capabilities: List[str] = field(default_factory=list)
     total_lines: int = 0
     errors: List[ValidationError] = field(default_factory=list)
     total_error_count: int = 0       # counts ALL errors even beyond storage cap
@@ -220,11 +232,64 @@ def _validate_chat_body(body: dict, line_number: int) -> List[ValidationError]:
                     f"body.messages[{i}].content is required"
                 ))
 
+    errors.extend(_validate_logprob_fields(body, line_number, chat=True))
     return errors
+
+
+def _validate_logprob_fields(body: dict, line_number: int, *, chat: bool) -> List[ValidationError]:
+    """OpenAI's shapes: chat takes `logprobs: bool` + `top_logprobs: 0..20`;
+    completions takes `logprobs: 0..20` (an int) and `echo: bool`."""
+    errors = []
+    logprobs = body.get("logprobs")
+    if logprobs is not None:
+        if chat and not isinstance(logprobs, bool):
+            errors.append(ValidationError("invalid_type", line_number, "body.logprobs",
+                                          "body.logprobs must be a boolean on /v1/chat/completions"))
+        if not chat and not (isinstance(logprobs, bool) or (isinstance(logprobs, int) and 0 <= logprobs <= 20)):
+            errors.append(ValidationError("invalid_type", line_number, "body.logprobs",
+                                          "body.logprobs must be an integer 0-20 on /v1/completions"))
+    top = body.get("top_logprobs")
+    if top is not None and not (isinstance(top, int) and not isinstance(top, bool) and 0 <= top <= 20):
+        errors.append(ValidationError("invalid_type", line_number, "body.top_logprobs",
+                                      "body.top_logprobs must be an integer 0-20"))
+    echo = body.get("echo")
+    if echo is not None and not isinstance(echo, bool):
+        errors.append(ValidationError("invalid_type", line_number, "body.echo",
+                                      "body.echo must be a boolean"))
+    return errors
+
+
+def _validate_completions_body(body: dict, line_number: int) -> List[ValidationError]:
+    """Validate /v1/completions request body: a prompt, not messages."""
+    errors = []
+    prompt = body.get("prompt")
+    ok = isinstance(prompt, str) and prompt != ""
+    ok = ok or (isinstance(prompt, list) and len(prompt) > 0 and all(isinstance(p, str) for p in prompt))
+    if not ok:
+        errors.append(ValidationError(
+            "invalid_type", line_number, "body.prompt",
+            "body.prompt is required and must be a non-empty string or array of strings"
+        ))
+    errors.extend(_validate_logprob_fields(body, line_number, chat=False))
+    return errors
+
+
+def wanted_capabilities(url: str, body: dict) -> List[str]:
+    """Which runtime capabilities one row asks for, in CAPABILITY_FIELDS order."""
+    wants = []
+    top = body.get("top_logprobs")
+    if body.get("logprobs") or (isinstance(top, int) and not isinstance(top, bool) and top > 0):
+        wants.append("logprobs")
+    if url == "/v1/completions":
+        wants.append("completions")
+        if body.get("echo"):
+            wants.append("prompt_scoring")
+    return wants
 
 
 ENDPOINT_VALIDATORS = {
     "/v1/chat/completions": _validate_chat_body,
+    "/v1/completions": _validate_completions_body,
 }
 
 
@@ -251,6 +316,15 @@ class _CrossFileContext:
         # Rows where body.n > 1, as (line_number, n_value) tuples.
         # Used for runtime-gated n>1 rejection at submission time (issue #49).
         self.n_gt1_rows: list = []
+        # capability -> line where a row first asked for it, for the
+        # capability gate (phase 4c) and the message it writes.
+        self.required_capabilities: dict = {}
+
+    def note_capabilities(self, line_number: int, url, body) -> None:
+        if not isinstance(url, str) or not isinstance(body, dict):
+            return
+        for cap in wanted_capabilities(url, body):
+            self.required_capabilities.setdefault(cap, line_number)
 
     def check_custom_id(self, line_number: int, custom_id) -> List[ValidationError]:
         if not isinstance(custom_id, str) or not custom_id:
@@ -293,6 +367,24 @@ def _set_expires_at(batch: Batch) -> None:
     batch.expires_at = unix_now() + int(hours * 3600)
 
 
+def _online_hosts(db, entry):
+    """Online workers (by heartbeat, not the sweeper's lagging flag) that
+    could be given a plain-chat batch for `entry`."""
+    from sqlalchemy.orm import joinedload
+    from models import Worker, WorkerRuntime
+    from scheduler import can_serve
+    from sweeper import HEARTBEAT_TIMEOUT_SECONDS
+
+    cutoff = unix_now() - HEARTBEAT_TIMEOUT_SECONDS
+    workers = (
+        db.query(Worker)
+        .options(joinedload(Worker.runtimes).joinedload(WorkerRuntime.models))
+        .filter(Worker.status == "online", Worker.last_heartbeat >= cutoff)
+        .all()
+    )
+    return [w for w in workers if can_serve(entry, w)]
+
+
 def _persist_result(batch_id: str, result: ValidationResult) -> bool:
     """Update batch status in a tight DB transaction."""
     db = SessionLocal()
@@ -316,6 +408,7 @@ def _persist_result(batch_id: str, result: ValidationResult) -> bool:
         else:
             batch.status = "validated"
             batch.model = result.model or batch.model
+            batch.required_capabilities = result.required_capabilities or None
             batch.requested_at = unix_now()
             _set_expires_at(batch)
             logger.info("Batch %s validated — %d requests, model=%s", batch_id, result.total_lines, result.model)
@@ -402,6 +495,7 @@ def validate_batch_file(batch_id: str, filepath: str) -> bool:
                     n_value = body.get("n")
                     if n_value is not None and n_value != 1:
                         context.n_gt1_rows.append((i, n_value))
+                context.note_capabilities(i, entry.get("url"), body)
 
             # Track model from first valid line
             if result.model is None and model and isinstance(model, str):
@@ -414,7 +508,7 @@ def validate_batch_file(batch_id: str, filepath: str) -> bool:
     # 4. Model must be a selectable catalogue entry (reproducibility gate:
     #    users pick a pinned model, not a free-form id).
     if result.valid and result.model:
-        from scheduler import get_catalog_entry
+        from scheduler import can_serve, get_catalog_entry
         db = SessionLocal()
         try:
             entry = get_catalog_entry(db, result.model)
@@ -447,6 +541,31 @@ def validate_batch_file(batch_id: str, filepath: str) -> bool:
                         f"{row_descriptions}. Use a vLLM-runtime model to submit "
                         f"batches with n>1, or remove the n parameter.",
                     )
+
+                # 4c. Capability gate. A row may ask for something only some
+                # runtimes honour (logprobs, /v1/completions, echo). When an
+                # online worker hosts the model but none of those hosts
+                # advertises the capability, fail now with the reason; when no
+                # host is online at all, queue as usual and let the scheduler
+                # hold the batch for a capable one.
+                needs = list(context.required_capabilities)
+                if result.valid and needs:
+                    hosts = _online_hosts(db, entry)
+                    if hosts and not any(can_serve(entry, w, needs) for w in hosts):
+                        missing = [c for c in needs if not any(can_serve(entry, w, [c]) for w in hosts)]
+                        first = missing[0]
+                        _fail(
+                            result,
+                            "unsupported_capability",
+                            context.required_capabilities[first],
+                            CAPABILITY_FIELDS[first],
+                            f"No online runtime serving '{result.model}' supports "
+                            f"{', '.join(missing)}. Pick a model on a runtime that does "
+                            f"(vLLM serves all three; Ollama ≥ 0.12.11 returns logprobs "
+                            f"on chat), or remove the field.",
+                        )
+                if result.valid:
+                    result.required_capabilities = needs
         finally:
             db.close()
 

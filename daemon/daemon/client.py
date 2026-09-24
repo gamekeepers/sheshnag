@@ -224,6 +224,8 @@ class BackendClient:
                     "models": bundle.models,
                     "model_digests": bundle.model_digests,
                     "inventory": bundle.inventory,
+                    "capabilities": bundle.capabilities,
+                    "version": bundle.version,
                 }
                 for bundle in worker_info.runtimes
             ],

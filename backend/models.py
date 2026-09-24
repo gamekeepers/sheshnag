@@ -304,6 +304,12 @@ class WorkerRuntime(Base):
     engine     = Column(String, nullable=False)   # ollama | vllm | tgi | transformers
     base_url   = Column(String, nullable=False, default="")
     api_protocol = Column(String, default="openai-compatible")
+    # BaseExecutor.capabilities() as the daemon reported it at registration
+    # ({logprobs, completions, prompt_scoring}: bool) and the server version
+    # it read them from. The validator and scheduler route on these; an
+    # older daemon sends neither, which reads as "claims nothing".
+    capabilities = Column(JSON, nullable=True)
+    version      = Column(String, nullable=True)
     status     = Column(String, default="ready")  # ready | draining | unavailable
 
     # A runtime that is draining or was never reached still lists its models —
@@ -606,6 +612,10 @@ class Batch(Base):
     # the scheduler. The attribute is not `metadata` because SQLAlchemy's
     # declarative base reserves that name.
     batch_metadata           = Column("metadata", JSON, nullable=True)
+    # Runtime capabilities the rows need ("logprobs", "completions",
+    # "prompt_scoring"), set by the validator. The scheduler offers the batch
+    # only to a runtime that advertises all of them.
+    required_capabilities    = Column(JSON, nullable=True)
     prompt_tokens            = Column(Integer, nullable=True)
     completion_tokens        = Column(Integer, nullable=True)
     total_tokens             = Column(Integer, nullable=True)

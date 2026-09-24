@@ -6,7 +6,7 @@ import socket
 import time
 from pathlib import Path
 from urllib.parse import urlparse
-from typing import Optional, List, Callable, Awaitable
+from typing import Dict, Optional, List, Callable, Awaitable
 
 import httpx
 import jsonschema
@@ -46,6 +46,9 @@ NON_OLLAMA_SERVER_SIGNATURES = (
 # Worker._wait_for_executor), and structured outputs have to start working
 # once it does. One probe per minute is ~0.08% of the pre-fix cost.
 VERSION_PROBE_RETRY_SECONDS = 60.0
+
+# /api/chat returns per-token log-probabilities from this release on.
+LOGPROBS_MIN_VERSION = (0, 12, 11)
 
 def parse_version(version_str: Optional[str]) -> tuple[int, ...]:
     """Semantic version parser that handles pre-releases and v prefix."""
@@ -138,6 +141,14 @@ class OllamaExecutor(BaseExecutor):
         # Embeddings first: the version gate below is about structured outputs,
         # which do not apply here. Probing /api/version for an embedding row
         # would cost a 5s timeout per prompt when the server is unreachable.
+        if prompt.url == "/v1/completions":
+            # Ollama's /api/generate cannot echo prompt log-probabilities, and
+            # the scheduler never routes these rows here; this is the backstop.
+            return CompletionResult(
+                custom_id=prompt.custom_id,
+                error="UNSUPPORTED_ENDPOINT: /v1/completions is not served by the Ollama runtime",
+            )
+
         if prompt.url == "/v1/embeddings":
             ollama_body = self._translate_embeddings_request(prompt.body)
             try:
@@ -726,12 +737,19 @@ class OllamaExecutor(BaseExecutor):
     # with its reason — no silent drops, that is the whole point
     # of issue #39.
     _UNSUPPORTED_PARAMS = {
-        "logprobs":     "Ollama does not support logprobs",
-        "top_logprobs": "Ollama does not support top_logprobs",
         "tool_choice":  ("Ollama does not support tool_choice — tool "
                          "selection is determined by the model from "
                          "the tools list"),
     }
+
+    def capabilities(self) -> Dict[str, bool]:
+        # Version-gated: an unknown version reads as "not supported", so a
+        # server that never answered its health check is never offered a
+        # logprobs batch. Completions rows are refused outright (execute()).
+        supports_logprobs = (
+            self.version is not None and parse_version(self.version) >= LOGPROBS_MIN_VERSION
+        )
+        return {"logprobs": supports_logprobs, "completions": False, "prompt_scoring": False}
 
     def _translate_request(self, openai_body: dict) -> dict:
         """OpenAI chat format -> Ollama chat format.
@@ -810,6 +828,23 @@ class OllamaExecutor(BaseExecutor):
         if isinstance(think, bool):
             translated["think"] = think
 
+        # ── logprobs / top_logprobs → top-level (Ollama ≥ 0.12.11) ─
+        # Same names and meaning as OpenAI's. Below the minimum version the
+        # server ignores them silently, so drop with a reason instead.
+        if "logprobs" in openai_body or "top_logprobs" in openai_body:
+            if self.capabilities()["logprobs"]:
+                if openai_body.get("logprobs"):
+                    translated["logprobs"] = True
+                    top = openai_body.get("top_logprobs")
+                    if isinstance(top, int) and top > 0:
+                        translated["top_logprobs"] = top
+            else:
+                logger.warning(
+                    "Parameters logprobs/top_logprobs dropped: Ollama %s < %s "
+                    "does not return log-probabilities",
+                    self.version or "unknown", ".".join(map(str, LOGPROBS_MIN_VERSION)),
+                )
+
         return translated
         
     def _translate_response(self, ollama_response: dict) -> dict:
@@ -822,11 +857,17 @@ class OllamaExecutor(BaseExecutor):
             # reader of the output file has one field to look at.
             if message.get("thinking") and not message.get("reasoning_content"):
                 message["reasoning_content"] = message["thinking"]
-            choices.append({
+            choice = {
                 "index": 0,
                 "message": message,
                 "finish_reason": "stop" if ollama_response.get("done") else "length",
-            })
+            }
+            # Ollama puts per-token log-probabilities at the top level of the
+            # response; OpenAI puts them under the choice. The per-token keys
+            # (token, logprob, bytes, top_logprobs) already match, so lift.
+            if ollama_response.get("logprobs"):
+                choice["logprobs"] = {"content": ollama_response["logprobs"]}
+            choices.append(choice)
         return {
             "choices": choices,
             "model": ollama_response.get("model", ""),

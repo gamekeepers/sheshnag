@@ -183,25 +183,50 @@ class TestOllamaToolsPassthrough:
 class TestOllamaWarnAndDrop:
     """Unsupported params are logged, not silently dropped."""
 
-    def test_logprobs_warned(self, caplog):
+    def test_logprobs_pass_through_from_0_12_11(self):
         executor = OllamaExecutor()
-        body = {"model": "m", "messages": [], "logprobs": True}
+        executor.version = "0.12.11"
+        body = {"model": "m", "messages": [], "logprobs": True, "top_logprobs": 5}
+        translated = executor._translate_request(body)
+        assert translated["logprobs"] is True
+        assert translated["top_logprobs"] == 5
+        assert "logprobs" not in translated["options"]
+
+    def test_logprobs_false_sends_nothing(self):
+        executor = OllamaExecutor()
+        executor.version = "0.32.14"
+        translated = executor._translate_request({"model": "m", "messages": [], "logprobs": False, "top_logprobs": 3})
+        assert "logprobs" not in translated
+        assert "top_logprobs" not in translated
+
+    def test_logprobs_dropped_below_0_12_11(self, caplog):
+        executor = OllamaExecutor()
+        executor.version = "0.11.4"
+        body = {"model": "m", "messages": [], "logprobs": True, "top_logprobs": 5}
         with caplog.at_level(logging.WARNING):
             translated = executor._translate_request(body)
         assert "logprobs" not in translated
-        assert "logprobs" not in translated.get("options", {})
-        assert any("logprobs" in r.message and "dropped" in r.message
-                    for r in caplog.records)
-
-    def test_top_logprobs_warned(self, caplog):
-        executor = OllamaExecutor()
-        body = {"model": "m", "messages": [], "top_logprobs": 5}
-        with caplog.at_level(logging.WARNING):
-            translated = executor._translate_request(body)
         assert "top_logprobs" not in translated
-        assert "top_logprobs" not in translated.get("options", {})
-        assert any("top_logprobs" in r.message and "dropped" in r.message
-                    for r in caplog.records)
+        assert any("logprobs" in r.message and "dropped" in r.message for r in caplog.records)
+
+    def test_logprobs_dropped_when_version_unknown(self, caplog):
+        executor = OllamaExecutor()
+        assert executor.version is None
+        with caplog.at_level(logging.WARNING):
+            translated = executor._translate_request({"model": "m", "messages": [], "logprobs": True})
+        assert "logprobs" not in translated
+
+    def test_response_logprobs_lifted_under_the_choice(self):
+        executor = OllamaExecutor()
+        per_token = [{"token": "Hi", "logprob": -0.01, "bytes": [72, 105],
+                      "top_logprobs": [{"token": "Hi", "logprob": -0.01, "bytes": [72, 105]}]}]
+        response = executor._translate_response({**OLLAMA_CHAT_OK, "logprobs": per_token})
+        assert response["choices"][0]["logprobs"] == {"content": per_token}
+
+    def test_response_without_logprobs_has_no_key(self):
+        executor = OllamaExecutor()
+        response = executor._translate_response(OLLAMA_CHAT_OK)
+        assert "logprobs" not in response["choices"][0]
 
     def test_tool_choice_warned(self, caplog):
         """tool_choice must NOT be dropped silently — issue #39 gap 1."""
@@ -226,7 +251,11 @@ class TestOllamaWarnAndDrop:
             executor._translate_request(body)
         warned_params = [r.message for r in caplog.records
                          if "dropped" in r.message]
-        assert len(warned_params) == 3
+        # logprobs + top_logprobs are one switch and one warning (version
+        # unknown here, so they drop together); tool_choice is the other.
+        assert len(warned_params) == 2
+        assert any("logprobs" in m for m in warned_params)
+        assert any("tool_choice" in m for m in warned_params)
 
 
 # ════════════════════════════════════════════════════════════════

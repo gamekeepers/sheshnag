@@ -26,6 +26,8 @@ export const VALIDATION_FIXES = {
     'That url is not served here. Use one of the endpoints named in the message.',
   model_mismatch:
     'One model per file. Either split the mixed lines into separate files, or set every body.model to the same catalogue id.',
+  unsupported_capability:
+    'The rows ask for something no online runtime serving this model can honour (logprobs, /v1/completions or echo). Pick a model on a runtime that supports it — the message names which — or remove the field.',
 };
 
 /** `body.messages[3].role` → `body.messages[].role` */

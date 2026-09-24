@@ -278,8 +278,8 @@ FIT_RULES = {
 DEFAULT_FIT_RULE = fit_vram_only
 
 
-def _hosting_engine(worker, runtime_model_ids, catalog_digest):
-    """The engine of the runtime hosting this artifact, or None if none do.
+def _hosting_runtime(worker, runtime_model_ids, catalog_digest):
+    """The runtime row hosting this artifact, or None if none does.
 
     `Worker.advertised_models()` flattens every runtime into (name, digest)
     pairs and so cannot answer this — the engine is exactly what it drops.
@@ -302,12 +302,30 @@ def _hosting_engine(worker, runtime_model_ids, catalog_digest):
             continue
         models = [(m.name, m.digest) for m in runtime.models if m.schedulable]
         if _hosts(models, runtime_model_ids, catalog_digest):
-            return runtime.engine
+            return runtime
     return None
 
 
-def can_serve(entry, worker) -> bool:
-    """Could this worker be given a batch for `entry`?
+def _hosting_engine(worker, runtime_model_ids, catalog_digest):
+    """The engine name of `_hosting_runtime`, or None."""
+    runtime = _hosting_runtime(worker, runtime_model_ids, catalog_digest)
+    return runtime.engine if runtime is not None else None
+
+
+def runtime_has(runtime, needs) -> bool:
+    """True when the runtime row advertises every capability in `needs`.
+
+    `needs` empty or None means plain chat, which every runtime serves. A
+    row with no capabilities (an older daemon) satisfies nothing else.
+    """
+    if not needs:
+        return True
+    caps = runtime.capabilities or {}
+    return all(caps.get(key) is True for key in needs)
+
+
+def can_serve(entry, worker, needs=None) -> bool:
+    """Could this worker be given a batch for `entry` that needs `needs`?
 
     The single definition of "eligible", shared by the scheduler
     (`find_best_batch`) and the pool-capacity endpoint, so the capacity a
@@ -320,10 +338,12 @@ def can_serve(entry, worker) -> bool:
     """
     if entry is None or worker is None:
         return False
-    engine = _hosting_engine(worker, _target_ids(entry), entry.digest)
-    if engine is None:
+    runtime = _hosting_runtime(worker, _target_ids(entry), entry.digest)
+    if runtime is None:
         return False  # does not host the artifact on any schedulable runtime
-    rule = FIT_RULES.get(engine, DEFAULT_FIT_RULE)
+    if not runtime_has(runtime, needs):
+        return False  # hosts it, but cannot honour what the rows ask for
+    rule = FIT_RULES.get(runtime.engine, DEFAULT_FIT_RULE)
     return rule(entry.vram_gb or 0, Capacity.of(worker))
 
 
@@ -351,8 +371,8 @@ class Scheduler:
             if entry is None:
                 continue  # unschedulable — should have failed validation
 
-            if not can_serve(entry, worker):
-                continue  # doesn't host the artifact, or can't fit it
+            if not can_serve(entry, worker, batch.required_capabilities or None):
+                continue  # doesn't host the artifact, can't fit it, or lacks a capability
 
             if _hosts(loaded, _target_ids(entry), entry.digest):
                 loaded_matches.append(batch)

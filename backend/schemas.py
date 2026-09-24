@@ -370,6 +370,10 @@ class RuntimeInfo(BaseModel):
     # Full on-disk inventory with file hashes (additive; older daemons
     # omit it and their rows keep a null digest -> name matching).
     inventory: List[InventoryItem] = []
+    # What the runtime can honour beyond plain chat, and its server version.
+    # Older daemons omit both; the backend then routes as if it claims nothing.
+    capabilities: Optional[Dict[str, bool]] = None
+    version: Optional[str] = None
 
 
 class WorkerRegisterRequest(BaseModel):

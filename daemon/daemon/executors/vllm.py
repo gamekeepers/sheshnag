@@ -14,7 +14,7 @@ Architecture note:
 from __future__ import annotations
 
 import asyncio
-from typing import List, Optional, Set, Union
+from typing import Dict, List, Optional, Set, Union
 
 import httpx
 
@@ -172,6 +172,11 @@ class VLLMExecutor(BaseExecutor):
             return CompletionResult(
                 custom_id=prompt.custom_id, error=error_msg
             )
+
+    def capabilities(self) -> Dict[str, bool]:
+        # OpenAI-shaped logprobs on chat and completions, and `echo` returns
+        # prompt log-probabilities; verified live 2026-09-24 (vLLM 0.28).
+        return {"logprobs": True, "completions": True, "prompt_scoring": True}
 
     async def health_check(self) -> bool:
         """

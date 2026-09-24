@@ -19,7 +19,7 @@ Week 2+ extensions:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import List
+from typing import Dict, List
 
 from daemon.models import CompletionResult, PromptRequest
 
@@ -75,6 +75,23 @@ class BaseExecutor(ABC):
     #: an inventory report by this tag — so every item an executor reports
     #: must be tagged (see tag_inventory).
     runtime_name: str = ""
+
+    def capabilities(self) -> Dict[str, bool]:
+        """What this runtime can honour beyond plain chat, as the control
+        plane routes on it:
+
+            logprobs        token log-probabilities on chat completions
+            completions     POST /v1/completions rows
+            prompt_scoring  `echo` on completions — log-probabilities of
+                            the prompt itself, the shape of a loglikelihood eval
+
+        Advertised at registration; the validator refuses a file no online
+        runtime for its model can honour, and the scheduler never offers such
+        a batch to a runtime that cannot. Read after health_check(), because
+        some answers depend on the server version. The default is the
+        conservative answer for a runtime that has not said otherwise.
+        """
+        return {"logprobs": False, "completions": False, "prompt_scoring": False}
 
     def tag_inventory(self, items: List[dict]) -> List[dict]:
         """Return `items` with this executor's `runtime_name` attached.

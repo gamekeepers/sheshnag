@@ -31,8 +31,9 @@ state exactly what is supported.
 | `frequency_penalty` | top-level | **translated** → `options.frequency_penalty` | **native** — accepted top-level †|
 | `presence_penalty` | top-level | **translated** → `options.presence_penalty` | **native** — accepted top-level †|
 | `n` | top-level | **rejected at submission** — Ollama produces exactly 1 completion per request; `n=1` is accepted, `n>1` is rejected at batch submission time (before processing begins) | **native** — accepted top-level †|
-| `logprobs` | top-level | **ignored** — warn-and-drop; Ollama does not expose log-probabilities | **native** — accepted top-level †|
-| `top_logprobs` | top-level | **ignored** — warn-and-drop; Ollama does not expose log-probabilities | **native** — accepted top-level †|
+| `logprobs` | top-level | **native from 0.12.11** — forwarded top-level; the response's top-level `logprobs[]` is lifted to `choices[0].logprobs.content` (same per-token keys). Below 0.12.11: warn-and-drop | **native** — `choices[0].logprobs.content[{token, logprob, bytes, top_logprobs}]`, verified live 2026-09-24 (vLLM 0.28) |
+| `top_logprobs` | top-level | **native from 0.12.11** — as above | **native** — verified live 2026-09-24 |
+| `echo` (on `/v1/completions`) | top-level | **unsupported** — Ollama runtimes advertise no `prompt_scoring`; such rows are never routed there | **native** — `echo: true, logprobs: 1, max_tokens: 0` returns the prompt's own token log-probabilities (first token `null`), verified live 2026-09-24 |
 | `tools` | top-level | **translated** — passed top-level (Ollama native since ~0.3) | **native** — accepted top-level †|
 | `tool_choice` | top-level | **ignored** — warn-and-drop; Ollama does not support `tool_choice` — tool selection is determined by the model from the `tools` list | **native** — accepted top-level †|
 | `stream` | top-level | **rejected** — batch execution cannot honour streaming; response shape is incompatible | **rejected** — batch execution cannot honour streaming; response shape is incompatible |

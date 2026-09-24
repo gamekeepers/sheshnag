@@ -325,6 +325,8 @@ async def _collect_runtime_bundles(
             models=names,
             model_digests=digests,
             inventory=inventory,
+            capabilities=executor.capabilities(),
+            version=getattr(executor, "version", None),
         ))
 
     if len(config.runtime) > 1 and config.models:

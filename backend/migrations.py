@@ -67,6 +67,13 @@ MIGRATIONS = [
     # Caller tags on a batch (playground grids group their arms by it).
     _Migration("batches.metadata",
                "batches", "metadata", JSON()),
+    # Runtime capabilities (#138): what a runtime advertises, what a batch needs.
+    _Migration("worker_runtimes.capabilities",
+               "worker_runtimes", "capabilities", JSON()),
+    _Migration("worker_runtimes.version",
+               "worker_runtimes", "version", String()),
+    _Migration("batches.required_capabilities",
+               "batches", "required_capabilities", JSON()),
     # Registry schema (#116): model-level capabilities and upstream lineage.
     # The serving_profiles / catalog_artifact_files tables need no entry —
     # new tables come from create_all().

@@ -956,6 +956,9 @@ class TestRegisterPayload:
         assert captured["url"] == "/workers/register"
         entries = captured["json"]["runtimes"]
         assert [e["type"] for e in entries] == ["vllm", "ollama"]
+        # Capabilities and version ride along per runtime; empty/None when
+        # the bundle was built before the executor could answer.
+        assert all("capabilities" in e and "version" in e for e in entries)
         assert entries[0]["models"] == ["m1"]
         assert entries[0]["model_digests"] == {"m1": "d1"}
         assert entries[0]["inventory"][0]["sha256"] == "a" * 64

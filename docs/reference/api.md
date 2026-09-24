@@ -416,6 +416,26 @@ which marks the worker `offline` and releases whatever it was holding.
 client can find batches it submitted together — the dashboard's grid mode tags
 each arm with `grid_id`.
 
+### Runtime capabilities
+
+Some body fields only some runtimes honour. Each daemon advertises its
+runtimes' capabilities at registration (`logprobs`, `completions`,
+`prompt_scoring`); the validator records which of them a file's rows ask for
+on the batch, and the scheduler offers that batch only to a runtime that
+advertises all of them.
+
+| Rows that… | Need | vLLM | llama.cpp | Ollama |
+|---|---|---|---|---|
+| set `logprobs` / `top_logprobs > 0` | `logprobs` | yes | yes | ≥ 0.12.11 |
+| use `POST /v1/completions` | `completions` | yes | yes | no |
+| set `echo: true` on completions (prompt scoring) | `prompt_scoring` | yes | no | no |
+
+If an online worker hosts the model but none of those hosts advertises the
+capability, validation fails with `unsupported_capability`, naming the field.
+If no host is online at all, the batch queues as usual and waits for a capable
+one. Daemons older than this contract advertise nothing and are never offered
+such batches.
+
 ### Validation errors
 
 Validation is asynchronous: `POST /v1/batches` returns immediately with
