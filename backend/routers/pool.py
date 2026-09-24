@@ -29,7 +29,7 @@ from models import (
     WorkerRuntime,
     unix_now,
 )
-from scheduler import can_serve, _target_ids
+from scheduler import can_serve, _hosts, _target_ids
 from sweeper import HEARTBEAT_TIMEOUT_SECONDS
 
 router = APIRouter()
@@ -48,16 +48,14 @@ _cache = {"expires_at": 0.0, "snapshot": None}
 
 
 def _is_loaded(entry, workers) -> bool:
-    """True when an online worker reports the entry's artifact resident in memory."""
-    targets = set(_target_ids(entry))
-    for worker in workers:
-        for runtime in worker.runtimes:
-            for rm in runtime.models:
-                if not rm.loaded:
-                    continue
-                if rm.catalog_id == entry.id or rm.name in targets or rm.runtime_model_id in targets:
-                    return True
-    return False
+    """True when an online worker reports the entry's artifact resident in memory.
+
+    Reuses the scheduler's own primitives (schedulable rows, digest
+    enforced) rather than re-deriving "loaded" — a drift row is loaded
+    but unschedulable, and dispatch would never use it.
+    """
+    targets = _target_ids(entry)
+    return any(_hosts(w.loaded_models(), targets, entry.digest) for w in workers)
 
 
 def _compute_snapshot(db: Session) -> dict:

@@ -145,7 +145,7 @@ whose. Per-worker rows stay on the superadmin `GET /v1/admin/workers`.
   "vram_largest_gpu_gb": 24.0,
   "ram_total_gb": 768.0,
   "models_servable": [
-    {"id": "llama3.1-8b", "display_name": "Llama 3.1 8B", "parameter_size": "8B"}
+    {"id": "llama3.1-8b", "display_name": "Llama 3.1 8B", "parameter_size": "8B", "loaded": true}
   ],
   "as_of": 1756400000
 }
@@ -154,8 +154,11 @@ whose. Per-worker rows stay on the superadmin `GET /v1/admin/workers`.
 - **`models_servable`** is what the *scheduler* would dispatch, not what the
   catalogue lists: an entry appears only when some online worker both hosts
   the artifact and satisfies that runtime's fit rule, decided by
-  `scheduler.can_serve` — the same predicate `POST /workers/poll`
-  matches on.
+   `scheduler.can_serve` — the same predicate `POST /workers/poll`
+   matches on. **`loaded`** says whether some online worker already has
+   the artifact in memory (schedulable rows, digest enforced — the
+   scheduler's own predicate, so a drift row does not count): a
+   servable-but-not-loaded model costs a load on first use.
 - **`vram_total_gb` is the fleet sum; `vram_largest_gpu_gb` is what one job
   can actually have.** A batch runs on a single worker, and on a
   single-device runtime on a single card, so the sum describes the size of

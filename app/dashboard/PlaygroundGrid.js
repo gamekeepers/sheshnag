@@ -80,7 +80,10 @@ export default function PlaygroundGrid({ backend, getHeaders, chatModels, servab
     if (as.length >= MAX_ARMS) return as;
     const src = as.find(a => a.id === id);
     const i = as.indexOf(src);
-    return [...as.slice(0, i + 1), newArm({ ...src, id: undefined, label: '' }), ...as.slice(i + 1)];
+    // Strip the old id before the override spread: `id: undefined` would
+    // clobber the fresh id `newArm` assigns (override wins the spread).
+    const { id: _srcId, ...rest } = src;
+    return [...as.slice(0, i + 1), newArm({ ...rest, label: '' }), ...as.slice(i + 1)];
   });
   const removeArm = (id) => setArms(as => (as.length <= 1 ? as : as.filter(a => a.id !== id)));
 
