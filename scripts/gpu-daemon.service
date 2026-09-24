@@ -2,10 +2,14 @@
 # `systemctl --user`. Rootless by design: everything under ~/.gpu-daemon.
 # %h expands to the user's home directory.
 #
-# These paths must match what scripts/install.sh creates — ~/.gpu-daemon/{src,venv}
-# and ~/.gpu-daemon/config.yaml — not a development checkout. They pointed at
-# ~/workplace/... until 2026-08-27, so the unit enabled cleanly and then
-# crash-looped every 10s on every machine except the one it was written on.
+# These paths must match what scripts/install.sh creates — the virtual
+# environment at ~/.gpu-daemon/venv and the config beside it — not a
+# development checkout. A unit pointing somewhere else enables cleanly and
+# then crash-loops every 10s.
+#
+# `gpu-daemon` is the console script the daemon wheel installs, so the daemon
+# runs from the environment that owns its dependencies and needs no working
+# directory of its own.
 [Unit]
 Description=Sheshnag GPU Worker Daemon
 After=network-online.target ollama.service
@@ -13,8 +17,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/.gpu-daemon/src/daemon
-ExecStart=%h/.gpu-daemon/venv/bin/python -m daemon.main --config %h/.gpu-daemon/config.yaml
+ExecStart=%h/.gpu-daemon/venv/bin/gpu-daemon --config %h/.gpu-daemon/config.yaml
 Environment=PATH=%h/.gpu-daemon/bin:/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=10
