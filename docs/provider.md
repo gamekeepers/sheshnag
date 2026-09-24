@@ -243,15 +243,14 @@ requeued to another worker; nothing is lost.
 ```bash
 git -C ~/.gpu-daemon/src pull --ff-only
 ~/.gpu-daemon/venv/bin/pip install -q ~/.gpu-daemon/src/daemon
-~/.gpu-daemon/venv/bin/pip install -q --force-reinstall --no-deps ~/.gpu-daemon/src/daemon
 systemctl --user restart gpu-daemon
 ```
 
-Both pip lines earn their place. The first picks up any dependency a release
-added — pulling code alone leaves the service restarting every ten seconds on
-an `ImportError`. The second replaces the code itself, which the first will not
-do: the daemon's version does not change between builds, so pip treats a newer
-checkout as already satisfied.
+The pip line is what makes this safe. Pulling code alone leaves the virtual
+environment untouched, so a release that adds a dependency leaves the service
+restarting every ten seconds on an `ImportError`. Installing the package moves
+code and dependencies together, and pip rebuilds a path requirement on every
+run, so it applies even though the version never changes.
 
 Re-running the installer does all of this and refreshes the service definition
 too, which a pull cannot. It asks for your platform URL and worker key again,
