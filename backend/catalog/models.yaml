@@ -81,6 +81,14 @@
   source_ref: gemma4
   source_revision: null
   homepage_url: https://ollama.com/library/gemma4
+  profiles:
+    - runtime: ollama
+      runtime_model_id: gemma4:26b
+    - runtime: llamacpp
+      runtime_model_id: gemma4-26b
+      params:
+        n_ctx: 4096
+        parallel: 1
   enabled: true
 - id: gemma4-latest-q4km
   renamed_from: gemma4-latest-ollama
@@ -123,6 +131,14 @@
   source_ref: gpt-oss
   source_revision: null
   homepage_url: https://ollama.com/library/gpt-oss
+  profiles:
+    - runtime: ollama
+      runtime_model_id: gpt-oss:20b
+    - runtime: llamacpp
+      runtime_model_id: gpt-oss-20b
+      params:
+        n_ctx: 4096
+        parallel: 1
   enabled: true
 - id: nuextract-3-8b-q40
   renamed_from: nuextract-3-8b-ollama
@@ -228,6 +244,14 @@
   source_ref: glm-4.7-flash
   source_revision: null
   homepage_url: https://ollama.com/library/glm-4.7-flash
+  profiles:
+    - runtime: ollama
+      runtime_model_id: glm-4.7-flash:latest
+    - runtime: llamacpp
+      runtime_model_id: glm-4-7-flash
+      params:
+        n_ctx: 4096
+        parallel: 1
   enabled: true
 - id: qwen3-6-27b-q4km
   renamed_from: qwen3-6-27b-ollama
@@ -270,6 +294,14 @@
   source_ref: nomic-embed-text
   source_revision: null
   homepage_url: https://ollama.com/library/nomic-embed-text
+  profiles:
+    - runtime: ollama
+      runtime_model_id: nomic-embed-text:latest
+    - runtime: llamacpp
+      runtime_model_id: nomic-embed-text
+      params:
+        n_ctx: 2048
+        parallel: 1
   enabled: true
 # First llama.cpp entry, and the first to use `profiles:`. llama-server is
 # attached, not launched, so `runtime_model_id` is a contract on the flag the
@@ -306,6 +338,39 @@
   profiles:
     - runtime: llamacpp
       runtime_model_id: qwen36-27b-q4kxl
+      params:
+        n_ctx: 4096
+        parallel: 1
+  enabled: true
+
+# Small enough that CPU-only decode still answers while someone is watching,
+# which is what makes a worker without a GPU useful rather than nominal.
+- id: llama3-2-3b-q4km
+  display_name: Llama 3.2 3B (Q4_K_M)
+  runtime: ollama
+  runtime_model_id: llama3.2:3b
+  digest: dde5aa3fc5ffc17176b5e8bdc82f587b24b2678c6c66101bf7da77af9f7ccdff
+  quantization: Q4_K_M
+  parameter_size: 3.2B
+  context_length: 131072
+  # Weights plus a 4K KV cache and overhead, not measured. Revisit against
+  # peak RSS once a box has served it.
+  vram_gb: 3.5
+  size_gb: 2.02
+  task_type: chat
+  capabilities:
+    json_mode: true
+    vision: false
+    embeddings: false
+  source_type: ollama-library
+  source_ref: llama3.2
+  source_revision: null
+  homepage_url: https://ollama.com/library/llama3.2
+  profiles:
+    - runtime: ollama
+      runtime_model_id: llama3.2:3b
+    - runtime: llamacpp
+      runtime_model_id: llama3-2-3b
       params:
         n_ctx: 4096
         parallel: 1
