@@ -1550,3 +1550,146 @@ h2.batch-detail-id {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ─── Playground: mode switch + grid ─────────────────────────────────────── */
+
+.playground-mode {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+  margin-bottom: 1.25rem;
+}
+.playground-mode button {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.82rem;
+  padding: 0.45rem 0.95rem;
+  background: transparent;
+  color: var(--dim);
+  border: 0;
+  cursor: pointer;
+}
+.playground-mode button.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--fg);
+}
+.grid-top {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 1rem;
+}
+@media (max-width: 900px) { .grid-top { grid-template-columns: minmax(0, 1fr); } }
+.grid-arms {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+  gap: 0.75rem;
+  margin: 0.25rem 0 1rem;
+}
+.grid-arm {
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 0.75rem 0.85rem 0.25rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+.grid-arm .field { margin-bottom: 0.6rem; }
+.grid-arm .playground-params { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; }
+.grid-arm-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 6rem;
+  color: var(--dim);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.84rem;
+  cursor: pointer;
+  border-style: dashed;
+}
+.grid-arm-add:hover:not(:disabled) { color: var(--fg); background: var(--bg-panel-hover); }
+.grid-arm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.grid-arm-label {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--fg);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 0.2rem 0;
+}
+.grid-arm-label:focus { outline: none; border-bottom-color: var(--accent); }
+.grid-arm-tools { display: inline-flex; gap: 0.25rem; }
+.grid-arm-tools .btn { padding: 2px 8px; font-size: 0.72rem; }
+.grid-elapsed { align-self: center; font-size: 0.8rem; }
+
+.grid-result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+.grid-base-pick { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; }
+.grid-base-pick select {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.3rem 0.5rem;
+  color: var(--fg);
+  font-size: 0.8rem;
+}
+.grid-table-wrap { overflow: auto; max-height: 70vh; }
+.grid-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+.grid-table th, .grid-table td {
+  vertical-align: top;
+  text-align: left;
+  padding: 0.6rem 0.7rem;
+  border-bottom: 1px solid var(--border-soft);
+  border-right: 1px solid var(--border-soft);
+  min-width: 16rem;
+}
+.grid-table th {
+  position: sticky;
+  top: 0;
+  background: #0d0d13;
+  z-index: 1;
+  font-weight: 500;
+}
+.grid-table .grid-prompt-col {
+  min-width: 12rem;
+  max-width: 18rem;
+  position: sticky;
+  left: 0;
+  background: #0d0d13;
+  z-index: 2;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
+.grid-table th.grid-prompt-col { z-index: 3; }
+.grid-arm-title { font-family: 'Inter', sans-serif; font-size: 0.9rem; font-weight: 600; }
+.grid-arm-model, .grid-arm-worker { font-size: 0.7rem; margin: 0.15rem 0; }
+.grid-arm-export { margin-top: 0.35rem; }
+.grid-arm-export .btn { padding: 2px 8px; font-size: 0.7rem; }
+.grid-cell { font-size: 0.85rem; }
+.grid-cell.warn { color: var(--danger); }
+.grid-cell-answer {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+  max-height: 14rem;
+  overflow: auto;
+}
+.grid-cell-meta { font-size: 0.68rem; margin-top: 0.35rem; }
+mark.grid-diverge {
+  background: rgba(251, 191, 36, 0.22);
+  color: inherit;
+  border-radius: 2px;
+}

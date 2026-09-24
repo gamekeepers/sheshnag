@@ -137,3 +137,51 @@ def test_playground_line_for_unknown_model_fails_at_validation(auth_client, db_s
     assert "no-such-model" in (batch["error_details"] or "")
     assert batch["worker_id"] is None
     _reset(db_session)
+
+
+def test_grid_is_a_group_of_batches_found_by_metadata(auth_client, db_session):
+    """Two arms, one grid_id. Each arm is its own batch and the list is
+    filterable by the tag; a worker takes them one at a time."""
+    _reset(db_session)
+    key = _worker_key(auth_client)
+    worker_id = _register(auth_client, key)
+    _catalog(db_session)
+    worker_auth = {"Authorization": f"Bearer {key}"}
+    grid_id = "grid-test"
+
+    arms = []
+    for i in range(2):
+        line = _playground_line(custom_id=f"{grid_id}-a{i}-p0")
+        up = auth_client.post("/v1/files", files={"file": (f"{grid_id}-arm{i}.jsonl", io.BytesIO(line.encode()), "application/jsonl")})
+        cr = auth_client.post("/v1/batches", json={
+            "input_file_id": up.json()["id"], "endpoint": "/v1/chat/completions", "completion_window": "24h",
+            "metadata": {"grid_id": grid_id, "arm": str(i)},
+        })
+        assert cr.status_code == 200, cr.text
+        arms.append(cr.json())
+
+    for arm in arms:
+        assert _wait_status(auth_client, arm["id"], {"validated", "failed"})["status"] == "validated"
+
+    mine = [b for b in auth_client.get("/v1/batches").json()["data"] if (b["metadata"] or {}).get("grid_id") == grid_id]
+    assert sorted(b["metadata"]["arm"] for b in mine) == ["0", "1"]
+
+    # FIFO: the worker gets arm 0 first, then arm 1.
+    for expected in arms:
+        poll = auth_client.post("/workers/poll", json={"worker_id": worker_id}, headers=worker_auth)
+        assert poll.json()["job"]["job_id"] == expected["id"]
+        out = json.dumps({"custom_id": f"{grid_id}-a{expected['metadata']['arm']}-p0", "error": None,
+                          "response": {"model": "poll-model:latest",
+                                       "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+                                       "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}}) + "\n"
+        res = auth_client.post("/workers/upload-results",
+                               data={"job_id": expected["id"], "worker_id": worker_id, "completed": 1, "failed": 0},
+                               files={"file": ("out.jsonl", io.BytesIO(out.encode()), "application/jsonl")},
+                               headers=worker_auth)
+        assert res.status_code == 200, res.text
+
+    done = {b["id"]: b for b in auth_client.get("/v1/batches").json()["data"]}
+    for arm in arms:
+        assert done[arm["id"]]["status"] == "completed"
+        assert done[arm["id"]]["metadata"]["grid_id"] == grid_id
+    _reset(db_session)

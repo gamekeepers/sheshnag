@@ -64,6 +64,9 @@ MIGRATIONS = [
                "batch_assignments", "org_id", String()),
     _Migration("batch_assignments.worker_hostname",
                "batch_assignments", "worker_hostname", String()),
+    # Caller tags on a batch (playground grids group their arms by it).
+    _Migration("batches.metadata",
+               "batches", "metadata", JSON()),
     # Registry schema (#116): model-level capabilities and upstream lineage.
     # The serving_profiles / catalog_artifact_files tables need no entry —
     # new tables come from create_all().

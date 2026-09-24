@@ -601,6 +601,11 @@ class Batch(Base):
     request_counts_failed    = Column(Integer, default=0)
     error_details            = Column(String, nullable=True)
     attempts                 = Column(Integer, default=0)  # execution attempts (spec §12 requeue)
+    # Caller-supplied key/value tags (OpenAI `metadata`): how a client groups
+    # batches it submitted together, e.g. the playground's grid_id. Opaque to
+    # the scheduler. The attribute is not `metadata` because SQLAlchemy's
+    # declarative base reserves that name.
+    batch_metadata           = Column("metadata", JSON, nullable=True)
     prompt_tokens            = Column(Integer, nullable=True)
     completion_tokens        = Column(Integer, nullable=True)
     total_tokens             = Column(Integer, nullable=True)

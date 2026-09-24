@@ -176,3 +176,42 @@ def test_list_batches_carries_worker_id_per_row(auth_client, _engine, _test_user
     rows = {b["id"]: b for b in auth_client.get("/v1/batches").json()["data"]}
     assert rows[running.id]["worker_id"] == "wrk_test"
     assert rows[queued.id]["worker_id"] is None
+
+
+# ── metadata ────────────────────────────────────────────────────────────────
+# OpenAI's `metadata`: opaque string tags the caller uses to group batches.
+# The playground submits one batch per grid arm and finds them again by
+# grid_id, so the tags must round-trip through create, get and list.
+
+def test_metadata_round_trips(auth_client, seeded_file):
+    created = auth_client.post("/v1/batches", json={
+        "input_file_id": seeded_file.id,
+        "endpoint": "/v1/chat/completions",
+        "metadata": {"grid_id": "grid-1", "arm": "0"},
+    }).json()
+    assert created["metadata"] == {"grid_id": "grid-1", "arm": "0"}
+
+    fetched = auth_client.get(f"/v1/batches/{created['id']}").json()
+    assert fetched["metadata"] == {"grid_id": "grid-1", "arm": "0"}
+
+    listed = {b["id"]: b for b in auth_client.get("/v1/batches").json()["data"]}
+    assert listed[created["id"]]["metadata"] == {"grid_id": "grid-1", "arm": "0"}
+
+
+def test_metadata_absent_is_null(auth_client, seeded_file):
+    created = auth_client.post("/v1/batches", json={
+        "input_file_id": seeded_file.id, "endpoint": "/v1/chat/completions",
+    }).json()
+    assert created["metadata"] is None
+
+
+def test_metadata_is_bounded(auth_client, seeded_file):
+    too_many = {f"k{i}": "v" for i in range(17)}
+    resp = auth_client.post("/v1/batches", json={
+        "input_file_id": seeded_file.id, "endpoint": "/v1/chat/completions", "metadata": too_many,
+    })
+    assert resp.status_code == 422
+    resp = auth_client.post("/v1/batches", json={
+        "input_file_id": seeded_file.id, "endpoint": "/v1/chat/completions", "metadata": {"k": "x" * 513},
+    })
+    assert resp.status_code == 422

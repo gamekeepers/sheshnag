@@ -1,5 +1,5 @@
-from pydantic import AfterValidator, Field, BaseModel
-from typing import Annotated, Literal, Optional, List
+from pydantic import AfterValidator, Field, BaseModel, field_validator
+from typing import Annotated, Dict, Literal, Optional, List
 
 
 # bcrypt only hashes the first 72 bytes of a password. Storing the hash of a
@@ -92,6 +92,7 @@ class BatchOut(BaseModel):
     completed_at: Optional[int] = None
     request_counts: RequestCounts = RequestCounts()
     usage: Optional[UsageStats] = None
+    metadata: Optional[Dict[str, str]] = None
 
     @classmethod
     def from_batch(
@@ -121,6 +122,7 @@ class BatchOut(BaseModel):
             in_progress_at=in_progress_at,
             worker_id=worker_id,
             completed_at=batch.completed_at,
+            metadata=getattr(batch, "batch_metadata", None),
             request_counts=RequestCounts(
                 total=batch.request_counts_total or 0,
                 completed=batch.request_counts_completed or 0,
@@ -185,6 +187,20 @@ class BatchCreate(BaseModel):
     input_file_id: str
     endpoint: str
     completion_window: str = "24h"
+    # OpenAI's shape: up to 16 string→string pairs, values ≤ 512 chars.
+    metadata: Optional[Dict[str, str]] = None
+
+    @field_validator("metadata")
+    @classmethod
+    def _bounded_metadata(cls, v):
+        if v is None:
+            return v
+        if len(v) > 16:
+            raise ValueError("metadata may hold at most 16 keys")
+        for key, value in v.items():
+            if len(key) > 64 or len(value) > 512:
+                raise ValueError("metadata keys are ≤ 64 chars and values ≤ 512 chars")
+        return v
 
 
 class SignupRequest(BaseModel):

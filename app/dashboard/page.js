@@ -1042,6 +1042,11 @@ export default function DashboardPage() {
     () => new Set((poolCapacity?.models_servable || []).map(m => m.id)),
     [poolCapacity]
   );
+  // Servable and in memory right now — the playground's "loaded" tier.
+  const loadedIds = useMemo(
+    () => new Set((poolCapacity?.models_servable || []).filter(m => m.loaded).map(m => m.id)),
+    [poolCapacity]
+  );
 
   const modelRuntimes = useMemo(
     () => Array.from(new Set(modelCatalog.map(m => m.runtime).filter(Boolean))).sort(),
@@ -2185,13 +2190,14 @@ export default function DashboardPage() {
           {/* ============ PLAYGROUND PAGE ============ */}
           <div className={`page-panel ${activeTab === 'playground' ? 'active' : ''}`}>
             <h1 className="page-title">Playground</h1>
-            <p className="page-sub">One prompt, one model, one answer — run as a one-line batch, so what you see is what a full batch does.</p>
+            <p className="page-sub">One prompt, one model, one answer — run as a one-line batch, so what you see is what a full batch does. Or a grid: one prompt set across models and settings, side by side.</p>
             {activeTab === 'playground' && (
               <Playground
                 backend={BACKEND}
                 getHeaders={getHeaders}
                 catalog={modelCatalog}
                 servableIds={servableIds}
+                loadedIds={loadedIds}
                 modelsLoaded={modelsLoaded}
                 onBatchCreated={loadBatches}
               />

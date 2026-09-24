@@ -29,7 +29,7 @@ from models import (
     WorkerRuntime,
     unix_now,
 )
-from scheduler import can_serve
+from scheduler import can_serve, _target_ids
 from sweeper import HEARTBEAT_TIMEOUT_SECONDS
 
 router = APIRouter()
@@ -45,6 +45,19 @@ MIN_WORKERS_FOR_HARDWARE = 3
 
 _cache_lock = threading.Lock()
 _cache = {"expires_at": 0.0, "snapshot": None}
+
+
+def _is_loaded(entry, workers) -> bool:
+    """True when an online worker reports the entry's artifact resident in memory."""
+    targets = set(_target_ids(entry))
+    for worker in workers:
+        for runtime in worker.runtimes:
+            for rm in runtime.models:
+                if not rm.loaded:
+                    continue
+                if rm.catalog_id == entry.id or rm.name in targets or rm.runtime_model_id in targets:
+                    return True
+    return False
 
 
 def _compute_snapshot(db: Session) -> dict:
@@ -90,12 +103,16 @@ def _compute_snapshot(db: Session) -> dict:
 
     # A model is servable when at least one online worker could be given
     # a batch for it — the scheduler's own predicate, not a lookalike.
+    # `loaded` says whether some online worker also has it in memory now:
+    # servable-but-not-loaded costs a load on first use (Ollama), or is a
+    # runtime that serves one model per process and has this one on disk.
     servable = [
         {
             "id": e.id,
             "display_name": e.display_name,
             "parameter_size": e.parameter_size,
             "org_id": e.org_id,
+            "loaded": _is_loaded(e, workers),
         }
         for e in entries
         if any(can_serve(e, w) for w in workers)
@@ -169,6 +186,7 @@ def pool_capacity(
             "id": m["id"],
             "display_name": m["display_name"],
             "parameter_size": m["parameter_size"],
+            "loaded": m.get("loaded", False),
         }
         for m in snapshot["servable"]
         if m["org_id"] is None or is_super or m["org_id"] in member_org_ids

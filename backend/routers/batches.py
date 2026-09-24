@@ -75,6 +75,7 @@ async def create_batch(
         completion_window=req.completion_window,
         status="validating",
         request_counts_total=0,  # set by background validator
+        batch_metadata=req.metadata,
     )
     db.add(batch)
     db.commit()

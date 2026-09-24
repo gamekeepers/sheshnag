@@ -405,6 +405,14 @@ sweeper finding a worker that has stopped heartbeating
 (`HEARTBEAT_TIMEOUT_SECONDS = 120`, checked every `SWEEP_INTERVAL_SECONDS = 60`),
 which marks the worker `offline` and releases whatever it was holding.
 
+### Metadata
+
+`POST /v1/batches` accepts OpenAI's `metadata`: up to 16 string→string pairs
+(keys ≤ 64 chars, values ≤ 512). It is stored as given and returned on
+`GET /v1/batches/{id}` and the list. The scheduler ignores it; it exists so a
+client can find batches it submitted together — the dashboard's grid mode tags
+each arm with `grid_id`.
+
 ### Validation errors
 
 Validation is asynchronous: `POST /v1/batches` returns immediately with

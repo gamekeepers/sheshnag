@@ -35,6 +35,16 @@ validate, queue, run — and the result shows the answer, the tokens used, the
 worker that served it, and the exact JSONL line that produced it. Copy that
 line, add one per prompt, and you have your first batch file.
 
+Switch the tab to **Grid** to run one prompt set across up to five arms — a
+different model, temperature, seed or system prompt per arm — and read the
+answers side by side, with the first word that differs from a base column
+highlighted. A grid is a group of batches, one per arm, tagged with a shared
+`metadata.grid_id`; each shows up on the Batches tab like any other.
+
+The model picker labels each entry **loaded** (in memory on an online worker),
+**on disk, loads on first use** (the first prompt pays one model load), or
+**unavailable** (no online worker has it). Only the last cannot be picked.
+
 ## Point your code at it
 
 The base URL is your deployment's host plus `/v1`:

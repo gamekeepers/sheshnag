@@ -61,7 +61,7 @@ def _catalog_entry(db, entry_id="pool-test-model", vram_gb=8.0, org_id=None):
 
 def _worker(db, org_id, hostname, *, vram=24.0, activity="idle",
             models=("pool-test-model:latest",), heartbeat_age=0, status="online",
-            gpus=1):
+            gpus=1, loaded=()):
     worker = Worker(
         org_id=org_id,
         hostname=hostname,
@@ -79,7 +79,7 @@ def _worker(db, org_id, hostname, *, vram=24.0, activity="idle",
     db.add(runtime)
     db.flush()
     for name in models:
-        db.add(RuntimeModel(runtime_id=runtime.id, name=name, loaded=False))
+        db.add(RuntimeModel(runtime_id=runtime.id, name=name, loaded=name in loaded))
     db.commit()
     return worker
 
@@ -197,3 +197,17 @@ def test_garbage_token_degrades_to_anonymous(anon_client, auth_client, db_sessio
     assert resp.json()["workers_online"] == 3
     assert resp.json()["vram_total_gb"] is None
     assert resp.json()["gpus_online"] is None
+
+
+def test_servable_carries_whether_the_model_is_loaded(auth_client, db_session):
+    """Servable means on disk on an online worker; loaded means in memory now.
+    The playground's picker tiers models by the difference."""
+    org = _org_id(auth_client, "Pool Org L")
+    _catalog_entry(db_session, "pool-warm", vram_gb=8.0)
+    _catalog_entry(db_session, "pool-cold", vram_gb=8.0)
+    _worker(db_session, org, "tiered-box", vram=24.0,
+            models=("pool-warm:latest", "pool-cold:latest"), loaded=("pool-warm:latest",))
+
+    by_id = {m["id"]: m for m in auth_client.get("/v1/pool/capacity").json()["models_servable"]}
+    assert by_id["pool-warm"]["loaded"] is True
+    assert by_id["pool-cold"]["loaded"] is False

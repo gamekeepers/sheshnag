@@ -2,6 +2,26 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { CopyableCode } from '../components/Teaching';
+import PlaygroundGrid from './PlaygroundGrid';
+import {
+  POLL_MS, TERMINAL, num, JSON_OBJECT_NUDGE, needsJsonNudge, buildRow, SCHEMA_SAMPLE,
+  buildResponseFormat, prettyJson, downloadText, parseOutputRows, extractAnswer, formatElapsed,
+  sortByTier, modelOptionLabel, tierOf,
+} from './playgroundLib';
+
+const HISTORY_LIMIT = 8;
+
+// The lifecycle as the user sees it. `uploading` and `submitting` are local
+// phases before a batch id exists; the rest are the batch's own status values.
+const STEPS = [
+  { key: 'uploading', label: 'Upload', note: 'Sending the one-line file.' },
+  { key: 'validating', label: 'Validate', note: 'Checking the line, same as any batch.' },
+  { key: 'validated', label: 'Queue', note: 'Waiting for a worker that serves this model to poll.' },
+  { key: 'in_progress', label: 'Run', note: 'A worker is generating the answer.' },
+  { key: 'completed', label: 'Done', note: '' },
+];
+const STEP_INDEX = Object.fromEntries(STEPS.map((s, i) => [s.key, i]));
+STEP_INDEX.submitting = STEP_INDEX.uploading;
 
 /**
  * One prompt, one model, one answer — and the JSONL line that produced it.
@@ -18,145 +38,11 @@ import { CopyableCode } from '../components/Teaching';
  * validation anyway. Polling `GET /v1/batches/{id}` covers the whole lifecycle.
  */
 
-const POLL_MS = 2500;
-const TERMINAL = new Set(['completed', 'failed']);
-const HISTORY_LIMIT = 8;
-
-// The lifecycle as the user sees it. `uploading` and `submitting` are local
-// phases before a batch id exists; the rest are the batch's own status values.
-const STEPS = [
-  { key: 'uploading', label: 'Upload', note: 'Sending the one-line file.' },
-  { key: 'validating', label: 'Validate', note: 'Checking the line, same as any batch.' },
-  { key: 'validated', label: 'Queue', note: 'Waiting for a worker that serves this model to poll.' },
-  { key: 'in_progress', label: 'Run', note: 'A worker is generating the answer.' },
-  { key: 'completed', label: 'Done', note: '' },
-];
-const STEP_INDEX = Object.fromEntries(STEPS.map((s, i) => [s.key, i]));
-STEP_INDEX.submitting = STEP_INDEX.uploading;
-
-// Blank means "runtime default": the field is left out of the body rather
-// than sent as 0 or null, so the exported line stays a faithful record of what
-// was asked for.
-function num(v) {
-  if (v === '' || v == null) return null;
-  const n = Number(v);
-  return Number.isNaN(n) ? null : n;
-}
-
-// json_object mode constrains the *shape* only. Without a sentence saying
-// what the JSON should contain, a model fills the object with whatever JSON it
-// has seen most — an API error envelope is a common pick. Add the sentence
-// when neither prompt has one, and keep it in the exported line.
-const JSON_OBJECT_NUDGE = 'Respond with a single JSON object that answers the request.';
-
-function needsJsonNudge(responseFormat, system, prompt) {
-  return responseFormat?.type === 'json_object' && !/json/i.test(`${system}\n${prompt}`);
-}
-
-function buildRow({ customId, model, system, prompt, params, responseFormat }) {
-  const messages = [];
-  let sys = system.trim();
-  if (needsJsonNudge(responseFormat, system, prompt)) sys = sys ? `${sys}\n${JSON_OBJECT_NUDGE}` : JSON_OBJECT_NUDGE;
-  if (sys) messages.push({ role: 'system', content: sys });
-  messages.push({ role: 'user', content: prompt });
-  const body = { model, messages, temperature: num(params.temperature) ?? 0.7 };
-  if (num(params.maxTokens) > 0) body.max_tokens = num(params.maxTokens);
-  if (num(params.topP) != null) body.top_p = num(params.topP);
-  if (num(params.topK) != null) body.top_k = num(params.topK);
-  if (num(params.seed) != null) body.seed = num(params.seed);
-  // One spelling for both runtimes: vLLM takes chat_template_kwargs natively,
-  // the Ollama executor translates it to `think`. Left out on "default".
-  if (params.thinking === 'on' || params.thinking === 'off') {
-    body.chat_template_kwargs = { enable_thinking: params.thinking === 'on' };
-  }
-  if (responseFormat) body.response_format = responseFormat;
-  return { custom_id: customId, method: 'POST', url: '/v1/chat/completions', body };
-}
-
-const SCHEMA_SAMPLE = JSON.stringify({
-  type: 'object',
-  properties: {
-    title: { type: 'string' },
-    year: { type: 'integer' },
-    genres: { type: 'array', items: { type: 'string' } },
-  },
-  required: ['title', 'year'],
-}, null, 2);
-
-// OpenAI's response_format, as both executors read it: `json_object` for
-// "any JSON", `json_schema` with the schema under json_schema.schema.
-function buildResponseFormat(mode, schemaText) {
-  if (mode === 'json_object') return { format: { type: 'json_object' }, error: null };
-  if (mode === 'json_schema') {
-    try {
-      const schema = JSON.parse(schemaText);
-      if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
-        return { format: null, error: 'Schema must be a JSON object.' };
-      }
-      return { format: { type: 'json_schema', json_schema: { name: 'playground', schema } }, error: null };
-    } catch (e) {
-      return { format: null, error: `Schema is not valid JSON: ${e.message}` };
-    }
-  }
-  return { format: null, error: null };
-}
-
-// Structured output is only useful if it parses; show it formatted when it
-// does and raw when it does not, so a model that ignored the format is visible.
-function prettyJson(text) {
-  try {
-    return { text: JSON.stringify(JSON.parse(text), null, 2), ok: true };
-  } catch {
-    return { text, ok: false };
-  }
-}
-
-function downloadText(filename, text, type = 'application/jsonl') {
-  const blob = new Blob([text], { type });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-// Output rows are `{custom_id, response, error}` with the runtime's
-// OpenAI-style completion directly under `response`. Reasoning models may put
-// their text under `reasoning_content` and leave `content` empty; show both
-// rather than an empty box.
-function extractAnswer(row) {
-  if (!row) return { text: '', reasoning: '', usage: null, servedModel: null, error: 'No output row found.' };
-  if (row.error) return { text: '', reasoning: '', usage: null, servedModel: null, error: String(row.error) };
-  const resp = row.response || {};
-  const message = resp.choices?.[0]?.message || {};
-  return {
-    text: typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? ''),
-    reasoning: message.reasoning_content || message.reasoning || '',
-    usage: resp.usage || null,
-    servedModel: resp.model || null,
-    error: null,
-  };
-}
-
-function formatElapsed(ms) {
-  if (ms == null) return '—';
-  return ms < 10_000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms / 1000)} s`;
-}
-
-export default function Playground({ backend, getHeaders, catalog, servableIds, modelsLoaded, onBatchCreated }) {
+export default function Playground({ backend, getHeaders, catalog, servableIds, loadedIds, modelsLoaded, onBatchCreated }) {
+  const [mode, setMode] = useState('single');   // single | grid
   const chatModels = useMemo(
-    () => catalog
-      .filter(m => m.task_type !== 'embedding')
-      .slice()
-      .sort((a, b) => {
-        const sa = servableIds.has(a.id) ? 0 : 1;
-        const sb = servableIds.has(b.id) ? 0 : 1;
-        return sa - sb || String(a.display_name || a.id).localeCompare(String(b.display_name || b.id));
-      }),
-    [catalog, servableIds]
+    () => sortByTier(catalog.filter(m => m.task_type !== 'embedding'), servableIds, loadedIds),
+    [catalog, servableIds, loadedIds]
   );
 
   // Empty until the user picks; the effective model below falls back to the
@@ -290,8 +176,8 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
       const out = await fetch(`${backend}/v1/files/${b.output_file_id}/content`, { headers: authOnlyHeaders() });
       if (!out.ok) throw new Error(`Could not read the output file (${out.status}).`);
       const text = await out.text();
-      const rows = text.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } });
-      const mine = rows.find(x => x && x.custom_id === customId) || rows.find(Boolean);
+      const rows = parseOutputRows(text);
+      const mine = rows.find(x => x.custom_id === customId) || rows[0];
       const answer = extractAnswer(mine);
       if (answer.error) throw new Error(answer.error);
 
@@ -321,8 +207,32 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
 
   const stepIndex = STEP_INDEX[phase === 'error' ? errorAt : phase] ?? -1;
 
+  const modeSwitch = (
+    <div className="playground-mode" role="tablist">
+      <button role="tab" aria-selected={mode === 'single'} className={mode === 'single' ? 'active' : ''} onClick={() => setMode('single')}>Single prompt</button>
+      <button role="tab" aria-selected={mode === 'grid'} className={mode === 'grid' ? 'active' : ''} onClick={() => setMode('grid')}>Grid</button>
+    </div>
+  );
+
+  if (mode === 'grid') {
+    return (
+      <div className="playground">
+        {modeSwitch}
+        <PlaygroundGrid
+          backend={backend}
+          getHeaders={getHeaders}
+          chatModels={chatModels}
+          servableIds={servableIds}
+          loadedIds={loadedIds}
+          onBatchCreated={onBatchCreated}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="playground">
+      {modeSwitch}
       <div className="playground-grid">
         {/* ── Left: the request ─────────────────────────────────────── */}
         <div className="panel">
@@ -338,13 +248,16 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
               )}
               {chatModels.map(m => (
                 <option key={m.id} value={m.id} disabled={!servableIds.has(m.id)}>
-                  {(m.display_name || m.id)}{m.runtime ? ` · ${m.runtime}` : ''}{servableIds.has(m.id) ? '' : ' · not resident'}
+                  {modelOptionLabel(m, servableIds, loadedIds)}
                 </option>
               ))}
             </select>
+            {selected && tierOf(selected.id, servableIds, loadedIds) === 'disk' && (
+              <div className="playground-hint">On disk, not loaded: the first run pays one model load, then it stays warm for a few minutes.</div>
+            )}
             {residentModels.length === 0 && modelsLoaded && chatModels.length > 0 && (
               <div className="playground-hint warn">
-                Nothing can run right now: no online worker has a catalogue model loaded. Greyed entries become selectable when a worker that serves them comes online.
+                Nothing can run right now: no online worker has a catalogue model. Greyed entries become selectable when a worker that serves them comes online.
               </div>
             )}
             {selected && !servable && (
