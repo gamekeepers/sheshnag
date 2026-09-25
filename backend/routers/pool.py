@@ -29,7 +29,7 @@ from models import (
     WorkerRuntime,
     unix_now,
 )
-from scheduler import can_serve, _hosts, _target_ids
+from scheduler import can_serve, serving_runtimes, _hosts, _target_ids
 from sweeper import HEARTBEAT_TIMEOUT_SECONDS
 
 router = APIRouter()
@@ -122,6 +122,9 @@ def _compute_snapshot(db: Session) -> dict:
             "org_id": e.org_id,
             "loaded": _is_loaded(e, workers),
             "capabilities": _capabilities(e, workers),
+            # Which engines could take it, not which engine the catalogue
+            # row names: one entry may be served by several.
+            "runtimes": serving_runtimes(e, workers),
         }
         for e in entries
         if any(can_serve(e, w) for w in workers)
@@ -197,6 +200,7 @@ def pool_capacity(
             "parameter_size": m["parameter_size"],
             "loaded": m.get("loaded", False),
             "capabilities": m.get("capabilities", {}),
+            "runtimes": m.get("runtimes", []),
         }
         for m in snapshot["servable"]
         if m["org_id"] is None or is_super or m["org_id"] in member_org_ids

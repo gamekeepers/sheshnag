@@ -42,7 +42,7 @@ function cellId(gridId, armIndex, promptIndex) {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-export default function PlaygroundGrid({ backend, getHeaders, chatModels, servableIds, loadedIds, logprobsIds, onBatchCreated }) {
+export default function PlaygroundGrid({ backend, getHeaders, chatModels, servableIds, loadedIds, logprobsIds, servableRuntimes, onBatchCreated }) {
   const [promptsText, setPromptsText] = useState('');
   const [sharedSystem, setSharedSystem] = useState('');
   const [logprobsK, setLogprobsK] = useState('0');   // shared by every arm; 0 = off
@@ -79,8 +79,9 @@ export default function PlaygroundGrid({ backend, getHeaders, chatModels, servab
   // The sweep reads the first arm: it is the model the user chose, and the
   // one whose settings every arm inherits.
   const sweep = useMemo(
-    () => quantSweep(chatModels || [], effectiveArms[0]?.model, servableIds, MAX_ARMS),
-    [chatModels, effectiveArms, servableIds]
+    () => quantSweep(chatModels || [], effectiveArms[0]?.model,
+      { servableRuntimes, max: MAX_ARMS }),
+    [chatModels, effectiveArms, servableRuntimes]
   );
 
   // One arm per quantization, every other setting taken from the first arm,

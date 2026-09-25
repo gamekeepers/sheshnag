@@ -318,6 +318,26 @@ def runtime_has(runtime, needs) -> bool:
     return all(caps.get(key) is True for key in needs)
 
 
+def serving_runtimes(entry, workers, needs=None) -> list:
+    """Engine names that could be given a batch for `entry` right now.
+
+    `can_serve` answers whether some worker can, and callers that have to
+    say *how* — a quant sweep holding the engine still, so the comparison is
+    about the weights — need the name. Derived from the same predicate, so
+    the two can never disagree, and from `serving_targets()` rather than the
+    deprecated `runtime` column, which names one engine for an entry several
+    may serve.
+    """
+    out = set()
+    for worker in workers or []:
+        if not can_serve(entry, worker, needs):
+            continue
+        runtime = _hosting_runtime(worker, _target_ids(entry), entry.digest)
+        if runtime is not None and runtime.engine:
+            out.add(runtime.engine)
+    return sorted(out)
+
+
 def can_serve(entry, worker, needs=None) -> bool:
     """Could this worker be given a batch for `entry` that needs `needs`?
 

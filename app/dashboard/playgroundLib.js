@@ -238,32 +238,53 @@ export function quantRank(q) {
 /**
  * The quantizations of one model, as grid arms.
  *
- * Membership is `lineage` — the same weights — narrowed to the selected
- * model's runtime. Q4 on one engine against Q8 on another measures both at
- * once and the table gives no hint that it happened, so the engine is held
- * still and comparing engines stays a separate study.
+ * Membership is `lineage` — the same weights — narrowed to one engine. Q4 on
+ * one engine against Q8 on another measures both at once and the table gives
+ * no hint that it happened, so the engine is held still and comparing engines
+ * stays a separate study.
+ *
+ * The engine comes from `servableRuntimes`, which the pool derives from the
+ * scheduler's own eligibility predicate. The catalogue's `runtime` column is
+ * deprecated and names one engine for an entry that several serving profiles
+ * may cover, so a sweep partitioned on it would hide arms the pool would
+ * happily run. The pinned engine is the one the most of these weights can be
+ * served on now, preferring one the selected model shares.
  *
  * `unservable` and `overflow` are returned rather than dropped: a sweep
  * missing its cheapest arm reads as a result about quality, and the reader
  * has to be told it is a result about what was loaded.
  */
-export function quantSweep(models, modelId, servableIds, max = 5) {
+export function quantSweep(models, modelId, { servableRuntimes, max = 5 } = {}) {
   const empty = { runtime: null, lineage: null, arms: [], unservable: [], overflow: [] };
   const base = (models || []).find(m => m.id === modelId);
   if (!base || !base.lineage) return empty;
 
-  const family = models
-    .filter(m => m.lineage === base.lineage && m.runtime === base.runtime)
+  const family = (models || [])
+    .filter(m => m.lineage === base.lineage)
     .sort((a, b) => quantRank(a.quantization) - quantRank(b.quantization)
       || String(a.id).localeCompare(String(b.id)));
 
-  const servable = family.filter(m => servableIds?.has(m.id));
+  const runtimesOf = (id) => servableRuntimes?.get(id) || new Set();
+
+  const counts = new Map();
+  family.forEach(m => runtimesOf(m.id).forEach(
+    r => counts.set(r, (counts.get(r) || 0) + 1)
+  ));
+  const shared = runtimesOf(base.id);
+  const pinned = [...counts.keys()].sort((a, b) => (
+    (shared.has(b) ? 1 : 0) - (shared.has(a) ? 1 : 0)
+    || counts.get(b) - counts.get(a)
+    || a.localeCompare(b)
+  ))[0] || null;
+
+  const servable = pinned ? family.filter(m => runtimesOf(m.id).has(pinned)) : [];
+  const chosen = new Set(servable.slice(0, max).map(m => m.id));
   return {
-    runtime: base.runtime || null,
+    runtime: pinned,
     lineage: base.lineage,
     arms: servable.slice(0, max),
-    unservable: family.filter(m => !servableIds?.has(m.id)),
-    overflow: servable.slice(max),
+    unservable: family.filter(m => !runtimesOf(m.id).has(pinned)),
+    overflow: servable.filter(m => !chosen.has(m.id)),
   };
 }
 

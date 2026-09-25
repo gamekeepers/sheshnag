@@ -61,7 +61,7 @@ def _catalog_entry(db, entry_id="pool-test-model", vram_gb=8.0, org_id=None):
 
 def _worker(db, org_id, hostname, *, vram=24.0, activity="idle",
             models=("pool-test-model:latest",), heartbeat_age=0, status="online",
-            gpus=1, loaded=(), capabilities=None):
+            gpus=1, loaded=(), capabilities=None, engine="ollama"):
     worker = Worker(
         org_id=org_id,
         hostname=hostname,
@@ -75,7 +75,7 @@ def _worker(db, org_id, hostname, *, vram=24.0, activity="idle",
     for i in range(gpus):
         db.add(WorkerGpu(worker_id=worker.id, gpu_index=i, vendor="nvidia",
                          name="RTX 4090", vram_gb=vram / max(gpus, 1)))
-    runtime = WorkerRuntime(worker_id=worker.id, engine="ollama", base_url="localhost")
+    runtime = WorkerRuntime(worker_id=worker.id, engine=engine, base_url="localhost")
     db.add(runtime)
     db.flush()
     runtime.capabilities = capabilities
@@ -226,3 +226,36 @@ def test_servable_carries_runtime_capabilities(auth_client, db_session):
     by_id = {m["id"]: m for m in auth_client.get("/v1/pool/capacity").json()["models_servable"]}
     assert by_id["pool-caps"]["capabilities"] == {"logprobs": True, "completions": True, "prompt_scoring": False}
     assert by_id["pool-nocaps"]["capabilities"] == {"logprobs": False, "completions": False, "prompt_scoring": False}
+
+
+def test_servable_models_name_the_engines_that_could_run_them(auth_client, db_session):
+    """`runtimes` reports what is hosting the artifact, not what the entry's
+    deprecated `runtime` column says.
+
+    A worker matches on the runtime_model_id, so a llama.cpp box serves an
+    entry whose legacy column reads "ollama". A caller holding the engine
+    still — a quantization sweep, which is only about the weights if the
+    engine does not move — needs the hosting engine, and would otherwise
+    partition on a name that no longer decides anything.
+    """
+    org = _org_id(auth_client, "Pool Org Runtimes")
+    entry = _catalog_entry(db_session)
+    assert entry.runtime == "ollama"
+    _worker(db_session, org, "cpu-box-01", engine="llamacpp")
+
+    body = auth_client.get("/v1/pool/capacity").json()
+    row = next(m for m in body["models_servable"] if m["id"] == "pool-test-model")
+    assert row["runtimes"] == ["llamacpp"]
+
+
+def test_servable_runtimes_merge_across_workers(auth_client, db_session):
+    """Two boxes, two engines, one artifact: both are offered, so a sweep can
+    pin whichever serves more of the group."""
+    org = _org_id(auth_client, "Pool Org Runtimes 2")
+    _catalog_entry(db_session)
+    _worker(db_session, org, "gpu-box-11", engine="ollama")
+    _worker(db_session, org, "cpu-box-11", engine="llamacpp")
+
+    body = auth_client.get("/v1/pool/capacity").json()
+    row = next(m for m in body["models_servable"] if m["id"] == "pool-test-model")
+    assert row["runtimes"] == ["llamacpp", "ollama"]
