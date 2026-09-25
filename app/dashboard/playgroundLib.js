@@ -209,6 +209,64 @@ export function modelOptionLabel(m, servableIds, loadedIds) {
   return `${m.display_name || m.id}${m.runtime ? ` · ${m.runtime}` : ''} · ${TIER_LABEL[tier]}`;
 }
 
+// Effective bits per weight, which is the axis a quant sweep asks about and
+// the order the result table has to read in. The names are not sortable as
+// strings — Q2_K, Q4_K_M and Q8_0 happen to sort right, IQ4_XS and F16 do
+// not — so the ladder is stated.
+export const QUANT_BITS = {
+  q2_k: 2.6,
+  q3_k_s: 3.4, q3_k_m: 3.9, q3_k_l: 4.3,
+  iq4_xs: 4.3, mxfp4: 4.3,
+  q4_0: 4.5, q4_k_s: 4.6, q4_k_m: 4.8, q4_k_xl: 5.0,
+  q5_0: 5.5, q5_k_s: 5.5, q5_k_m: 5.7,
+  q6_k: 6.6,
+  q8_0: 8.5, fp8: 8,
+  f16: 16, fp16: 16, bf16: 16,
+  f32: 32, fp32: 32,
+};
+
+export function quantRank(q) {
+  if (!q) return Infinity;
+  const key = String(q).toLowerCase();
+  if (key in QUANT_BITS) return QUANT_BITS[key];
+  // An unlisted name still sorts by the width in it — a new Q4_K_XXL lands
+  // among the 4-bit entries rather than at the end.
+  const digits = key.match(/(\d+)/);
+  return digits ? Number(digits[1]) : Infinity;
+}
+
+/**
+ * The quantizations of one model, as grid arms.
+ *
+ * Membership is `lineage` — the same weights — narrowed to the selected
+ * model's runtime. Q4 on one engine against Q8 on another measures both at
+ * once and the table gives no hint that it happened, so the engine is held
+ * still and comparing engines stays a separate study.
+ *
+ * `unservable` and `overflow` are returned rather than dropped: a sweep
+ * missing its cheapest arm reads as a result about quality, and the reader
+ * has to be told it is a result about what was loaded.
+ */
+export function quantSweep(models, modelId, servableIds, max = 5) {
+  const empty = { runtime: null, lineage: null, arms: [], unservable: [], overflow: [] };
+  const base = (models || []).find(m => m.id === modelId);
+  if (!base || !base.lineage) return empty;
+
+  const family = models
+    .filter(m => m.lineage === base.lineage && m.runtime === base.runtime)
+    .sort((a, b) => quantRank(a.quantization) - quantRank(b.quantization)
+      || String(a.id).localeCompare(String(b.id)));
+
+  const servable = family.filter(m => servableIds?.has(m.id));
+  return {
+    runtime: base.runtime || null,
+    lineage: base.lineage,
+    arms: servable.slice(0, max),
+    unservable: family.filter(m => !servableIds?.has(m.id)),
+    overflow: servable.slice(max),
+  };
+}
+
 // Word-level: the character offset where `text` first differs from `base`,
 // or -1 when they match. Tokeniser-level divergence is the logprobs view's
 // job; whitespace tokens are enough to point a reader at the right place.
