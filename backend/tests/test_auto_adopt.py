@@ -250,3 +250,52 @@ def test_hf_confirmation_pins_the_matched_file(auth_client, db):
     files = db.query(CatalogArtifactFile).filter_by(catalog_id=entry.id).all()
     assert [(f.file, f.role, f.sha256, f.size_bytes) for f in files] == [
         ("Model-IQ3_M.gguf", "weights", "a7" * 32, SIZE)]
+
+
+def test_quants_of_one_hf_repo_share_a_lineage(auth_client, db):
+    """Two quantizations pulled from one GGUF repo are the same weights, so
+    they group — this is what a quant sweep expands."""
+    key = _worker_key(auth_client, "Auto Org 7")
+    q2 = "hf.co/zzauto/Sweep-GGUF:Q2_K"
+    q8 = "hf.co/zzauto/Sweep-GGUF:Q8_0"
+    _register(auth_client, key, "zzauto-box7", [
+        _item(q2, "c1" * 32, {**DETAILS, "quantization": "Q2_K"}),
+        _item(q8, "c2" * 32, {**DETAILS, "quantization": "Q8_0"}),
+    ])
+
+    def _hf(digest):
+        return Confirmed(
+            source_type="huggingface", source_ref="zzauto/Sweep-GGUF",
+            source_revision="0a1b2c3d", digest=digest,
+            homepage_url="https://huggingface.co/zzauto/Sweep-GGUF",
+        )
+
+    resolver = StubResolver({(q2, "c1" * 32): _hf("c1" * 32),
+                             (q8, "c2" * 32): _hf("c2" * 32)})
+    assert auto_adopt_pass(db, resolver, enabled=True) == 2
+
+    entries = {e.quantization: e for e in
+               db.query(ModelCatalog).filter(ModelCatalog.digest.in_(["c1" * 32, "c2" * 32]))}
+    assert entries["Q2_K"].lineage == "zzauto/Sweep-GGUF"
+    assert entries["Q8_0"].lineage == entries["Q2_K"].lineage
+    assert entries["Q2_K"].id != entries["Q8_0"].id
+
+
+def test_library_sizes_do_not_share_a_lineage(auth_client, db):
+    """`library/zzsize` covers every parameter count it publishes, so the
+    count is part of the group — grouping 12B with 27B would offer a sweep
+    across models that are not the same weights."""
+    key = _worker_key(auth_client, "Auto Org 8")
+    small, large = "zzsize:12b", "zzsize:27b"
+    _register(auth_client, key, "zzauto-box8", [
+        _item(small, "d1" * 32, {**DETAILS, "parameter_size": "12.2B"}),
+        _item(large, "d2" * 32, {**DETAILS, "parameter_size": "27.4B"}),
+    ])
+    resolver = StubResolver({(small, "d1" * 32): _confirmed(small, "d1" * 32),
+                             (large, "d2" * 32): _confirmed(large, "d2" * 32)})
+    assert auto_adopt_pass(db, resolver, enabled=True) == 2
+
+    got = {e.digest: e.lineage for e in
+           db.query(ModelCatalog).filter(ModelCatalog.digest.in_(["d1" * 32, "d2" * 32]))}
+    assert got["d1" * 32] == "library/zzsize:12.2B"
+    assert got["d2" * 32] == "library/zzsize:27.4B"

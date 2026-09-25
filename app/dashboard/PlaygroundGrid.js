@@ -5,6 +5,7 @@ import LogprobStrip from './LogprobStrip';
 import {
   POLL_MS, TERMINAL, buildRow, downloadText, extractAnswer, formatElapsed,
   parseOutputRows, sortByTier, modelOptionLabel, tierOf, firstDivergence, analyzeLogprobs,
+  quantSweep,
 } from './playgroundLib';
 
 /**
@@ -41,7 +42,7 @@ function cellId(gridId, armIndex, promptIndex) {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-export default function PlaygroundGrid({ backend, getHeaders, chatModels, servableIds, loadedIds, logprobsIds, onBatchCreated }) {
+export default function PlaygroundGrid({ backend, getHeaders, chatModels, servableIds, loadedIds, logprobsIds, servableRuntimes, onBatchCreated }) {
   const [promptsText, setPromptsText] = useState('');
   const [sharedSystem, setSharedSystem] = useState('');
   const [logprobsK, setLogprobsK] = useState('0');   // shared by every arm; 0 = off
@@ -70,6 +71,33 @@ export default function PlaygroundGrid({ backend, getHeaders, chatModels, servab
     () => arms.map(a => ({ ...a, model: a.model || resident[0]?.id || '' })),
     [arms, resident]
   );
+  const modelById = useMemo(
+    () => new Map((chatModels || []).map(m => [m.id, m])),
+    [chatModels]
+  );
+
+  // The sweep reads the first arm: it is the model the user chose, and the
+  // one whose settings every arm inherits.
+  const sweep = useMemo(
+    () => quantSweep(chatModels || [], effectiveArms[0]?.model,
+      { servableRuntimes, max: MAX_ARMS }),
+    [chatModels, effectiveArms, servableRuntimes]
+  );
+
+  // One arm per quantization, every other setting taken from the first arm,
+  // so the table answers what quantization costs rather than what two
+  // differently-configured runs do.
+  const applySweep = () => {
+    const src = effectiveArms[0];
+    setArms(sweep.arms.map(m => newArm({
+      system: src.system,
+      temperature: src.temperature, maxTokens: src.maxTokens,
+      topP: src.topP, topK: src.topK, seed: src.seed, thinking: src.thinking,
+      model: m.id,
+      label: m.quantization || m.id,
+    })));
+  };
+
   const wantLogprobs = Number(logprobsK) > 0;
   const armProblems = effectiveArms.map(a => {
     if (!a.model) return 'no model';
@@ -216,6 +244,8 @@ export default function PlaygroundGrid({ backend, getHeaders, chatModels, servab
         const { settings, system } = settingsOf(a);
         return {
           label: a.label,
+          quantization: modelById.get(a.model)?.quantization || null,
+          lineage: modelById.get(a.model)?.lineage || null,
           batch_id: a.batch?.id || null,
           status: a.batch?.status || null,
           worker_id: a.batch?.worker_id || null,
@@ -338,6 +368,21 @@ export default function PlaygroundGrid({ backend, getHeaders, chatModels, servab
             <button className="grid-arm grid-arm-add" onClick={addArm} disabled={busy}>+ Add arm</button>
           )}
         </div>
+
+        {sweep.lineage && (
+          <div className="playground-hint">
+            <button className="btn" onClick={applySweep} disabled={busy || sweep.arms.length < 2}>
+              Sweep quants · {sweep.arms.length}
+            </button>{' '}
+            {sweep.arms.length > 1
+              ? `${sweep.arms.length} quantizations of these weights are servable on ${sweep.runtime}.`
+              : 'Only one quantization of these weights is servable right now.'}
+            {sweep.unservable.length > 0
+              && ` Staged nowhere: ${sweep.unservable.map(m => m.quantization || m.id).join(', ')}.`}
+            {sweep.overflow.length > 0
+              && ` Past the ${MAX_ARMS}-arm limit: ${sweep.overflow.map(m => m.quantization || m.id).join(', ')}.`}
+          </div>
+        )}
 
         <div className="playground-actions">
           <button className="btn primary" onClick={run} disabled={!canRun}>

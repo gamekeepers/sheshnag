@@ -569,20 +569,46 @@ class OllamaExecutor(BaseExecutor):
     # beats instead of one beat costing N x timeout on a slow server.
     DETAILS_LOOKUPS_PER_BEAT = 4
 
-    async def _fetch_context_length(self, name: str) -> Optional[int]:
-        """`<arch>.context_length` from /api/show model_info. None on failure."""
+    @staticmethod
+    def _clean_quant(value) -> Optional[str]:
+        """A quantization name, or None where Ollama has no answer.
+
+        /api/tags answers the literal string "unknown" rather than omitting
+        the field. Left as-is it reaches the catalogue as a quantization
+        called "unknown" and lands in the entry id, so it is spelled as the
+        absence it is.
+        """
+        if not value:
+            return None
+        text = str(value).strip()
+        return None if text.lower() in ("", "unknown") else text
+
+    async def _fetch_show_details(self, name: str) -> dict:
+        """`context_length` and `quantization` from one /api/show call.
+
+        /api/tags omits the quantization of anything pulled from a
+        HuggingFace GGUF repo — `hf.co/<user>/<repo>-GGUF:<QUANT>` comes back
+        as "unknown" while /api/show names it exactly. Both facts come from
+        the same response because this call is made either way.
+        """
+        out = {"context_length": None, "quantization": None}
         try:
             response = await self._get_client().post(
                 "/api/show", json={"model": name}, timeout=5.0,
             )
             response.raise_for_status()
-            info = response.json().get("model_info") or {}
+            body = response.json()
+            info = body.get("model_info") or {}
             for key, value in info.items():
                 if key.endswith(".context_length"):
-                    return int(value)
+                    out["context_length"] = int(value)
+                    break
+            out["quantization"] = self._clean_quant(
+                (body.get("details") or {}).get("quantization_level")
+            )
         except Exception as exc:
             logger.debug(f"Could not fetch /api/show for {name}: {exc}")
-        return None
+        return out
 
     @staticmethod
     def _details_key(item: dict) -> Optional[str]:
@@ -635,7 +661,10 @@ class OllamaExecutor(BaseExecutor):
                 for item in pending[: self.DETAILS_LOOKUPS_PER_BEAT]:
                     tag = by_name.get(item["local_name"])
                     details = dict(tag["details"]) if tag else {}
-                    details["context_length"] = await self._fetch_context_length(item["local_name"])
+                    shown = await self._fetch_show_details(item["local_name"])
+                    details["context_length"] = shown["context_length"]
+                    if details.get("quantization") is None:
+                        details["quantization"] = shown["quantization"]
                     key = item["_key"]
                     if not any(v is not None for v in details.values()):
                         # Unknown to the API (on-disk/API desync): remember, retry later.
@@ -706,7 +735,7 @@ class OllamaExecutor(BaseExecutor):
                     "name": m["name"],
                     "digest": m.get("digest"),   # MANIFEST digest — not artifact identity
                     "details": {
-                        "quantization": d.get("quantization_level"),
+                        "quantization": self._clean_quant(d.get("quantization_level")),
                         "parameter_size": d.get("parameter_size"),
                         "family": d.get("family"),
                     },

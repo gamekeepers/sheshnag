@@ -39,7 +39,7 @@ STEP_INDEX.submitting = STEP_INDEX.uploading;
  * validation anyway. Polling `GET /v1/batches/{id}` covers the whole lifecycle.
  */
 
-export default function Playground({ backend, getHeaders, catalog, servableIds, loadedIds, logprobsIds, modelsLoaded, onBatchCreated }) {
+export default function Playground({ backend, getHeaders, catalog, servableIds, loadedIds, logprobsIds, servableRuntimes, modelsLoaded, onBatchCreated }) {
   const [mode, setMode] = useState('single');   // single | grid
   const chatModels = useMemo(
     () => sortByTier(catalog.filter(m => m.task_type !== 'embedding'), servableIds, loadedIds),
@@ -229,6 +229,7 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
           servableIds={servableIds}
           loadedIds={loadedIds}
           logprobsIds={logprobsIds}
+          servableRuntimes={servableRuntimes}
           onBatchCreated={onBatchCreated}
         />
       </div>

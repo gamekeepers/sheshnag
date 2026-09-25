@@ -1061,6 +1061,14 @@ export default function DashboardPage() {
     () => new Set((poolCapacity?.models_servable || []).filter(m => m.loaded).map(m => m.id)),
     [poolCapacity]
   );
+  // Which engines could serve each model right now. The catalogue's own
+  // `runtime` is deprecated and names one engine per entry; an entry with
+  // several serving profiles is servable on all of them.
+  const servableRuntimes = useMemo(
+    () => new Map((poolCapacity?.models_servable || [])
+      .map(m => [m.id, new Set(m.runtimes || [])])),
+    [poolCapacity]
+  );
   // Servable by a runtime that returns token log-probabilities — the
   // playground's logprobs switch is offered only for these.
   const logprobsIds = useMemo(
@@ -2239,6 +2247,7 @@ export default function DashboardPage() {
                 servableIds={servableIds}
                 loadedIds={loadedIds}
                 logprobsIds={logprobsIds}
+                servableRuntimes={servableRuntimes}
                 modelsLoaded={modelsLoaded}
                 onBatchCreated={loadBatches}
               />

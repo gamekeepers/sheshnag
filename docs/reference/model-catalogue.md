@@ -39,7 +39,7 @@ JSONL is a **catalogue id** — a stable platform slug — not a raw runtime tag
 | `size_gb` | on-disk size (feeds download size cap) |
 | `task_type` | `chat` \| `text-generation` \| `embedding` \| `vision` |
 | `capabilities` | JSON — what the MODEL can do (`json_mode`, `vision`, `embeddings`, `logprobs`); runtime mechanism differences live in the executor's `capabilities()`, effective = model AND runtime |
-| `lineage` | upstream base weights (HF repo id) — groups quants of the same model; organizational only, never identity; NULL = ungrouped |
+| `lineage` | the same weights at other quantizations, named by where they came from: the HuggingFace repo id for an HF artifact, `library/<name>:<parameter_size>` for an Ollama one (the library name alone covers several parameter counts, which are different weights). Organizational only, never identity; NULL = ungrouped, including where the group cannot be named — the same weights published under two repo ids are only known to match through upstream `base_model` metadata |
 | `source_type` / `source_ref` / `source_revision` / `homepage_url` | provenance (where it came from / model card) — never a matching key |
 | `org_id` | NULL = public; set = org-private (reserved for tier 2) |
 | `status` | `active` \| `requested` \| `deprecated` \| `unverified` |

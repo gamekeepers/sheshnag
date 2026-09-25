@@ -264,6 +264,32 @@ def _pick_served_alias(names, source_ref):
     return None
 
 
+def _lineage_for(res, details: dict) -> Optional[str]:
+    """The group an entry belongs to: the same weights at other quantizations.
+
+    A HuggingFace GGUF repo is that group exactly — one model, one file per
+    quant — so the repo id is the key, and every `:Q2_K`, `:Q4_K_M`, `:Q8_0`
+    pulled from it lands together.
+
+    An Ollama library name is not: `gemma3` covers 12B and 27B, which are
+    different weights. The parameter count separates them, and a
+    quant-suffixed tag (`gemma3:12b-q8_0`) then groups with the default pull
+    of the same size.
+
+    Cross-repo lineage is out of reach here — `unsloth/Qwen3-8B-GGUF` and
+    `Qwen/Qwen3-8B` are the same weights under two names, and only the
+    upstream `base_model` metadata says so. An entry whose group cannot be
+    named from what was confirmed carries no lineage rather than a guessed
+    one.
+    """
+    if not res.source_ref:
+        return None
+    if res.source_type == "huggingface":
+        return res.source_ref
+    params = details.get("parameter_size")
+    return f"{res.source_ref}:{params}" if params else None
+
+
 def auto_adopt_pass(db, resolver: IdentityResolver, *, enabled: Optional[bool] = None) -> int:
     """Adopt every quarantined hash the resolver confirms. Returns the number
     of entries created. Commits per adoption so one failure cannot roll back
@@ -335,6 +361,7 @@ def auto_adopt_pass(db, resolver: IdentityResolver, *, enabled: Optional[bool] =
                 extra_names=extra_names,
                 vram_gb=estimate_vram_gb(cand.size_bytes),
                 quantization=quant,
+                lineage=_lineage_for(res, details),
                 task_type=task_type,
                 capabilities=capabilities,
                 size_gb=size_gb,

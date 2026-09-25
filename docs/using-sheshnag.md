@@ -41,6 +41,16 @@ answers side by side, with the first word that differs from a base column
 highlighted. A grid is a group of batches, one per arm, tagged with a shared
 `metadata.grid_id`; each shows up on the Batches tab like any other.
 
+**Sweep quants** fills the arms for you when the pool holds the same weights at
+more than one quantization: one arm per quantization, smallest first, every
+other setting copied from the first arm so the answer is about the
+quantization and nothing else. The arms are held to a single engine, since the
+same weights on two engines measures both at once and the table cannot show
+which moved. Quantizations the pool cannot serve, and any past the five-arm
+limit, are named under the button rather than dropped — a sweep missing its
+cheapest arm reads as a result about quality when it is a result about what
+was staged. The export carries each arm's quantization and lineage.
+
 The model picker labels each entry **loaded** (in memory on an online worker),
 **on disk, loads on first use** (the first prompt pays one model load), or
 **unavailable** (no online worker has it). Only the last cannot be picked.
