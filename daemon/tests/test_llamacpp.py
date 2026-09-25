@@ -3,6 +3,9 @@
 Response shapes are taken from a live `llama-server` (build b10759) serving a
 Qwen3.6-27B Q4_K_XL GGUF, not from documentation.
 """
+import hashlib
+import json
+
 import httpx
 import pytest
 
@@ -279,7 +282,10 @@ async def test_heartbeat_listing_refreshes_the_model_guard():
 
 
 @pytest.mark.asyncio
-async def test_inventory_reports_no_hash_and_the_gguf_metadata():
+async def test_inventory_without_a_models_dir_reports_metadata_but_no_hash():
+    """A server the daemon can reach but whose files it cannot see: still
+    advertised, because a model that can be served should be visible, but
+    unidentifiable — the backend falls back to matching on the name."""
     ex = _client(LlamaCppExecutor("http://llamacpp.test"), _server())
     items = await ex.inventory()
 
@@ -287,10 +293,96 @@ async def test_inventory_reports_no_hash_and_the_gguf_metadata():
     item = items[0]
     assert item["local_name"] == SERVED
     assert item["runtime"] == "llamacpp"     # tagged, or the backend cannot route it
-    assert item["sha256"] is None            # name matching, by decision
+    assert item["sha256"] is None
     assert item["size_bytes"] == 17601570816
     assert item["details"]["quantization_level"] == "Q4_K - Medium"
     assert item["details"]["context_length"] == 262144
+
+
+def _gguf(tmp_path, name, body=b"weights", sidecar=None):
+    f = tmp_path / f"{name}.gguf"
+    f.write_bytes(body)
+    if sidecar is not None:
+        (tmp_path / f"{name}.gguf.json").write_text(json.dumps(sidecar))
+    return f
+
+
+SHA_OF_WEIGHTS = hashlib.sha256(b"weights").hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_sidecar_identifies_the_file_without_reading_it(tmp_path):
+    """The staging script hashed the bytes where they already were, so the
+    worker reports that hash and the repo they came from — which is what lets
+    the backend confirm the entry instead of quarantining it."""
+    _gguf(tmp_path, SERVED, sidecar={
+        "sha256": "a" * 64, "size": len(b"weights"),
+        "source_ref": "unsloth/Some-GGUF",
+    })
+    ex = _client(LlamaCppExecutor("http://llamacpp.test", models_dir=str(tmp_path)),
+                 _server())
+
+    item = (await ex.inventory())[0]
+    assert item["sha256"] == "a" * 64
+    assert item["details"]["source_ref"] == "unsloth/Some-GGUF"
+    assert item["size_bytes"] == len(b"weights")
+
+
+@pytest.mark.asyncio
+async def test_a_hand_staged_file_is_hashed_once_and_remembered(tmp_path):
+    """No sidecar — a file copied in by hand. It is read once, and the result
+    is written beside it so neither this process nor the next repeats a
+    multi-gigabyte read."""
+    _gguf(tmp_path, SERVED)
+    ex = _client(LlamaCppExecutor("http://llamacpp.test", models_dir=str(tmp_path)),
+                 _server())
+
+    item = (await ex.inventory())[0]
+    assert item["sha256"] == SHA_OF_WEIGHTS
+    assert item["details"].get("source_ref") is None   # nothing says where it came from
+
+    written = json.loads((tmp_path / f"{SERVED}.gguf.json").read_text())
+    assert written["sha256"] == SHA_OF_WEIGHTS
+
+
+@pytest.mark.asyncio
+async def test_a_sidecar_for_different_bytes_is_ignored(tmp_path):
+    """A model re-staged under the same name leaves a sidecar describing the
+    old bytes. Trusting it would publish one artifact's identity for
+    another's, so the size has to agree before it is believed."""
+    _gguf(tmp_path, SERVED, sidecar={
+        "sha256": "b" * 64, "size": 999999, "source_ref": "unsloth/Stale-GGUF",
+    })
+    ex = _client(LlamaCppExecutor("http://llamacpp.test", models_dir=str(tmp_path)),
+                 _server())
+
+    item = (await ex.inventory())[0]
+    assert item["sha256"] == SHA_OF_WEIGHTS
+    assert item["details"].get("source_ref") is None
+
+
+@pytest.mark.asyncio
+async def test_hashing_is_capped_per_beat(tmp_path):
+    """Inventory runs on the heartbeat, and a 17 GB read takes about ninety
+    seconds. Several per beat would stall the beat that proves the worker
+    alive, so a directory converges over several beats instead."""
+    names = [SERVED, "second-gguf"]
+    for n in names:
+        _gguf(tmp_path, n, body=n.encode())
+
+    def two_models(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [
+            {"id": n, "meta": {"size": len(n)}} for n in names
+        ]})
+
+    ex = _client(LlamaCppExecutor("http://llamacpp.test", models_dir=str(tmp_path)),
+                 two_models)
+
+    first = {i["local_name"]: i["sha256"] for i in await ex.inventory()}
+    assert sum(1 for v in first.values() if v) == 1
+
+    second = {i["local_name"]: i["sha256"] for i in await ex.inventory()}
+    assert all(second.values())
 
 
 @pytest.mark.asyncio

@@ -3,10 +3,15 @@
 #
 #   scripts/stage-models.sh manifest.txt worker1 worker2
 #
-# Manifest lines are `name<space>path`, blank lines and # comments ignored:
+# Manifest lines are `name<space>path[<space>source]`, blank lines and #
+# comments ignored:
 #
 #   gpt-oss-20b       /usr/share/ollama/.ollama/models/blobs/sha256-e7b273f9…
-#   llama3-2-3b       /var/models/llama3.2-3b-q4_k_m.gguf
+#   llama3-2-3b       /var/models/llama3.2-3b-q4_k_m.gguf   unsloth/Llama-3.2-3B-GGUF
+#
+# `source` is the public repo the bytes came from. With it the worker's
+# catalogue entry is confirmed against that repo and adopted automatically;
+# without it the entry is reported but has to be claimed by hand.
 #
 # The name becomes `<name>.gguf` on the worker, and llama-server in router
 # mode reports that stem as the model id — so it must equal the
@@ -21,6 +26,10 @@
 # Transfers nest ssh inside the jump session rather than using scp or -J,
 # because a jump host may refuse to forward channels. Files already present at
 # the right size are skipped and partial ones resume, so re-running is cheap.
+#
+# Each file is accompanied by a `<name>.gguf.json` sidecar holding its sha256
+# and source. The hash is computed here, where the file already is, so a worker
+# never reads back a multi-gigabyte model to learn what it received.
 set -uo pipefail
 
 MANIFEST="${1:?usage: stage-models.sh <manifest> <worker>...}"
@@ -39,14 +48,25 @@ echo "Opening one connection to $JUMP (credentials asked once)..."
 ssh -fNM -o ControlPath="$CM" -o ControlPersist=4h "$JUMP" || exit 1
 J() { ssh -o ControlPath="$CM" "$JUMP" "$@"; }
 
-send() {   # $1 worker, $2 name, $3 source path
-  local worker="$1" name="$2" src="$3" dest="$DEST/$2.gguf" want have
+local_sha() {   # $1 source path — hashed once per run, not once per worker
+  local src="$1" key
+  key=$(printf '%s' "$src" | tr -c 'A-Za-z0-9' _)
+  if [ -z "${SHA_CACHE:-}" ]; then SHA_CACHE=$(mktemp -d); fi
+  if [ ! -s "$SHA_CACHE/$key" ]; then
+    sha256sum "$src" | cut -d' ' -f1 > "$SHA_CACHE/$key"
+  fi
+  cat "$SHA_CACHE/$key"
+}
+
+send() {   # $1 worker, $2 name, $3 source path, $4 source ref (may be empty)
+  local worker="$1" name="$2" src="$3" ref="${4:-}" dest="$DEST/$2.gguf" want have
   [ -r "$src" ] || { echo "  $name: cannot read $src — skipped"; return; }
   want=$(stat -c %s "$src")
   have=$(J "ssh $worker 'stat -c %s $dest 2>/dev/null || echo 0'" | tr -d '\r')
 
   if [ "$have" = "$want" ]; then
     echo "  $name: already complete ($((want / 1000000)) MB)"
+    write_sidecar "$worker" "$name" "$src" "$ref" "$want"
     return
   fi
   J "ssh $worker 'mkdir -p $DEST'"
@@ -57,18 +77,40 @@ send() {   # $1 worker, $2 name, $3 source path
     echo "  $name: sending $((want / 1000000)) MB"
     dd if="$src" bs=1M status=none | J "ssh $worker 'cat > $dest'"
   fi
+  write_sidecar "$worker" "$name" "$src" "$ref" "$want"
+}
+
+write_sidecar() {   # $1 worker, $2 name, $3 src, $4 ref, $5 size
+  local worker="$1" name="$2" src="$3" ref="${4:-}" size="$5" sha
+  sha=$(local_sha "$src")
+  J "ssh $worker 'cat > $DEST/$2.gguf.json'" <<SIDECAR
+{"sha256": "$sha", "size": $size, "source_ref": "$ref"}
+SIDECAR
 }
 
 for worker in "$@"; do
   echo
   echo "=== $worker ==="
-  while read -r name src _rest; do
+  while read -r name src ref _rest; do
     case "$name" in ''|'#'*) continue ;; esac
     if [ -n "$ONLY" ]; then
       case " $ONLY " in *" $name "*) ;; *) continue ;; esac
     fi
-    send "$worker" "$name" "$src"
+    send "$worker" "$name" "$src" "$ref"
   done < "$MANIFEST"
   echo "  verifying..."
-  J "ssh $worker 'cd $DEST && sha256sum *.gguf 2>/dev/null'" | tr -d '\r'
+  J "ssh $worker 'cd $DEST && sha256sum *.gguf 2>/dev/null'" | tr -d '\r' \
+    | while read -r remote_sha file; do
+        name="${file%.gguf}"
+        expected=$(grep -E "^$name[[:space:]]" "$MANIFEST" | awk '{print $2}')
+        if [ -z "$expected" ]; then
+          echo "    $file: not in the manifest"
+        elif [ "$remote_sha" = "$(local_sha "$expected")" ]; then
+          echo "    $file: ok"
+        else
+          echo "    $file: MISMATCH — delete it on the worker and re-run"
+        fi
+      done
 done
+
+[ -n "${SHA_CACHE:-}" ] && rm -rf "$SHA_CACHE"

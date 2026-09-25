@@ -23,6 +23,10 @@ Architecture note:
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -50,19 +54,32 @@ class LlamaCppExecutor(BaseExecutor):
         max_concurrent: Sizes the HTTP connection pool. The server's own
                         slot count is reported by health_check(); a caller
                         exceeding it gains queueing, not throughput.
+        models_dir:     The directory the router serves. The HTTP API names
+                        models but never locates them, and identity is the
+                        file's hash — so without this the daemon can describe
+                        a model it cannot identify.
     """
 
     runtime_name: str = "llamacpp"
+
+    # One hash per beat. A 17 GB read takes ~90s even from local disk, and
+    # inventory runs on the heartbeat: several per beat would stall the beat
+    # that proves the worker alive. A directory converges over a few beats.
+    HASHES_PER_BEAT = 1
 
     def __init__(
         self,
         base_url: str,
         timeout: float = 300.0,
         max_concurrent: int = 8,
+        models_dir: Optional[str] = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._max_concurrent = max_concurrent
+        self._models_dir = Path(models_dir) if models_dir else None
+        # name -> {"sha256", "size", "mtime", "source_ref", "source_revision"}
+        self._identity: Dict[str, dict] = {}
         self._client: httpx.AsyncClient | None = None
         self.version: Optional[str] = None      # build_info, from health_check()
         self.total_slots: Optional[int] = None  # server-side concurrency
@@ -290,34 +307,138 @@ class LlamaCppExecutor(BaseExecutor):
             self._served = set(served)
         return running
 
+    def _gguf_path(self, name: str) -> Optional[Path]:
+        """The file behind a served name.
+
+        A router reports each file's stem as the model id, so the mapping is
+        the stem plus `.gguf`. Anything else in the directory is not what the
+        server answered for.
+        """
+        if self._models_dir is None:
+            return None
+        candidate = self._models_dir / f"{name}.gguf"
+        return candidate if candidate.is_file() else None
+
+    @staticmethod
+    def _sidecar_path(gguf: Path) -> Path:
+        return gguf.with_suffix(gguf.suffix + ".json")
+
+    @staticmethod
+    def _hash_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(8 * 1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    def _read_sidecar(self, gguf: Path, size: int) -> Optional[dict]:
+        """The staged identity of this file, if it is still about this file.
+
+        `stage-models.sh` writes the hash it already computed at the source,
+        so a worker that received a file never has to read it back. The size
+        check is what stops a stale sidecar surviving a re-staged model.
+        """
+        try:
+            data = json.loads(self._sidecar_path(gguf).read_text())
+        except (OSError, ValueError):
+            return None
+        if not data.get("sha256") or data.get("size") not in (None, size):
+            return None
+        return data
+
+    def _write_sidecar(self, gguf: Path, record: dict) -> None:
+        try:
+            self._sidecar_path(gguf).write_text(json.dumps(record))
+        except OSError as exc:
+            logger.debug(f"Could not write sidecar for {gguf.name}: {exc}")
+
+    async def _identify(self, name: str, budget: List[int]) -> dict:
+        """sha256 and provenance for one served model.
+
+        Cached on size and mtime, so a re-staged file is re-read and an
+        untouched one is read once per process. `budget` is decremented when
+        this call had to hash, which is how the per-beat cap is enforced.
+        """
+        gguf = self._gguf_path(name)
+        if gguf is None:
+            return {}
+        try:
+            stat = gguf.stat()
+        except OSError:
+            return {}
+
+        cached = self._identity.get(name)
+        if cached and cached["size"] == stat.st_size and cached["mtime"] == stat.st_mtime:
+            return cached
+
+        staged = self._read_sidecar(gguf, stat.st_size)
+        if staged:
+            record = {
+                "sha256": staged["sha256"],
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+                "source_ref": staged.get("source_ref"),
+                "source_revision": staged.get("source_revision"),
+            }
+            self._identity[name] = record
+            return record
+
+        if budget[0] <= 0:
+            return {}
+        budget[0] -= 1
+        logger.info(f"Hashing {gguf.name} to identify it (no sidecar)")
+        try:
+            sha = await asyncio.to_thread(self._hash_file, gguf)
+        except OSError as exc:
+            logger.warning(f"Could not hash {gguf.name}: {exc}")
+            return {}
+        record = {
+            "sha256": sha, "size": stat.st_size, "mtime": stat.st_mtime,
+            "source_ref": None, "source_revision": None,
+        }
+        self._identity[name] = record
+        self._write_sidecar(gguf, {"sha256": sha, "size": stat.st_size})
+        return record
+
     async def inventory(self) -> List[dict]:
         """
         The served artifact, with what `/v1/models` knows about it.
 
-        `sha256` is None: identifying the artifact means hashing a
-        multi-gigabyte GGUF, and the catalogue currently pins Ollama
-        manifest digests that no file hash can equal, so a hash here would
-        quarantine the row rather than match it. Name matching is what the
-        backend falls back to, and `meta` still carries enough to describe
-        the artifact in the portal.
+        The hash is the artifact's identity — the catalogue pins the sha256
+        of the weights file, and an Ollama model layer's digest is that same
+        number — so a staged GGUF can be confirmed against its public source
+        rather than matched on a filename a provider chose. Without it the
+        backend falls back to name matching, and every variant of one model
+        needs a hand-written catalogue row.
+
+        `sha256` stays absent when the directory is unknown or the file has
+        not been read yet; the row is still reported, because a model that
+        can be served should be visible while it is being identified.
         """
+        budget = [self.HASHES_PER_BEAT]
         items: List[dict] = []
         for entry in await self._models_payload():
             name = entry.get("id")
             if not name:
                 continue
             meta: Dict[str, Any] = entry.get("meta") or {}
+            identity = await self._identify(name, budget)
+            details = {
+                "format": "gguf",
+                "quantization_level": meta.get("ftype"),
+                "parameter_count": meta.get("n_params"),
+                "context_length": meta.get("n_ctx_train"),
+                "embedding_length": meta.get("n_embd"),
+            }
+            if identity.get("source_ref"):
+                details["source_ref"] = identity["source_ref"]
+            if identity.get("source_revision"):
+                details["source_revision"] = identity["source_revision"]
             items.append({
                 "local_name": name,
-                "sha256": None,
-                "size_bytes": meta.get("size"),
-                "details": {
-                    "format": "gguf",
-                    "quantization_level": meta.get("ftype"),
-                    "parameter_count": meta.get("n_params"),
-                    "context_length": meta.get("n_ctx_train"),
-                    "embedding_length": meta.get("n_embd"),
-                },
+                "sha256": identity.get("sha256"),
+                "size_bytes": identity.get("size") or meta.get("size"),
+                "details": details,
             })
         return self.tag_inventory(items)
 

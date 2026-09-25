@@ -94,12 +94,29 @@ file anything else and the worker is online, healthy, and never dispatched to �
 the same failure the `--alias` flag causes on a single-model server.
 
 For a fleet behind a jump host, `scripts/stage-models.sh` takes a manifest of
-`name path` pairs and copies them to each worker over one connection, skipping
-files already present and resuming partial ones:
+`name path source` rows and copies them to each worker over one connection,
+skipping files already present and resuming partial ones:
+
+```
+gemma4-26b    /var/models/gemma4-26b-q4km.gguf    unsloth/gemma-4-26B-GGUF
+llama3-2-3b   /var/models/llama3.2-3b-q4km.gguf   unsloth/Llama-3.2-3B-GGUF
+```
 
 ```bash
 JUMP=user@jump-host scripts/stage-models.sh models.txt worker1 worker2
 ```
+
+**Name the source.** A model's identity is the sha256 of its weights, and the
+third column says which public repo those bytes came from. With both, the
+platform confirms the model against that repo and adds it to the catalogue by
+itself; without them the worker reports a model nobody can vouch for, and each
+one needs a catalogue entry written by hand.
+
+The script computes each hash where the file already is and ships a
+`<name>.gguf.json` sidecar alongside, so a worker never reads back a
+multi-gigabyte model to learn what it received. A file staged by other means
+is hashed on the worker instead — once, at one file per heartbeat, with the
+result written beside it.
 
 !!! note "`/tmp` is swept"
     `tmpwatch` removes files under `/tmp` on a ten-day window and judges by
@@ -123,7 +140,7 @@ then starts everything. Useful settings:
 |---|---|---|
 | `INSTANCE` | `hostname -s` | Names this install; keeps machines apart on a shared home |
 | `RUNTIME` | `llamacpp` | `ollama`, `vllm` or `llamacpp` |
-| `MODELS_DIR` | `/tmp/gguf` | Directory of GGUFs for router mode |
+| `MODELS_DIR` | `/tmp/gguf` | Directory of GGUFs for router mode; also written to the daemon config, which needs it to identify what it serves |
 | `MODELS_MAX` | `1` | How many models may be resident at once |
 | `THREADS` | `nproc`, capped at 16 | `llama-server -t` |
 | `PROXY` | unset | `socks5h://…` or `http://…` for a host with no route out |

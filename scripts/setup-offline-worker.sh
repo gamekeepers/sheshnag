@@ -60,6 +60,10 @@ echo "  runtime    $RUNTIME"
   echo "api_key: \"$API_KEY\""
   echo "runtime: \"$RUNTIME\""
   [ "$RUNTIME" = llamacpp ] && echo "llamacpp_url: \"http://127.0.0.1:$LLAMA_PORT\""
+  # The router's HTTP API names models but never locates them, and a model's
+  # identity is its file hash — so the daemon is told the directory too, or it
+  # reports models the catalogue cannot confirm.
+  [ "$RUNTIME" = llamacpp ] && echo "llamacpp_models_dir: \"$MODELS_DIR\""
   echo "credentials_path: \"$DIR/credentials\""
   echo "work_dir: \"$DIR/jobs\""
   echo "inference_timeout: 1800.0"
