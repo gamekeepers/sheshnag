@@ -3,31 +3,38 @@
 import Link from 'next/link';
 
 /**
- * The one navigation control that spans both portals.
+ * The one navigation control that spans the portals.
  *
- * It used to be built twice: a nav item at the bottom of the user portal's
- * <nav> (so it read as a seventh tab) and a dim inline-styled footer link in
- * the provider portal. Same control, different position, element and weight
- * depending on which side you were standing on. Switching portals is a change
- * of context rather than a change of tab, so both sidebars now render this in
- * the footer, above sign out, from here.
+ * Switching portals is a change of context rather than a change of tab, so
+ * every sidebar renders this in the footer, above sign out, from here. The
+ * user and provider portals link to each other; the admin panel links back to
+ * the user portal and is offered only to superadmins, which the calling page
+ * decides from the user's platform role.
  */
+const PORTALS = {
+  user: {
+    href: '/dashboard',
+    label: 'User portal',
+    title: 'Back to batches, files and API keys',
+  },
+  provider: {
+    href: '/provider',
+    label: 'Provider portal',
+    title: "Manage your organization's workers",
+  },
+  admin: {
+    href: '/admin',
+    label: 'Admin panel',
+    title: 'Users, workers and sign-up domains across every organization',
+  },
+};
+
 export default function PortalSwitch({ to }) {
-  const isProvider = to === 'provider';
+  const portal = PORTALS[to] ?? PORTALS.user;
 
   return (
-    <Link
-      className="portal-switch"
-      href={isProvider ? '/provider' : '/dashboard'}
-      title={
-        isProvider
-          ? "Manage your organization's workers"
-          : 'Back to batches, files and API keys'
-      }
-    >
-      <span>
-        {isProvider ? 'Provider portal' : 'User portal'}
-      </span>
+    <Link className="portal-switch" href={portal.href} title={portal.title}>
+      <span>{portal.label}</span>
       <span className="portal-switch-arrow" aria-hidden="true">
         &rarr;
       </span>

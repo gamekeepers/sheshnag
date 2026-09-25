@@ -532,7 +532,7 @@ export default function AdminPage() {
                       </span>
                     </td>
                     <td className="dim">
-                      {p.last_heartbeat ? new Date(p.last_heartbeat * 1000).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '—'}
+                      {p.last_heartbeat ? new Date(p.last_heartbeat * 1000).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—'}
                     </td>
                   </>)}
                 />

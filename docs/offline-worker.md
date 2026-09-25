@@ -4,7 +4,7 @@
 internet, or cannot run `systemctl --user`, or both. Institutional clusters are
 usually all three — no route out, an old init, and a shared home directory.
 
-*Verified against code: 2026-09-24.*
+*Verified against code: 2026-09-25.*
 
 The ordinary path in [Lend your GPU](provider.md) assumes a host that can fetch
 a script, download a runtime, and be supervised by systemd. Where those hold,
@@ -128,6 +128,7 @@ then starts everything. Useful settings:
 | `THREADS` | `nproc`, capped at 16 | `llama-server -t` |
 | `PROXY` | unset | `socks5h://…` or `http://…` for a host with no route out |
 | `TUNNEL_HOST` | unset | SSH host to keep a SOCKS forward open through |
+| `PROBE_URL` | `BACKEND_URL` | What the supervisor fetches through the forward to confirm it carries |
 
 **`MODELS_MAX` counts models, not bytes.** Two 17 GB models resident on a 32 GB
 host fills memory exactly and leaves nothing for the KV cache; with swap
@@ -158,7 +159,11 @@ two machines supervise as one worker.
 ~/.gpu-daemon-<instance>/ctl.sh status
 ```
 
-Reports the three processes, the models on disk, and which are resident. Then:
+Reports the three processes, the models on disk, and which are resident, and —
+where a tunnel is configured — whether the forward is carrying traffic. A
+forward that fails the check leaves its error in
+`~/.gpu-daemon-<instance>/tunnel.log`, the same place the supervisor records
+rebuilds. Then:
 
 ```bash
 grep -i 'serves\|register' ~/.gpu-daemon-<instance>/daemon.log | tail -5
@@ -190,7 +195,10 @@ up, so nothing needs reinstalling or restarting.
 
 **Registration fails with a name-resolution error** — the daemon is not using
 the proxy. Confirm `ALL_PROXY` is in `~/.gpu-daemon-<instance>/.env`, and that
-the forward is up: `ss -ltn | grep 1080`.
+the forward carries: `ctl.sh status` reports `tunnel carrying traffic` or
+`tunnel DOWN`. A bound port only proves ssh is listening, not that the forward
+answers requests; where it says `DOWN`, the failure is in
+`~/.gpu-daemon-<instance>/tunnel.log`.
 
 **Registration fails with a TLS error** — usually the interpreter, not the
 network. See the warning at the top of this page.
