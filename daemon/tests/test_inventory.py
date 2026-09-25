@@ -134,9 +134,11 @@ def _async(value):
 def _api_client(models, show_calls=None, calls=None, timeout=False):
     """Mock Ollama API: /api/tags with `details`, /api/show with model_info.
     `models` = {name: {"quantization_level", "parameter_size", "family",
-    "context_length", optional "digest"}}. `show_calls` records /api/show
-    names; `calls` records every request path; `timeout=True` makes every
-    request raise like a black-holed endpoint."""
+    "context_length", optional "digest", optional "show_quantization"}}.
+    `show_quantization` is what /api/show reports where that differs from
+    /api/tags, which is how the real server answers a HuggingFace pull.
+    `show_calls` records /api/show names; `calls` records every request path;
+    `timeout=True` makes every request raise like a black-holed endpoint."""
     def handler(request):
         if calls is not None:
             calls.append(request.url.path)
@@ -145,7 +147,9 @@ def _api_client(models, show_calls=None, calls=None, timeout=False):
         if request.url.path == "/api/tags":
             return httpx.Response(200, json={"models": [
                 {"name": n, "digest": d.get("digest", "x" * 64),
-                 "details": {k: v for k, v in d.items() if k not in ("context_length", "digest")}}
+                 "details": {k: v for k, v in d.items()
+                             if k not in ("context_length", "digest",
+                                          "show_quantization")}}
                 for n, d in models.items()
             ]})
         if request.url.path == "/api/show":
@@ -155,15 +159,61 @@ def _api_client(models, show_calls=None, calls=None, timeout=False):
             d = models.get(name)
             if d is None:
                 return httpx.Response(404, json={"error": "not found"})
-            return httpx.Response(200, json={"model_info": {
+            body = {"model_info": {
                 "general.architecture": "qwen3",
                 "qwen3.context_length": d["context_length"],
-            }})
+            }}
+            if "show_quantization" in d:
+                body["details"] = {"quantization_level": d["show_quantization"]}
+            return httpx.Response(200, json=body)
         return httpx.Response(404)
     return httpx.AsyncClient(base_url="http://ollama.test", transport=httpx.MockTransport(handler))
 
 
 # ─── Details for auto-adopt ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_quantization_comes_from_show_when_tags_withholds_it(tmp_path):
+    """A HuggingFace GGUF pull is quantization "unknown" on /api/tags and
+    named on /api/show. The named one is the one that reaches the catalogue —
+    without it every variant of a repo adopts under the same quantization and
+    a quant sweep cannot tell its own arms apart."""
+    _write_manifest(
+        tmp_path, "hf.co", "unsloth", "Qwen3-8B-GGUF", "Q2_K",
+        [_model_layer(WEIGHTS_SHA, 10)],
+    )
+    ex = OllamaExecutor(models_dir=str(tmp_path))
+    ex._client = _api_client({
+        "hf.co/unsloth/Qwen3-8B-GGUF:Q2_K": {
+            "quantization_level": "unknown", "parameter_size": "8.19B",
+            "family": "qwen3", "context_length": 40960,
+            "show_quantization": "Q2_K",
+        },
+    })
+
+    items = await ex.inventory()
+    assert items[0]["details"]["quantization"] == "Q2_K"
+
+
+@pytest.mark.asyncio
+async def test_quantization_unknown_everywhere_is_absent_not_a_value(tmp_path):
+    """Where neither endpoint knows, the field is empty rather than carrying
+    the word "unknown" — which would otherwise be slugified into the entry id
+    as though it were a quantization."""
+    _write_manifest(
+        tmp_path, "registry.ollama.ai", "library", "mystery", "1b",
+        [_model_layer(WEIGHTS_SHA, 10)],
+    )
+    ex = OllamaExecutor(models_dir=str(tmp_path))
+    ex._client = _api_client({
+        "mystery:1b": {"quantization_level": "unknown", "parameter_size": "1.0B",
+                       "family": "llama", "context_length": 4096},
+    })
+
+    items = await ex.inventory()
+    assert items[0]["details"]["quantization"] is None
+
 
 @pytest.mark.asyncio
 async def test_inventory_attaches_details_and_caches_show_per_hash(tmp_path):
