@@ -114,10 +114,21 @@ port_open() { (exec 3<>/dev/tcp/127.0.0.1/"$1") 2>/dev/null; }
 # every pass. The interpreter that does the real work is the only one whose
 # verdict means anything. httpx reads the proxy from the environment sourced
 # above, the same variables the daemon resolves.
+#
+# Any reply counts, 5xx included: a response of any status proves the request
+# went out and came back, so the forward carries. Only a transport failure —
+# the channel refused, the connection dropped, the request timed out — is
+# grounds to tear the forward down, and a backend that is down or deploying is
+# not that: rebuilding a healthy forward on every pass is the connection churn
+# that trips a login cap.
 if [ -x "$DIR/venv/bin/python" ]; then
   tunnel_ok() {
     "$DIR/venv/bin/python" -c \
-      'import httpx,sys;sys.exit(0 if httpx.get(sys.argv[1],timeout=15).status_code<500 else 1)' \
+      'import httpx,sys
+try: httpx.get(sys.argv[1], timeout=15)
+except Exception as e:
+    print(f"tunnel probe failed: {e}", file=sys.stderr)
+    sys.exit(1)' \
       "$PROBE_URL" 2>>"$DIR/tunnel.log"
   }
 else
@@ -181,8 +192,12 @@ case "${1:-status}" in
     pgrep -f "llama-server .*$MODELS_DIR" >/dev/null && echo "llama-server running" || echo "llama-server stopped"
     if [ -n "$TUNNEL_HOST" ]; then
       if "$DIR/venv/bin/python" -c \
-           'import httpx,sys;sys.exit(0 if httpx.get(sys.argv[1],timeout=15).status_code<500 else 1)' \
-           "$PROBE_URL" 2>/dev/null; then
+           'import httpx,sys
+try: httpx.get(sys.argv[1], timeout=15)
+except Exception as e:
+    print(f"tunnel probe failed: {e}", file=sys.stderr)
+    sys.exit(1)' \
+           "$PROBE_URL" 2>>"$DIR/tunnel.log"; then
         echo "tunnel       carrying traffic"
       else
         echo "tunnel       DOWN — see $DIR/tunnel.log"

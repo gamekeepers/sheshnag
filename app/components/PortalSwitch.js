@@ -6,9 +6,10 @@ import Link from 'next/link';
  * The one navigation control that spans the portals.
  *
  * Switching portals is a change of context rather than a change of tab, so
- * every sidebar renders this in the footer, above sign out, from here. Each
- * portal links to the others it can reach; the admin panel is offered only to
- * superadmins, which the calling page decides from the user's platform role.
+ * every sidebar renders this in the footer, above sign out, from here. The
+ * user and provider portals link to each other; the admin panel links back to
+ * the user portal and is offered only to superadmins, which the calling page
+ * decides from the user's platform role.
  */
 const PORTALS = {
   user: {
@@ -29,7 +30,7 @@ const PORTALS = {
 };
 
 export default function PortalSwitch({ to }) {
-  const portal = PORTALS[to];
+  const portal = PORTALS[to] ?? PORTALS.user;
 
   return (
     <Link className="portal-switch" href={portal.href} title={portal.title}>
