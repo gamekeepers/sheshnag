@@ -1382,6 +1382,7 @@ export default function DashboardPage() {
 
         <div className="sidebar-bottom">
           <PortalSwitch to="provider" />
+          {userProfile?.platform_role === 'superadmin' && <PortalSwitch to="admin" />}
           <DocsLink page="using-sheshnag/" />
           <div className="profile-dropdown-wrap" style={{ position: 'relative' }}>
             <button

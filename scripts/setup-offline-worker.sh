@@ -21,6 +21,8 @@
 #   PROXY        e.g. socks5h://127.0.0.1:1080, when the host has no route out
 #   TUNNEL_HOST  ssh host to open a SOCKS forward through, if PROXY is a local
 #                socks5h port this script should maintain
+#   PROBE_URL    what the supervisor fetches through the forward to decide it
+#                works                                 (default: BACKEND_URL)
 set -euo pipefail
 
 : "${BACKEND_URL:?set BACKEND_URL}"
@@ -36,6 +38,7 @@ THREADS="${THREADS:-$(nproc 2>/dev/null || echo 8)}"
 N_CTX="${N_CTX:-4096}"
 PROXY="${PROXY:-}"
 TUNNEL_HOST="${TUNNEL_HOST:-}"
+PROBE_URL="${PROBE_URL:-$BACKEND_URL}"
 LLAMA_PORT="${LLAMA_PORT:-8080}"
 
 DIR="$HOME/.gpu-daemon-$INSTANCE"
@@ -88,6 +91,7 @@ fi
   echo "N_CTX=\"$N_CTX\""
   echo "RUNTIME=\"$RUNTIME\""
   echo "TUNNEL_HOST=\"$TUNNEL_HOST\""
+  echo "PROBE_URL=\"$PROBE_URL\""
   cat <<'RUNNER'
 
 exec 9>"/tmp/gpu-daemon-$INSTANCE.lock"
@@ -97,13 +101,43 @@ set -a; [ -f "$DIR/.env" ] && . "$DIR/.env"; set +a
 
 port_open() { (exec 3<>/dev/tcp/127.0.0.1/"$1") 2>/dev/null; }
 
+# A bound port means ssh is listening, not that the forward carries anything.
+# ssh answers the SOCKS greeting itself and opens the channel only afterwards,
+# so a forward whose channels are refused passes a port check and fails every
+# request — arriving at the daemon as `Malformed reply` from the SOCKS library,
+# which names nothing the reader can act on. The supervisor therefore makes a
+# request the way the daemon will.
+#
+# It asks through the daemon's own interpreter, not the system curl: a host old
+# enough to need this script may carry a TLS stack too old to reach the control
+# plane, and a probe that cannot succeed would tear down a working forward on
+# every pass. The interpreter that does the real work is the only one whose
+# verdict means anything. httpx reads the proxy from the environment sourced
+# above, the same variables the daemon resolves.
+if [ -x "$DIR/venv/bin/python" ]; then
+  tunnel_ok() {
+    "$DIR/venv/bin/python" -c \
+      'import httpx,sys;sys.exit(0 if httpx.get(sys.argv[1],timeout=15).status_code<500 else 1)' \
+      "$PROBE_URL" 2>>"$DIR/tunnel.log"
+  }
+else
+  tunnel_ok() { port_open 1080; }
+fi
+
 while true; do
   # The forward carries every call to the control plane, so it is rebuilt
   # before anything else that depends on it.
-  if [ -n "$TUNNEL_HOST" ] && ! port_open 1080; then
+  if [ -n "$TUNNEL_HOST" ] && ! tunnel_ok; then
+    # A forward that is up but useless still holds 1080, and the replacement
+    # would fail to bind behind it.
+    pkill -f "ssh .*-D 127\.0\.0\.1:1080 $TUNNEL_HOST" 2>/dev/null
     ssh -fN -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
         -o ExitOnForwardFailure=yes -o BatchMode=yes \
-        -D 127.0.0.1:1080 "$TUNNEL_HOST" || true
+        -D 127.0.0.1:1080 "$TUNNEL_HOST" >>"$DIR/tunnel.log" 2>&1 \
+      || date "+%F %T  ssh -D to $TUNNEL_HOST failed" >>"$DIR/tunnel.log"
+    # Whatever refuses the forward — a login cap, a denied forward — refuses it
+    # again immediately, and retrying every 10s is how an account stays capped.
+    tunnel_ok || sleep 30
   fi
 
   # Router mode: llama-server answers for every GGUF in the directory and
@@ -133,13 +167,27 @@ chmod +x "$DIR/run.sh"
   echo "MODELS_DIR=\"$MODELS_DIR\""
   echo "INSTANCE=\"$INSTANCE\""
   echo "LLAMA_PORT=\"$LLAMA_PORT\""
+  echo "TUNNEL_HOST=\"$TUNNEL_HOST\""
+  echo "PROBE_URL=\"$PROBE_URL\""
   cat <<'CTL'
+
+# The proxy lives in .env, and the tunnel check below is only truthful with it.
+set -a; [ -f "$DIR/.env" ] && . "$DIR/.env"; set +a
 
 case "${1:-status}" in
   status)
     pgrep -f "$DIR/run.sh"              >/dev/null && echo "supervisor   running" || echo "supervisor   stopped"
     pgrep -f "$DIR/venv/bin/gpu-daemon" >/dev/null && echo "daemon       running" || echo "daemon       stopped"
     pgrep -f "llama-server .*$MODELS_DIR" >/dev/null && echo "llama-server running" || echo "llama-server stopped"
+    if [ -n "$TUNNEL_HOST" ]; then
+      if "$DIR/venv/bin/python" -c \
+           'import httpx,sys;sys.exit(0 if httpx.get(sys.argv[1],timeout=15).status_code<500 else 1)' \
+           "$PROBE_URL" 2>/dev/null; then
+        echo "tunnel       carrying traffic"
+      else
+        echo "tunnel       DOWN — see $DIR/tunnel.log"
+      fi
+    fi
     echo
     echo "models on disk:"
     ls -1 "$MODELS_DIR"/*.gguf 2>/dev/null | xargs -n1 basename 2>/dev/null || echo "  (none)"

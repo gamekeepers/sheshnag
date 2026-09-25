@@ -91,6 +91,7 @@ export default function ProviderPage() {
   const [orgStatus, setOrgStatus] = useState('');
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('viewer');
+  const [isSuperadmin, setIsSuperadmin] = useState(false);
 
   // Worker keys tab
   const [isNewKeyModalOpen, setIsNewKeyModalOpen] = useState(false);
@@ -115,6 +116,9 @@ export default function ProviderPage() {
       return;
     }
     setToken(tk);
+    // completeLogin() stores the platform role it verified against /v1/auth/me.
+    const stored = JSON.parse(localStorage.getItem('mk_user') || '{}');
+    setIsSuperadmin(stored.platform_role === 'superadmin');
   }, [router]);
 
   const getHeaders = useCallback(() => {
@@ -542,6 +546,7 @@ export default function ProviderPage() {
 
         <div className="sidebar-bottom">
           <PortalSwitch to="user" />
+          {isSuperadmin && <PortalSwitch to="admin" />}
           <DocsLink page="provider/" />
           <button className="btn" style={{ width: '100%' }} onClick={handleSignOut}>Sign out</button>
         </div>
