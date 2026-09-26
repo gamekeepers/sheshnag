@@ -41,7 +41,11 @@ DEST="${DEST:-/tmp/gguf}"
 ONLY="${ONLY:-}"
 CM="$HOME/.ssh/cm-stage-$$"
 
-cleanup() { ssh -O exit -o ControlPath="$CM" "$JUMP" 2>/dev/null; }
+SHA_CACHE=$(mktemp -d)
+cleanup() {
+  ssh -O exit -o ControlPath="$CM" "$JUMP" 2>/dev/null
+  rm -rf "$SHA_CACHE"
+}
 trap cleanup EXIT
 
 echo "Opening one connection to $JUMP (credentials asked once)..."
@@ -49,9 +53,11 @@ ssh -fNM -o ControlPath="$CM" -o ControlPersist=4h "$JUMP" || exit 1
 J() { ssh -o ControlPath="$CM" "$JUMP" "$@"; }
 
 local_sha() {   # $1 source path — hashed once per run, not once per worker
+  # The key is a hash of the path, not the path with its punctuation folded:
+  # `a-b.gguf` and `a_b.gguf` fold to the same string, and the second file
+  # would then be staged under the first one's hash.
   local src="$1" key
-  key=$(printf '%s' "$src" | tr -c 'A-Za-z0-9' _)
-  if [ -z "${SHA_CACHE:-}" ]; then SHA_CACHE=$(mktemp -d); fi
+  key=$(printf '%s' "$src" | sha256sum | cut -d' ' -f1)
   if [ ! -s "$SHA_CACHE/$key" ]; then
     sha256sum "$src" | cut -d' ' -f1 > "$SHA_CACHE/$key"
   fi
@@ -66,7 +72,6 @@ send() {   # $1 worker, $2 name, $3 source path, $4 source ref (may be empty)
 
   if [ "$have" = "$want" ]; then
     echo "  $name: already complete ($((want / 1000000)) MB)"
-    write_sidecar "$worker" "$name" "$src" "$ref" "$want"
     return
   fi
   J "ssh $worker 'mkdir -p $DEST'"
@@ -77,15 +82,25 @@ send() {   # $1 worker, $2 name, $3 source path, $4 source ref (may be empty)
     echo "  $name: sending $((want / 1000000)) MB"
     dd if="$src" bs=1M status=none | J "ssh $worker 'cat > $dest'"
   fi
-  write_sidecar "$worker" "$name" "$src" "$ref" "$want"
 }
 
-write_sidecar() {   # $1 worker, $2 name, $3 src, $4 ref, $5 size
-  local worker="$1" name="$2" src="$3" ref="${4:-}" size="$5" sha
-  sha=$(local_sha "$src")
+# The sidecar asserts what a file IS, and the daemon adopts a model on that
+# assertion — so it is written only once the worker's own bytes have been
+# read back and agreed. A size match is not agreement: two builds of one
+# model at one quantization can be the same length.
+write_sidecar() {   # $1 worker, $2 name, $3 sha, $4 size, $5 ref
+  local worker="$1" name="$2" sha="$3" size="$4" ref="${5:-}"
   J "ssh $worker 'cat > $DEST/$2.gguf.json'" <<SIDECAR
 {"sha256": "$sha", "size": $size, "source_ref": "$ref"}
 SIDECAR
+}
+
+drop_sidecar() {   # $1 worker, $2 name
+  J "ssh $1 'rm -f $DEST/$2.gguf.json'"
+}
+
+manifest_field() {   # $1 name, $2 field index — compared literally
+  awk -v want="$1" -v col="$2" '$1 == want { print $col; exit }' "$MANIFEST"
 }
 
 for worker in "$@"; do
@@ -99,18 +114,22 @@ for worker in "$@"; do
     send "$worker" "$name" "$src" "$ref"
   done < "$MANIFEST"
   echo "  verifying..."
+  # Read the worker's own bytes back, then write or withdraw each identity.
+  # A pipeline would run this in a subshell; the file keeps it in this one.
   J "ssh $worker 'cd $DEST && sha256sum *.gguf 2>/dev/null'" | tr -d '\r' \
-    | while read -r remote_sha file; do
-        name="${file%.gguf}"
-        expected=$(grep -E "^$name[[:space:]]" "$MANIFEST" | awk '{print $2}')
-        if [ -z "$expected" ]; then
-          echo "    $file: not in the manifest"
-        elif [ "$remote_sha" = "$(local_sha "$expected")" ]; then
-          echo "    $file: ok"
-        else
-          echo "    $file: MISMATCH — delete it on the worker and re-run"
-        fi
-      done
+    > "$SHA_CACHE/remote.$$"
+  while read -r remote_sha file; do
+    name="${file%.gguf}"
+    src=$(manifest_field "$name" 2)
+    ref=$(manifest_field "$name" 3)
+    if [ -z "$src" ]; then
+      echo "    $file: not in the manifest — left alone"
+    elif [ "$remote_sha" = "$(local_sha "$src")" ]; then
+      write_sidecar "$worker" "$name" "$remote_sha" "$(stat -c %s "$src")" "$ref"
+      echo "    $file: ok"
+    else
+      drop_sidecar "$worker" "$name"
+      echo "    $file: MISMATCH — identity withdrawn; delete it on the worker and re-run"
+    fi
+  done < "$SHA_CACHE/remote.$$"
 done
-
-[ -n "${SHA_CACHE:-}" ] && rm -rf "$SHA_CACHE"

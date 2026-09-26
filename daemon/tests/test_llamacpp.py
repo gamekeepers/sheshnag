@@ -361,6 +361,35 @@ async def test_a_sidecar_for_different_bytes_is_ignored(tmp_path):
     assert item["details"].get("source_ref") is None
 
 
+@pytest.mark.parametrize("payload", [
+    "null",
+    "[1, 2, 3]",
+    '"just a string"',
+    "{}",
+    '{"sha256": null, "size": 7}',
+    '{"sha256": 12345, "size": 7}',
+    '{"sha256": "", "size": 7}',
+    '{"sha256": "a", "size": null}',
+    '{"sha256": "a"}',
+    "not json at all",
+])
+@pytest.mark.asyncio
+async def test_a_sidecar_that_is_not_an_identity_is_ignored(tmp_path, payload):
+    """The sidecar is written by another process into a directory this one
+    only reads, so every shape it can arrive in has to be survivable.
+    Inventory does not raise, and a document without a hash and a matching
+    size says nothing about these bytes."""
+    (tmp_path / f"{SERVED}.gguf").write_bytes(b"weights")
+    (tmp_path / f"{SERVED}.gguf.json").write_text(payload)
+    ex = _client(LlamaCppExecutor("http://llamacpp.test", models_dir=str(tmp_path)),
+                 _server())
+
+    item = (await ex.inventory())[0]
+    # Fell through to reading the bytes, rather than trusting or exploding.
+    assert item["sha256"] == SHA_OF_WEIGHTS
+    assert item["details"].get("source_ref") is None
+
+
 @pytest.mark.asyncio
 async def test_hashing_is_capped_per_beat(tmp_path):
     """Inventory runs on the heartbeat, and a 17 GB read takes about ninety

@@ -335,14 +335,25 @@ class LlamaCppExecutor(BaseExecutor):
         """The staged identity of this file, if it is still about this file.
 
         `stage-models.sh` writes the hash it already computed at the source,
-        so a worker that received a file never has to read it back. The size
-        check is what stops a stale sidecar surviving a re-staged model.
+        so a worker that received a file never has to read it back.
+
+        Everything here is a file some other process wrote into a directory
+        this one only reads, so it is checked rather than trusted: a JSON
+        object, a hash, and a size that equals the file's. An unstated size
+        is not a match — it would let a sidecar outlive the bytes it
+        described and publish one artifact's identity for another's — and a
+        document that is valid JSON but not an object must not reach
+        `.get()`, because inventory does not raise.
         """
         try:
             data = json.loads(self._sidecar_path(gguf).read_text())
         except (OSError, ValueError):
             return None
-        if not data.get("sha256") or data.get("size") not in (None, size):
+        if not isinstance(data, dict):
+            return None
+        if not isinstance(data.get("sha256"), str) or not data["sha256"]:
+            return None
+        if data.get("size") != size:
             return None
         return data
 
