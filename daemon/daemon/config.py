@@ -51,6 +51,7 @@ _ENV_MAP: Dict[str, str] = {
     "ollama_url": "DAEMON_OLLAMA_URL",
     "llamacpp_url": "DAEMON_LLAMACPP_URL",
     "ollama_models_dir": "DAEMON_OLLAMA_MODELS_DIR",
+    "llamacpp_models_dir": "DAEMON_LLAMACPP_MODELS_DIR",
     "poll_interval": "DAEMON_POLL_INTERVAL",
     "log_level": "DAEMON_LOG_LEVEL",
     "work_dir": "DAEMON_WORK_DIR",
@@ -181,6 +182,11 @@ class DaemonConfig(BaseModel):
     # None = auto-detect ($OLLAMA_MODELS, ~/.ollama/models, the systemd
     # service store). Read-only; unreadable degrades to name-only.
     ollama_models_dir: Optional[str] = None
+    # The directory a router-mode llama-server serves. Its HTTP API
+    # names models but never locates them, and identity is the file's
+    # hash, so a worker without this can describe a model it cannot
+    # identify — and every variant then needs a catalogue row by hand.
+    llamacpp_models_dir: Optional[str] = None
     # llama-server the provider started. The daemon attaches; it never
     # launches, restarts or tunes one, and the model, the GPU/RAM split and
     # the slot count are all fixed on that server's command line.

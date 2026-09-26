@@ -54,6 +54,7 @@ def create_executors(config: DaemonConfig) -> Dict[str, BaseExecutor]:
                 base_url=config.llamacpp_url,
                 timeout=config.inference_timeout,
                 max_concurrent=config.max_concurrent_prompts,
+                models_dir=config.llamacpp_models_dir,
             )
         else:
             raise ValueError(f"Unknown runtime: {runtime}")

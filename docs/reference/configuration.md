@@ -55,6 +55,8 @@ Configured via a three-layer system: CLI > env (`DAEMON_*` prefix) > YAML file >
 | `DAEMON_OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
 | `DAEMON_LLAMACPP_URL` | `http://localhost:8080` | `llama-server` URL. The provider starts and keeps it running; the daemon only attaches. |
 | `DAEMON_VLLM_URL` | `http://localhost:8100` | vLLM server URL |
+| `DAEMON_OLLAMA_MODELS_DIR` | auto-detected | Ollama's models tree. Set it where Ollama runs as its own service user, or the daemon resolves `~/.ollama/models` and inventories the wrong store |
+| `DAEMON_LLAMACPP_MODELS_DIR` | _(unset)_ | The directory a router-mode `llama-server` serves. Its API names models but never locates them, and a model's identity is its weights file's sha256 — unset, the daemon reports models the catalogue cannot confirm, and each one needs an entry adopted by hand |
 | `DAEMON_HF_HUB_CACHE` | auto-detect | HF hub cache vLLM serves from, for on-disk model identity (shard hashes, repo + commit). Auto-detect order: `$HF_HUB_CACHE`, `$HF_HOME/hub`, `~/.cache/huggingface/hub`. Read-only. |
 | `DAEMON_POLL_INTERVAL` | 5 | Seconds between job polls |
 | `DAEMON_HEARTBEAT_INTERVAL` | 30 | Seconds between heartbeats |
