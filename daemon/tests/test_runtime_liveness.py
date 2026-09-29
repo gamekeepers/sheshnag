@@ -22,6 +22,7 @@ class FlippableExecutor(BaseExecutor):
         self._names = list(names)
         self.healthy = healthy
         self.health_calls = 0
+        self.list_calls = 0
 
     async def execute(self, prompt: PromptRequest) -> CompletionResult:
         return CompletionResult(custom_id=prompt.custom_id, response={})
@@ -33,6 +34,7 @@ class FlippableExecutor(BaseExecutor):
         return True
 
     async def list_models(self):
+        self.list_calls += 1
         if not self.healthy:
             raise ConnectionError("connection refused")
         return list(self._names)
@@ -201,3 +203,17 @@ async def test_payload_omits_statuses_when_nothing_supplies_them():
     payload = await hb._build_payload()
 
     assert payload["runtimes"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_transition_lists_each_runtime_once(tmp_path):
+    """The map rebuild already fetched every runtime's model list; logging
+    what each serves must read that, not fetch it again."""
+    vllm = FlippableExecutor("vllm", ["Org/Served"])
+    ollama = FlippableExecutor("ollama", ["qwen3:4b"])
+    worker = _worker({"vllm": vllm, "ollama": ollama}, tmp_path)
+
+    await worker._get_runtime_statuses()      # first beat is a transition
+
+    assert vllm.list_calls == 1
+    assert ollama.list_calls == 1

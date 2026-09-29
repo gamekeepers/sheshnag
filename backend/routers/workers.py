@@ -316,17 +316,26 @@ def worker_heartbeat(
     # servable. One beat is not evidence — a single slow model listing
     # would otherwise flap the pool.
     #
-    # Only runtimes whose liveness this beat reported are counted. An empty
-    # inventory means "this runtime holds nothing" only from a daemon that
-    # enumerates every runtime it drives; from one that inventories a single
-    # runtime, silence about the others says nothing about them, and marking
-    # their rows missing would delete live capacity every beat.
+    # Two conditions gate the count, because "reported nothing" has more
+    # than one cause and only one of them is evidence.
+    #
+    # The runtime's liveness must be in this beat. A daemon that inventories
+    # one runtime and says nothing about the others is not claiming the
+    # others are empty, and counting its silence would delete live capacity
+    # every beat.
+    #
+    # Some runtime must have reported artifacts. A beat carrying none at all
+    # is indistinguishable from inventory reporting having broken — a health
+    # endpoint can answer while a model listing fails — and taking every
+    # runtime's models out on that reading is the more damaging mistake. The
+    # residual: a single-runtime worker that genuinely empties keeps its
+    # stale rows, and dispatch failures are what surface it.
     liveness_engines = {r.type for r in req.runtimes}
     reported_engines = {
         item.runtime for item in req.inventory if getattr(item, "runtime", None)
     }
     for runtime in worker.runtimes:
-        if runtime.engine not in liveness_engines:
+        if runtime.engine not in liveness_engines or not reported_engines:
             continue
         if runtime.engine in reported_engines:
             if runtime.empty_inventory_beats:

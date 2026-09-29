@@ -224,13 +224,20 @@ class Worker:
         if live != self._runtime_live:
             self._runtime_live = live
             await self._refresh_model_map()
+            # Read the map rather than re-listing: it was just built from
+            # these same calls, and it is also the truth about routing —
+            # including a carried-over entry for a runtime whose listing
+            # failed, which a fresh call would not show.
+            served: Dict[str, List[str]] = {}
+            for model, owner in self._model_runtimes.items():
+                served.setdefault(owner, []).append(model)
             for name, ok in live.items():
                 if not ok:
                     continue
-                served = await self._executors[name].list_models()
+                names = served.get(name, [])
                 logger.info(
                     "Runtime '%s' serves: %s",
-                    name, ", ".join(served) if served else "(nothing)",
+                    name, ", ".join(names) if names else "(nothing)",
                 )
 
         return [

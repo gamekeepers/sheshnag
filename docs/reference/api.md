@@ -247,9 +247,14 @@ A runtime whose liveness is reported but whose `inventory` is empty for
 **two consecutive beats** has its `runtime_models` rows marked `missing`, so
 a runtime that is up and holding nothing stops advertising what it used to
 hold. One beat is not enough: a single slow model listing would otherwise
-flap the pool. The count resets the moment inventory returns. This applies
-only to runtimes named in `runtimes` — from a daemon that inventories one
-runtime and says nothing about the others, silence is not evidence.
+flap the pool. The count resets the moment inventory returns.
+
+Two conditions gate it. The runtime must be named in `runtimes` — from a
+daemon that inventories one runtime and says nothing about the others,
+silence is not evidence. And **some** runtime must have reported artifacts
+on that beat: a payload carrying none at all reads the same as inventory
+reporting having broken, and de-listing every runtime on it costs a whole
+worker's capacity. One runtime reporting is enough to judge the rest.
 
 `inventory` (additive; older daemons omit it) is the full on-disk artifact
 list with FILE hashes — Ollama manifest-layer digests, which equal the GGUF

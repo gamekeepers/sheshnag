@@ -400,3 +400,36 @@ def test_a_daemon_that_reports_no_liveness_delists_nothing(auth_client, db):
     rts = _runtimes(db, wid)
     assert {m.name: m.status for m in rts["vllm"].models}["Org/Served"] == AVAILABLE
     assert not rts["vllm"].empty_inventory_beats
+
+
+def test_a_wholly_empty_inventory_delists_nothing(auth_client, db):
+    """Every runtime healthy and the payload carrying no artifacts at all
+    is inventory reporting having broken, not a worker that emptied. Taking
+    every model out on that reading loses a whole worker's capacity."""
+    key, wid = _two_runtime_worker(auth_client, db, "Live Org Six")
+    live = [{"type": "ollama", "status": "ready"},
+            {"type": "vllm", "status": "ready"}]
+
+    for _ in range(4):
+        _beat_with_liveness(auth_client, key, wid, [], live)
+
+    rts = _runtimes(db, wid)
+    assert {m.name: m.status for m in rts["ollama"].models}["lv:4b"] == AVAILABLE
+    assert {m.name: m.status for m in rts["vllm"].models}["Org/Served"] == AVAILABLE
+    assert not rts["ollama"].empty_inventory_beats
+    assert not rts["vllm"].empty_inventory_beats
+
+
+def test_one_runtime_reporting_is_enough_to_judge_the_others(auth_client, db):
+    """Corroboration, not unanimity: once any runtime reports artifacts,
+    inventory reporting demonstrably works and a silent runtime is empty."""
+    key, wid = _two_runtime_worker(auth_client, db, "Live Org Seven")
+    live = [{"type": "ollama", "status": "ready"},
+            {"type": "vllm", "status": "ready"}]
+
+    for _ in range(2):
+        _beat_with_liveness(auth_client, key, wid, [_item("lv:4b", H_KNOWN)], live)
+
+    rts = _runtimes(db, wid)
+    assert {m.name: m.status for m in rts["vllm"].models}["Org/Served"] == MISSING
+    assert {m.name: m.status for m in rts["ollama"].models}["lv:4b"] == AVAILABLE
