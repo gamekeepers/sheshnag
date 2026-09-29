@@ -311,6 +311,12 @@ class WorkerRuntime(Base):
     capabilities = Column(JSON, nullable=True)
     version      = Column(String, nullable=True)
     status     = Column(String, default="ready")  # ready | draining | unavailable
+    # Consecutive beats on which this runtime reported no inventory at all.
+    # A runtime that is down reports nothing, but so does one whose listing
+    # call merely timed out, so a single empty beat is not evidence — see
+    # EMPTY_BEATS_BEFORE_DELISTING in routers/workers.py. Nullable because
+    # `ADD COLUMN` leaves existing rows NULL; read it through `or 0`.
+    empty_inventory_beats = Column(Integer, nullable=True, default=0)
 
     # A runtime that is draining or was never reached still lists its models —
     # they are on that worker's disk and that is worth cataloguing — but it

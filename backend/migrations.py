@@ -72,6 +72,8 @@ MIGRATIONS = [
                "worker_runtimes", "capabilities", JSON()),
     _Migration("worker_runtimes.version",
                "worker_runtimes", "version", String()),
+    _Migration("worker_runtimes.empty_inventory_beats",
+               "worker_runtimes", "empty_inventory_beats", Integer()),
     _Migration("batches.required_capabilities",
                "batches", "required_capabilities", JSON()),
     # Registry schema (#116): model-level capabilities and upstream lineage.

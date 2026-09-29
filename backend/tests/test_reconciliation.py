@@ -74,6 +74,17 @@ def _heartbeat(auth_client, key, worker_id, inventory, loaded=()):
     assert resp.status_code == 200, resp.text
 
 
+def _beat_with_liveness(auth_client, key, worker_id, inventory, runtimes):
+    resp = auth_client.post(
+        f"/workers/{worker_id}/heartbeat",
+        json={"worker_id": worker_id, "activity": "idle",
+              "loaded_models": [], "inventory": inventory,
+              "runtimes": runtimes},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert resp.status_code == 200, resp.text
+
+
 def _rows(db, worker_id):
     db.expire_all()
     return {
@@ -285,3 +296,107 @@ def test_details_stored_and_exposed_in_quarantine(auth_client, superadmin_client
     group = next(g for g in superadmin_client.get("/v1/models/quarantine").json()["data"]
                  if g["sha256"] == "6" * 64)
     assert group["details"] == richer
+
+
+# ─── Per-beat runtime liveness (#141) ────────────────────────
+#
+# Switching a worker from one runtime to another used to need a daemon
+# restart: nothing re-probed the runtimes and nothing told the backend.
+
+def _two_runtime_worker(auth_client, db, org):
+    _entry(db, "zztest-lv-q4km", "lv:4b", H_KNOWN)
+    key = _worker_key(auth_client, org)
+    resp = auth_client.post(
+        "/workers/register",
+        json={"hostname": "zzlive-" + org.split()[-1], "runtimes": [
+            {"type": "ollama", "endpoint": "localhost", "models": ["lv:4b"]},
+            {"type": "vllm", "endpoint": "localhost:8000", "models": ["Org/Served"]},
+        ]},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    return key, resp.json()["worker_id"]
+
+
+def _runtimes(db, worker_id):
+    db.expire_all()
+    return {rt.engine: rt for rt in db.query(WorkerRuntime).filter_by(worker_id=worker_id)}
+
+
+def test_reported_liveness_sets_runtime_status(auth_client, db):
+    key, wid = _two_runtime_worker(auth_client, db, "Live Org One")
+
+    _beat_with_liveness(auth_client, key, wid, [_item("lv:4b", H_KNOWN)], [
+        {"type": "ollama", "status": "ready"},
+        {"type": "vllm", "status": "unavailable"},
+    ])
+
+    rts = _runtimes(db, wid)
+    assert rts["ollama"].status == "ready"
+    assert rts["vllm"].status == "unavailable"
+    assert rts["ollama"].schedulable
+    assert not rts["vllm"].schedulable
+
+
+def test_liveness_never_overwrites_an_operator_drain(auth_client, db):
+    """`draining` is a decision, not an observation."""
+    key, wid = _two_runtime_worker(auth_client, db, "Live Org Two")
+    rts = _runtimes(db, wid)
+    rts["vllm"].status = "draining"
+    db.commit()
+
+    _beat_with_liveness(auth_client, key, wid, [_item("lv:4b", H_KNOWN)], [
+        {"type": "vllm", "status": "ready"},
+    ])
+
+    assert _runtimes(db, wid)["vllm"].status == "draining"
+
+
+def test_two_empty_beats_delist_a_runtime_one_does_not(auth_client, db):
+    key, wid = _two_runtime_worker(auth_client, db, "Live Org Three")
+    live = [{"type": "ollama", "status": "ready"},
+            {"type": "vllm", "status": "ready"}]
+
+    # vLLM reports nothing once: not evidence. A single slow listing must
+    # not take its model out of the pool.
+    _beat_with_liveness(auth_client, key, wid, [_item("lv:4b", H_KNOWN)], live)
+    rts = _runtimes(db, wid)
+    assert {m.name: m.status for m in rts["vllm"].models}["Org/Served"] == AVAILABLE
+    assert rts["vllm"].empty_inventory_beats == 1
+
+    # Twice running: it holds nothing, so the remembered row is stale.
+    _beat_with_liveness(auth_client, key, wid, [_item("lv:4b", H_KNOWN)], live)
+    rts = _runtimes(db, wid)
+    assert {m.name: m.status for m in rts["vllm"].models}["Org/Served"] == MISSING
+    assert {m.name: m.status for m in rts["ollama"].models}["lv:4b"] == AVAILABLE
+
+
+def test_inventory_returning_resets_the_empty_count(auth_client, db):
+    key, wid = _two_runtime_worker(auth_client, db, "Live Org Four")
+    live = [{"type": "ollama", "status": "ready"},
+            {"type": "vllm", "status": "ready"}]
+
+    _beat_with_liveness(auth_client, key, wid, [_item("lv:4b", H_KNOWN)], live)
+    assert _runtimes(db, wid)["vllm"].empty_inventory_beats == 1
+
+    _beat_with_liveness(auth_client, key, wid, [
+        _item("lv:4b", H_KNOWN),
+        _item("Org/Served", None, runtime="vllm"),
+    ], live)
+    rts = _runtimes(db, wid)
+    assert rts["vllm"].empty_inventory_beats == 0
+    assert {m.name: m.status for m in rts["vllm"].models}["Org/Served"] == AVAILABLE
+
+
+def test_a_daemon_that_reports_no_liveness_delists_nothing(auth_client, db):
+    """An older daemon inventories one runtime and says nothing about the
+    others. Silence about a runtime is not a claim that it is empty —
+    counting it would delete live capacity every beat."""
+    key, wid = _two_runtime_worker(auth_client, db, "Live Org Five")
+
+    for _ in range(4):
+        _heartbeat(auth_client, key, wid, [_item("lv:4b", H_KNOWN)])
+
+    rts = _runtimes(db, wid)
+    assert {m.name: m.status for m in rts["vllm"].models}["Org/Served"] == AVAILABLE
+    assert not rts["vllm"].empty_inventory_beats

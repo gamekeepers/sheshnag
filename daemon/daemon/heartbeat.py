@@ -25,6 +25,7 @@ class HeartbeatManager:
         get_loaded_models: Optional[Callable[[], Awaitable[List[str]]]] = None,
         get_loaded_model_digests: Optional[Callable[[], Awaitable[Dict]]] = None,
         get_inventory: Optional[Callable[[], Awaitable[List[Dict]]]] = None,
+        get_runtime_statuses: Optional[Callable[[], Awaitable[List[Dict]]]] = None,
         declared_vram_gb: float = 0.0,
         runtimes: Optional[List[str]] = None,
     ):
@@ -34,6 +35,7 @@ class HeartbeatManager:
         self._get_loaded_models = get_loaded_models
         self._get_loaded_model_digests = get_loaded_model_digests
         self._get_inventory = get_inventory
+        self._get_runtime_statuses = get_runtime_statuses
         self._declared_vram_gb = declared_vram_gb
         # Which engines this worker drives. Only used to keep the
         # zero-VRAM warning honest: llama.cpp is dispatchable without a GPU.
@@ -149,6 +151,21 @@ class HeartbeatManager:
             logger.debug(f"Could not fetch inventory for heartbeat: {e}")
             return []
 
+    async def _fetch_runtime_statuses(self) -> List[Dict]:
+        """Best-effort per-runtime liveness.
+
+        An empty list is what a daemon that cannot report it looks like, and
+        the backend leaves the runtime rows alone in that case — so a failed
+        probe must not masquerade as "every runtime is down".
+        """
+        if self._get_runtime_statuses is None:
+            return []
+        try:
+            return list(await self._get_runtime_statuses())
+        except Exception as e:
+            logger.debug(f"Could not fetch runtime statuses for heartbeat: {e}")
+            return []
+
     async def _build_payload(self):
         # Off the event loop: nvidia-smi is a subprocess with a hard
         # timeout — a wedged driver may cost this worker thread 5s, but
@@ -211,6 +228,10 @@ class HeartbeatManager:
             # entries) so drift (a manual `ollama pull`) surfaces on the
             # next beat. Kept alongside loaded_models for rolling upgrade.
             "inventory": inventory,
+            # Liveness per runtime, probed on this beat. Startup readiness
+            # cannot answer it: a provider who stops one server and starts
+            # another changes the answer without restarting the daemon.
+            "runtimes": await self._fetch_runtime_statuses(),
             "uptime_seconds": int(time.time() - self._start_time),
             "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }

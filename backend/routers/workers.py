@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from typing import Optional
 from auth import get_worker_context
 from scheduler import scheduler, get_catalog_entry, resolve_runtime_model_id
-from reconciliation import apply_inventory, classify
+from reconciliation import AVAILABLE, MISSING, apply_inventory, classify
 from sweeper import MAX_BATCH_ATTEMPTS, requeue_or_fail_batch
 from services.usage_ingest import ingest_usage_records
 import shutil, os, logging
@@ -21,6 +21,12 @@ import shutil, os, logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Beats a runtime may report an empty inventory before its models stop
+# being servable. A runtime that is down reports nothing — and so does one
+# whose model listing timed out once, so a single empty beat would flap the
+# pool. Two consecutive beats is evidence; one is noise.
+EMPTY_BEATS_BEFORE_DELISTING = 2
 
 VALID_TRANSITIONS = {
     "validating":  ["validated", "failed"],
@@ -222,6 +228,27 @@ def worker_heartbeat(
     if req.ram_available_gb is not None:
         worker.ram_available_gb = req.ram_available_gb
 
+    # Liveness per runtime, as the daemon probed it on this beat. Startup
+    # readiness cannot answer it: stopping one runtime and starting another
+    # changes which models this worker can serve without restarting the
+    # daemon, and `can_serve` reads `WorkerRuntime.status` to decide.
+    #
+    # `draining` is an operator decision, not an observation, so a report
+    # never overwrites it. A daemon that sends nothing leaves every row
+    # alone — silence is not a claim that the runtimes are down.
+    by_engine = {rt.engine: rt for rt in worker.runtimes}
+    for reported_runtime in req.runtimes:
+        row = by_engine.get(reported_runtime.type)
+        if row is None or row.status == "draining":
+            continue
+        if row.status != reported_runtime.status:
+            logger.info(
+                "Worker %s runtime %s: %s -> %s",
+                worker.id, row.engine, row.status, reported_runtime.status,
+            )
+            row.status = reported_runtime.status
+            row.updated_at = unix_now()
+
     # Map reported loaded models onto runtime_models.loaded flags. This list
     # carries no runtime tag, so on a mixed worker it can only be applied as a
     # union; `apply_inventory` below re-scopes `loaded` per runtime from the
@@ -283,6 +310,43 @@ def worker_heartbeat(
     # quarantines unknown hashes, flags drift, and marks rows the box no
     # longer holds as missing. See reconciliation.py.
     apply_inventory(db, worker, req.inventory)
+
+    # A runtime that reports no inventory for two beats running holds
+    # nothing, so its remembered rows are stale and must stop being
+    # servable. One beat is not evidence — a single slow model listing
+    # would otherwise flap the pool.
+    #
+    # Only runtimes whose liveness this beat reported are counted. An empty
+    # inventory means "this runtime holds nothing" only from a daemon that
+    # enumerates every runtime it drives; from one that inventories a single
+    # runtime, silence about the others says nothing about them, and marking
+    # their rows missing would delete live capacity every beat.
+    liveness_engines = {r.type for r in req.runtimes}
+    reported_engines = {
+        item.runtime for item in req.inventory if getattr(item, "runtime", None)
+    }
+    for runtime in worker.runtimes:
+        if runtime.engine not in liveness_engines:
+            continue
+        if runtime.engine in reported_engines:
+            if runtime.empty_inventory_beats:
+                runtime.empty_inventory_beats = 0
+                runtime.updated_at = unix_now()
+            continue
+        beats = (runtime.empty_inventory_beats or 0) + 1
+        runtime.empty_inventory_beats = beats
+        runtime.updated_at = unix_now()
+        if beats < EMPTY_BEATS_BEFORE_DELISTING:
+            continue
+        for model in runtime.models:
+            if model.status == AVAILABLE:
+                model.status = MISSING
+                model.updated_at = unix_now()
+                logger.info(
+                    "Worker %s runtime %s reported no inventory for %s beats "
+                    "— %s is no longer servable",
+                    worker.id, runtime.engine, beats, model.name,
+                )
 
     db.commit()
     return {"status": "ok", "worker_id": worker_id}

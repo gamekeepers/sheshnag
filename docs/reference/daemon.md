@@ -65,7 +65,7 @@ daemon/
 │   ├── log.py               # Logging setup
 │   ├── client.py            # BackendClient — all control-plane HTTP
 │   ├── worker.py            # Poll → download → execute → upload loop
-│   ├── heartbeat.py         # HeartbeatManager (activity + capability stats)
+│   ├── heartbeat.py         # HeartbeatManager (activity, capabilities, runtime liveness)
 │   ├── hardware.py          # GPU/CPU/RAM inspection (nvidia-smi etc.)
 │   ├── registration.py      # Registration + credential persistence
 │   ├── model_manager.py     # Ollama model pulls (on-the-fly downloads)
@@ -90,7 +90,7 @@ daemon/
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/workers/register` | POST | Register; backend assigns and returns `worker_id` |
-| `/workers/{worker_id}/heartbeat` | POST | Liveness + `activity` (idle/busy/downloading_model) + VRAM/loaded-model stats |
+| `/workers/{worker_id}/heartbeat` | POST | Liveness + `activity` (idle/busy/downloading_model) + VRAM/loaded-model stats + per-runtime reachability |
 | `/workers/poll` | POST | Poll for available batches |
 | `/v1/files/{id}/content` | GET | Download input JSONL (path from poll response) |
 | `/workers/progress` | POST | Live prompt counts, time-throttled (default 5s) plus a guaranteed final report |

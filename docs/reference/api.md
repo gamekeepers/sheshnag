@@ -219,6 +219,10 @@ assigned to (403 otherwise).
      "details": {"quantization": "Q4_K_M", "parameter_size": "7.2B",
                  "context_length": 32768, "family": "llama"}}
   ],
+  "runtimes": [
+    {"type": "ollama", "status": "ready"},
+    {"type": "vllm", "status": "unavailable"}
+  ],
   "uptime_seconds": 3600
 }
 ```
@@ -228,6 +232,24 @@ now**, not present on disk — Ollama reads them from `/api/ps`, vLLM from the
 models it serves. `loaded_models` carries no runtime tag, so on a mixed worker
 the backend can only apply it as a union; `inventory[].loaded` is tagged and
 therefore authoritative, and a daemon that sends no inventory keeps the union.
+
+`runtimes` is each configured runtime's reachability, probed on the beat that
+carries it. Startup readiness cannot answer it: a provider who stops one
+server and starts another changes which models the worker can serve without
+restarting the daemon, and `can_serve` reads `worker_runtimes.status` to
+decide. A reported `unavailable` takes the runtime out of the pool on that
+beat; `ready` puts it back. `draining` is an operator decision rather than an
+observation, so a report never overwrites it, and an **empty list** means the
+daemon does not report liveness at all — the rows are then left alone, which
+is not the same as claiming every runtime is down.
+
+A runtime whose liveness is reported but whose `inventory` is empty for
+**two consecutive beats** has its `runtime_models` rows marked `missing`, so
+a runtime that is up and holding nothing stops advertising what it used to
+hold. One beat is not enough: a single slow model listing would otherwise
+flap the pool. The count resets the moment inventory returns. This applies
+only to runtimes named in `runtimes` — from a daemon that inventories one
+runtime and says nothing about the others, silence is not evidence.
 
 `inventory` (additive; older daemons omit it) is the full on-disk artifact
 list with FILE hashes — Ollama manifest-layer digests, which equal the GGUF

@@ -271,6 +271,17 @@ class InventoryItem(BaseModel):
     files: Optional[List[InventoryFile]] = None
 
 
+class RuntimeLiveness(BaseModel):
+    """One runtime's reachability, as the daemon found it this beat.
+
+    `WorkerRuntime.status` carries a third value, `draining`, which is an
+    operator decision rather than an observation — a daemon never reports
+    it and the backend never overwrites it from here.
+    """
+    type: str
+    status: Literal["ready", "unavailable"] = "ready"
+
+
 class WorkerHeartbeatRequest(BaseModel):
     """Unified worker heartbeat (spec §8.1: dynamic properties).
 
@@ -299,6 +310,10 @@ class WorkerHeartbeatRequest(BaseModel):
     # hashes, so availability rows stay identity-true and drift (a manual
     # `ollama pull`) surfaces on the next beat.
     inventory: List[InventoryItem] = []
+    # Liveness per runtime, probed on the beat that carries it. An empty
+    # list means the daemon does not report it, and the runtime rows are
+    # left alone — distinct from a list saying every runtime is down.
+    runtimes: List["RuntimeLiveness"] = []
     uptime_seconds: int = 0
 
 

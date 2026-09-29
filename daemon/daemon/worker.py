@@ -51,6 +51,11 @@ logger = get_logger(__name__)
 READINESS_MAX_RETRIES = 12
 READINESS_RETRY_DELAY = 5.0
 
+# A per-beat health check must not hold up the beat. Executors bound their
+# own requests, but a runtime that accepts a connection and then stalls
+# would otherwise stretch the heartbeat interval.
+LIVENESS_PROBE_TIMEOUT = 8.0
+
 
 class Worker:
     """
@@ -83,6 +88,10 @@ class Worker:
         # model name → runtime name; rebuilt from each runtime's model
         # list (see _refresh_model_map).
         self._model_runtimes: Dict[str, str] = {}
+        # runtime name → reachable, as of the last beat. Seeded by
+        # wait_for_runtimes so the first beat reports startup's own finding
+        # rather than a transition away from nothing.
+        self._runtime_live: Dict[str, bool] = {}
 
         self._heartbeat = HeartbeatManager(
             client=client,
@@ -91,6 +100,7 @@ class Worker:
             get_loaded_models=self._get_loaded_models,
             get_loaded_model_digests=self._get_loaded_model_digests,
             get_inventory=self._get_inventory,
+            get_runtime_statuses=self._get_runtime_statuses,
             declared_vram_gb=config.vram_gb,
             runtimes=list(executors),
         )
@@ -172,6 +182,61 @@ class Worker:
                     stamped["loaded"] = stamped.get("local_name") in resident
                 items.append(stamped)
         return items
+
+    async def _get_runtime_statuses(self) -> List[dict]:
+        """Per-runtime liveness for the heartbeat, probed fresh each beat.
+
+        Startup readiness answers "can this worker serve anything yet"; this
+        answers "which runtimes can it serve *now*", which is a different
+        question once a provider stops one server and starts another. Without
+        it the control plane keeps offering models from a runtime that died
+        and never learns about one that arrived, until the daemon restarts.
+
+        A runtime that comes back also needs its models routable again, so a
+        change in either direction rebuilds the model map. The map is what
+        `_executor_for` consults, and it is otherwise built once at startup.
+
+        Never raises: a probe that errors or hangs reports `unavailable`,
+        which is what the runtime being unreachable means.
+        """
+        async def probe(name: str, executor: BaseExecutor) -> bool:
+            try:
+                return bool(await asyncio.wait_for(
+                    executor.health_check(), timeout=LIVENESS_PROBE_TIMEOUT,
+                ))
+            except Exception as exc:
+                logger.debug(f"Runtime '{name}' liveness probe failed: {exc}")
+                return False
+
+        names = list(self._executors)
+        outcomes = await asyncio.gather(*(
+            probe(name, self._executors[name]) for name in names
+        ))
+        live = {name: ok for name, ok in zip(names, outcomes)}
+
+        for name, ok in live.items():
+            was = self._runtime_live.get(name)
+            if was is ok:
+                continue
+            logger.info(
+                "Runtime '%s' is now %s", name, "reachable" if ok else "unreachable",
+            )
+        if live != self._runtime_live:
+            self._runtime_live = live
+            await self._refresh_model_map()
+            for name, ok in live.items():
+                if not ok:
+                    continue
+                served = await self._executors[name].list_models()
+                logger.info(
+                    "Runtime '%s' serves: %s",
+                    name, ", ".join(served) if served else "(nothing)",
+                )
+
+        return [
+            {"type": name, "status": "ready" if ok else "unavailable"}
+            for name, ok in live.items()
+        ]
 
     # ── Public API ───────────────────────────────────────────────
 
@@ -840,6 +905,7 @@ class Worker:
             for name, executor in self._executors.items()
         ))
         ready = [name for name, ok in zip(self._executors, outcomes) if ok]
+        self._runtime_live = dict(zip(self._executors, outcomes))
         for name, ok in zip(self._executors, outcomes):
             if ok:
                 continue
