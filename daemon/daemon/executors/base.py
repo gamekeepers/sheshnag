@@ -35,6 +35,7 @@ class BaseExecutor(ABC):
     Subclasses MAY override:
         - batch_execute(): optimize for batch processing
         - close(): release resources on shutdown
+        - list_models(): the names that route to this runtime
         - pull_model() + supports_pull: fetch models the runtime lacks
     """
 
@@ -144,6 +145,16 @@ class BaseExecutor(ABC):
             result = await self.execute(prompt)
             results.append(result)
         return results
+
+    async def list_models(self) -> List[str]:
+        """Every model name this runtime answers to, loaded or not.
+
+        Drives the worker's model→runtime routing map, and is what a fetch
+        is checked against before and after it runs. An empty list means no
+        name routes here, so a job naming one of this runtime's models fails
+        as unhosted. Must never raise.
+        """
+        return []
 
     async def list_running_models(self) -> List[str]:
         """Model names resident in the runtime right now, not merely on disk.

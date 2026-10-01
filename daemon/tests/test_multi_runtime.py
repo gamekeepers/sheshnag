@@ -86,8 +86,27 @@ class FakeExecutor(BaseExecutor):
         self.closed = True
 
 
+class FakeFetcher(FakeExecutor):
+    """A non-Ollama runtime that declares a fetch path: a successful pull
+    adds the name to what it serves, as a real runtime serves what it has
+    fetched."""
+
+    supports_pull = True
+
+    def __init__(self, runtime, names, pull_ok=True, **kwargs):
+        super().__init__(runtime, names, **kwargs)
+        self._pull_ok = pull_ok
+        self.pulled = []
+
+    async def pull_model(self, model_name, progress_callback=None):
+        self.pulled.append(model_name)
+        if self._pull_ok:
+            self._names.append(model_name)
+        return self._pull_ok
+
+
 class BareExecutor(BaseExecutor):
-    """No list_models / list_models_detailed -- the static-config fallback."""
+    """Lists nothing of its own -- the static-config fallback."""
 
     runtime_name = "bare"
 
@@ -527,21 +546,65 @@ class TestModelRouting:
 
     @pytest.mark.asyncio
     async def test_runtime_without_a_fetch_path_is_never_asked_to_fetch(self, tmp_path):
-        # vLLM serves what it was started with and obtains nothing on
-        # demand. It carries no manager, so an unroutable job fails on
-        # routing and no download is reported against a runtime that could
-        # not have attempted one.
+        # Two runtimes, neither of which obtains a model on demand, so a
+        # name hosted by neither stays unroutable. The job fails as
+        # unhosted and the provider is shown no download, because no
+        # runtime here could have attempted one.
         vllm = FakeExecutor("vllm", ["b"])
-        worker = _worker({"vllm": vllm}, tmp_path)
+        llamacpp = FakeExecutor("llamacpp", ["c"])
+        worker = _worker({"vllm": vllm, "llamacpp": llamacpp}, tmp_path)
         await worker._refresh_model_map()
         assert worker._model_managers == {}
+        assert await worker._executor_for("ghost") is None
 
         job = Job(job_id="j1", model="ghost", input_path="/x")
         await worker._execute_job(job)
 
         assert worker._client.progress_calls == []
+        assert worker._client.failure_calls == [
+            ("j1", "No runtime on this worker hosts model 'ghost'")
+        ]
+        assert worker._client.upload_calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_non_ollama_runtime_fetches_and_routes_its_own_model(self, tmp_path):
+        # The fetch path belongs to whichever runtime declares it, so a
+        # runtime that is not Ollama fetches its own model and the map
+        # re-resolves onto it.
+        client = MockClient(input_lines=[
+            {"custom_id": "p1", "url": "/v1/chat/completions",
+             "body": {"messages": [{"role": "user", "content": "hi"}]}},
+        ])
+        fetcher = FakeFetcher("llamacpp", ["a"])
+        vllm = FakeExecutor("vllm", ["b"])
+        worker = _worker({"vllm": vllm, "llamacpp": fetcher}, tmp_path, client=client)
+        await worker._refresh_model_map()
+        assert set(worker._model_managers) == {"llamacpp"}
+        assert "fresh-model" not in worker._model_runtimes
+
+        job = Job(job_id="j1", model="fresh-model", input_path="/x")
+        await worker._execute_job(job)
+
+        assert fetcher.pulled == ["fresh-model"]
+        assert client.failure_calls == []
+        assert client.upload_calls == [("j1", 1, 0)]
+        assert worker._model_runtimes["fresh-model"] == "llamacpp"
+
+    @pytest.mark.asyncio
+    async def test_a_non_ollama_fetch_failure_fails_the_job(self, tmp_path):
+        # A fetch the runtime cannot complete leaves the model unroutable,
+        # and the worker never guesses at another target for it.
+        fetcher = FakeFetcher("llamacpp", ["a"], pull_ok=False)
+        vllm = FakeExecutor("vllm", ["b"])
+        worker = _worker({"vllm": vllm, "llamacpp": fetcher}, tmp_path)
+        await worker._refresh_model_map()
+
+        job = Job(job_id="j1", model="ghost", input_path="/x")
+        await worker._execute_job(job)
+
+        assert fetcher.pulled == ["ghost"]
         assert len(worker._client.failure_calls) == 1
-        assert "download" not in worker._client.failure_calls[0][1].lower()
+        assert "ghost" in worker._client.failure_calls[0][1]
         assert worker._client.upload_calls == []
 
 
