@@ -36,7 +36,6 @@ import httpx
 from daemon.client import BackendClient
 from daemon.config import DaemonConfig
 from daemon.executors.base import BaseExecutor
-from daemon.executors.ollama import OllamaExecutor
 from daemon.executor_factory import VLLM_ROCM_HINT
 from daemon.hardware import gpu_vendors_present
 from daemon.log import get_logger
@@ -105,18 +104,12 @@ class Worker:
             runtimes=list(executors),
         )
 
-        # Ollama is the only runtime that can pull models on demand.
-        self._ollama_executor = next(
-            (ex for ex in executors.values() if isinstance(ex, OllamaExecutor)),
-            None,
-        )
-        self._model_manager = None
-        if self._ollama_executor is not None:
-            self._model_manager = ModelManager(
-                executor=self._ollama_executor,
-                client=client,
-                worker_id=config.worker_id,
-            )
+        # Any runtime may now support pull_model (the check happens at call
+        # time via the False-returning default, not via isinstance).
+        self._model_managers: Dict[str, ModelManager] = {
+            runtime: ModelManager(executor=ex, client=client, worker_id=config.worker_id)
+            for runtime, ex in executors.items()
+        }
 
         # Ensure work directory exists
         self._work_dir = Path(config.work_dir)
@@ -256,8 +249,8 @@ class Worker:
         client.update_worker_id().
         """
         self._heartbeat.update_worker_id(worker_id)
-        if self._model_manager is not None:
-            self._model_manager.update_worker_id(worker_id)
+        for mm in self._model_managers.values():
+            mm.update_worker_id(worker_id)
 
     async def start(self) -> None:
         """
@@ -399,14 +392,24 @@ class Worker:
             )
             return
 
-        # ── Step 0b: Ensure model is available (Ollama pulls) ─────────
-        if self._model_manager and job.model and executor is self._ollama_executor:
-            self._heartbeat.update_status("downloading_model", job.job_id)
-            available = await self._model_manager.ensure_model(job.model)
-            if not available:
-                await self._client.report_failure(job.job_id, f"Failed to download model: {job.model}")
-                self._heartbeat.update_status("idle")
-                return
+        # ── Step 0b: Ensure model is available (pull if needed) ────────
+        # Resolve which runtime this executor belongs to, then use its
+        # model manager. Any runtime may now support pull_model.
+        if job.model and executor is not None:
+            runtime_name = next(
+                (r for r, ex in self._executors.items() if ex is executor),
+                None,
+            )
+            mm = self._model_managers.get(runtime_name) if runtime_name else None
+            if mm:
+                self._heartbeat.update_status("downloading_model", job.job_id)
+                available = await mm.ensure_model(job.model)
+                if not available:
+                    await self._client.report_failure(
+                        job.job_id, f"Failed to download model: {job.model}"
+                    )
+                    self._heartbeat.update_status("idle")
+                    return
 
         # ── Step 1: Download input ───────────────────────────────
         self._heartbeat.update_status("busy", job.job_id)
@@ -876,23 +879,25 @@ class Worker:
         self._model_runtimes = mapping
 
     async def _pull_unrouted_model(self, job: Job) -> Optional[BaseExecutor]:
-        """Route an unrouted model by pulling it with Ollama, if possible.
+        """Route an unrouted model by pulling it via any runtime's fetch path.
 
         A mixed worker's map only knows what is already on the box, so a
         catalogue model dispatched here before its first pull would fail
-        outright — the case a single-runtime Ollama worker always handled
-        via the ensure_model path. Pull, then re-resolve; None when this
-        worker has no Ollama runtime, the pull fails, or the model is
-        still unroutable.
+        outright. Each runtime's model manager is tried in turn; the
+        first successful pull wins. None when no runtime can pull, the
+        pull fails, or the model is still unroutable afterwards.
         """
-        if self._ollama_executor is None or self._model_manager is None:
+        if not self._model_managers:
             return None
         self._heartbeat.update_status("downloading_model", job.job_id)
-        available = await self._model_manager.ensure_model(job.model)
-        executor = await self._executor_for(job.model) if available else None
-        if executor is None:
-            self._heartbeat.update_status("idle")
-        return executor
+        for runtime, mm in self._model_managers.items():
+            available = await mm.ensure_model(job.model)
+            if available:
+                executor = await self._executor_for(job.model)
+                if executor is not None:
+                    return executor
+        self._heartbeat.update_status("idle")
+        return None
 
     # ── Runtime Readiness ────────────────────────────────────────
 

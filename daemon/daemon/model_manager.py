@@ -1,17 +1,17 @@
 import logging
 from typing import Set
 
-from daemon.executors.ollama import OllamaExecutor
+from daemon.executors.base import BaseExecutor
 from daemon.client import BackendClient
 
 logger = logging.getLogger(__name__)
 
 class ModelManager:
     """
-    Manages model availability and downloads via Ollama.
+    Manages model availability and downloads for any runtime.
     """
     
-    def __init__(self, executor: OllamaExecutor, client: BackendClient, worker_id: str):
+    def __init__(self, executor: BaseExecutor, client: BackendClient, worker_id: str):
         self._executor = executor
         self._client = client
         self._worker_id = worker_id
@@ -40,12 +40,12 @@ class ModelManager:
         if model_name in self._available_models:
             return True
         
-        # Check with Ollama directly
+        # Check with the runtime directly
         await self.refresh_models()
         if model_name in self._available_models:
             return True
             
-        logger.info(f"Model '{model_name}' not found locally — downloading via Ollama...")
+        logger.info(f"Model '{model_name}' not found locally — attempting to pull...")
         
         async def progress_callback(progress):
             await self._client.report_model_download(

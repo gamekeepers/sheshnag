@@ -19,7 +19,7 @@ Week 2+ extensions:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Dict, List
+from typing import Awaitable, Callable, Dict, List, Optional
 
 from daemon.models import CompletionResult, PromptRequest
 
@@ -152,6 +152,28 @@ class BaseExecutor(ABC):
         preference worthless. Must never raise.
         """
         return []
+
+    async def pull_model(
+        self,
+        model_name: str,
+        progress_callback: Optional[Callable[[dict], Awaitable[None]]] = None,
+    ) -> bool:
+        """Fetch a model into this runtime's store.
+
+        Optional capability — subclasses that can fetch models override
+        this; the default returns False. The return value alone does not
+        separate "cannot fetch" from "tried and failed"; implementations
+        log why inside.
+
+        Args:
+            model_name:        Runtime model id to fetch.
+            progress_callback: Async callable receiving
+                               ``{"status": ..., "completed": N, "total": N}``.
+
+        Returns:
+            True if the model is now available, False otherwise.
+        """
+        return False
 
     async def inventory(self) -> List[dict]:
         """
