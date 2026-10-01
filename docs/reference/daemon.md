@@ -68,7 +68,7 @@ daemon/
 │   ├── heartbeat.py         # HeartbeatManager (activity, capabilities, runtime liveness)
 │   ├── hardware.py          # GPU/CPU/RAM inspection (nvidia-smi etc.)
 │   ├── registration.py      # Registration + credential persistence
-│   ├── model_manager.py     # Ollama model pulls (on-the-fly downloads)
+│   ├── model_manager.py     # On-the-fly pulls, per fetch-capable runtime
 │   ├── executor_factory.py  # runtime config → executor instance
 │   ├── executors/
 │   │   ├── base.py          # BaseExecutor ABC
@@ -94,7 +94,7 @@ daemon/
 | `/workers/poll` | POST | Poll for available batches |
 | `/v1/files/{id}/content` | GET | Download input JSONL (path from poll response) |
 | `/workers/progress` | POST | Live prompt counts, time-throttled (default 5s) plus a guaranteed final report |
-| `/workers/model-progress` | POST | Model download progress (Ollama pulls) |
+| `/workers/model-progress` | POST | Model download progress, from whichever runtime is fetching |
 | `/workers/upload-results` | POST | Upload output JSONL + `worker_id` + real completed/failed counts |
 | `/workers/report-failure` | POST | Report failure — backend requeues (max 3 attempts) |
 
