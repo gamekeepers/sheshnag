@@ -104,11 +104,13 @@ class Worker:
             runtimes=list(executors),
         )
 
-        # Any runtime may now support pull_model (the check happens at call
-        # time via the False-returning default, not via isinstance).
+        # One manager per runtime that declares a fetch path. A runtime
+        # absent from this map obtains nothing on demand, so a job naming a
+        # model it does not hold carries that runtime's own error.
         self._model_managers: Dict[str, ModelManager] = {
             runtime: ModelManager(executor=ex, client=client, worker_id=config.worker_id)
             for runtime, ex in executors.items()
+            if ex.supports_pull
         }
 
         # Ensure work directory exists
@@ -393,8 +395,9 @@ class Worker:
             return
 
         # ── Step 0b: Ensure model is available (pull if needed) ────────
-        # Resolve which runtime this executor belongs to, then use its
-        # model manager. Any runtime may now support pull_model.
+        # The executor identifies its runtime, and the runtime selects the
+        # manager. A runtime with no fetch path has no manager here, so the
+        # job proceeds to execution and fails on the runtime's own error.
         if job.model and executor is not None:
             runtime_name = next(
                 (r for r, ex in self._executors.items() if ex is executor),
@@ -879,13 +882,13 @@ class Worker:
         self._model_runtimes = mapping
 
     async def _pull_unrouted_model(self, job: Job) -> Optional[BaseExecutor]:
-        """Route an unrouted model by pulling it via any runtime's fetch path.
+        """Route an unrouted model by pulling it via a runtime's fetch path.
 
         A mixed worker's map only knows what is already on the box, so a
         catalogue model dispatched here before its first pull would fail
-        outright. Each runtime's model manager is tried in turn; the
-        first successful pull wins. None when no runtime can pull, the
-        pull fails, or the model is still unroutable afterwards.
+        outright. Every runtime declaring a fetch path is tried in turn and
+        the first success wins. None when no runtime can fetch, the fetch
+        fails, or the model is still unroutable afterwards.
         """
         if not self._model_managers:
             return None

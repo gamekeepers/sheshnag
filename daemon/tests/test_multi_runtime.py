@@ -525,6 +525,25 @@ class TestModelRouting:
         assert "ghost" in worker._client.failure_calls[0][1]
         assert worker._client.upload_calls == []
 
+    @pytest.mark.asyncio
+    async def test_runtime_without_a_fetch_path_is_never_asked_to_fetch(self, tmp_path):
+        # vLLM serves what it was started with and obtains nothing on
+        # demand. It carries no manager, so an unroutable job fails on
+        # routing and no download is reported against a runtime that could
+        # not have attempted one.
+        vllm = FakeExecutor("vllm", ["b"])
+        worker = _worker({"vllm": vllm}, tmp_path)
+        await worker._refresh_model_map()
+        assert worker._model_managers == {}
+
+        job = Job(job_id="j1", model="ghost", input_path="/x")
+        await worker._execute_job(job)
+
+        assert worker._client.progress_calls == []
+        assert len(worker._client.failure_calls) == 1
+        assert "download" not in worker._client.failure_calls[0][1].lower()
+        assert worker._client.upload_calls == []
+
 
 # -- Worker id adoption after registration -----------------------------
 
@@ -543,19 +562,21 @@ class TestWorkerIdAdoption:
         worker = _worker({"vllm": vllm, "ollama": ollama}, tmp_path)
         placeholder = worker._config.worker_id
         assert worker._heartbeat._worker_id == placeholder
-        assert worker._model_manager._worker_id == placeholder
+        # vLLM declares no fetch path, so only Ollama carries a manager.
+        assert set(worker._model_managers) == {"ollama"}
+        assert worker._model_managers["ollama"]._worker_id == placeholder
 
         worker.update_worker_id("worker-assigned-123")
 
         assert worker._heartbeat._worker_id == "worker-assigned-123"
-        assert worker._model_manager._worker_id == "worker-assigned-123"
+        assert worker._model_managers["ollama"]._worker_id == "worker-assigned-123"
 
     def test_update_worker_id_without_ollama(self, tmp_path):
         # A vLLM-only node has no ModelManager — adoption must not
         # trip over the missing manager.
         vllm = FakeExecutor("vllm", ["b"])
         worker = _worker({"vllm": vllm}, tmp_path)
-        assert worker._model_manager is None
+        assert worker._model_managers == {}
         worker.update_worker_id("worker-assigned-456")
         assert worker._heartbeat._worker_id == "worker-assigned-456"
 

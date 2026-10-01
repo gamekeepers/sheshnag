@@ -88,6 +88,9 @@ class OllamaExecutor(BaseExecutor):
         GET  /api/ps       - list running models
         GET  /api/version  - get version info
     """
+
+    # POST /api/pull fetches a model the daemon does not hold.
+    supports_pull = True
     
     #: Ollama's /api/embed accepts a list of inputs in one request.
     embedding_chunk_size: int = 64

@@ -35,7 +35,13 @@ class BaseExecutor(ABC):
     Subclasses MAY override:
         - batch_execute(): optimize for batch processing
         - close(): release resources on shutdown
+        - pull_model() + supports_pull: fetch models the runtime lacks
     """
+
+    # Whether pull_model() can obtain a model this runtime does not hold.
+    # Read before a fetch is attempted, so a runtime without one is never
+    # asked and never reports a download failure it could not have avoided.
+    supports_pull: bool = False
 
     @abstractmethod
     async def execute(self, prompt: PromptRequest) -> CompletionResult:
