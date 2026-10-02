@@ -9,6 +9,10 @@ const MUTED = '#5c5f73';
 const PAPER = '#faf8f5';
 const LINE = 'rgba(22,24,45,0.12)';
 
+// The project's own community, which every deployment shares — the one link
+// here that points somewhere Sheshnag does not host.
+const DISCORD_URL = 'https://discord.gg/cUwabPc4h';
+
 function Logo({ size = 26 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -259,6 +263,7 @@ export default function Home() {
             <a href="/signup" style={{ color: MUTED, textDecoration: 'none' }}>Sign up</a>
             <a href="/provider" style={{ color: MUTED, textDecoration: 'none' }}>Provider portal</a>
             <a href={docsUrl()} target="_blank" rel="noreferrer" style={{ color: MUTED, textDecoration: 'none' }}>Documentation</a>
+            <a href={DISCORD_URL} target="_blank" rel="noreferrer" style={{ color: MUTED, textDecoration: 'none' }}>Discord</a>
           </div>
           <span style={{ fontSize: 13, color: 'rgba(22,24,45,0.4)' }}>
             A thousand heads, one platform · © {new Date().getFullYear()} Sheshnag, by Gamekeepers

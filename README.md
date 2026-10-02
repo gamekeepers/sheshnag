@@ -8,6 +8,7 @@
   <a href="LICENSE"><img alt="Licence: Apache 2.0" src="https://img.shields.io/badge/licence-Apache%202.0-blue.svg"></a>
   <a href="https://github.com/gamekeepers/sheshnag/actions/workflows/docs.yml"><img alt="Docs build" src="https://github.com/gamekeepers/sheshnag/actions/workflows/docs.yml/badge.svg?branch=develop"></a>
   <a href="https://sheshnag.io"><img alt="Documentation" src="https://img.shields.io/badge/docs-sheshnag.io-0F6E56"></a>
+  <a href="https://discord.gg/cUwabPc4h"><img alt="Community on Discord" src="https://img.shields.io/badge/community-Discord-5865F2"></a>
   <img alt="Status: pilot" src="https://img.shields.io/badge/status-pilot-orange">
 </p>
 
@@ -75,9 +76,10 @@ Each guide reads front to back, once.
 | **Change the code** | [Work on Sheshnag](docs/develop.md) | three services locally, tests green |
 
 Evaluating Sheshnag for an institution and want a hand standing up a pilot?
-[Open an issue](https://github.com/gamekeepers/sheshnag/issues/new) — at this
-stage we would rather support a few deployments properly than watch many fail
-quietly.
+Ask in [Discord](https://discord.gg/cUwabPc4h), or
+[open an issue](https://github.com/gamekeepers/sheshnag/issues/new) for anything
+that should leave a trace — at this stage we would rather support a few
+deployments properly than watch many fail quietly.
 
 ## Components
 
