@@ -157,6 +157,22 @@ PY
       echo "WARNING: neither nvidia-smi nor rocm-smi found. The daemon will run but report no GPU."
   fi
 
+  # Which Ollama build this host can execute. It only matters if step 3 has to
+  # download one, but an architecture with no build is caught here, before any
+  # questions: the alternative is unpacking a binary that fails to execute with
+  # an error naming Ollama rather than this script.
+  case "$(uname -m)" in
+    x86_64|amd64)  OLLAMA_ARCH="amd64" ;;
+    aarch64|arm64) OLLAMA_ARCH="arm64" ;;
+    *)             OLLAMA_ARCH="" ;;
+  esac
+  if [ -z "$OLLAMA_ARCH" ] && ! command -v ollama >/dev/null 2>&1; then
+      echo "Error: no Ollama build is known for this architecture ($(uname -m))."
+      echo "Install Ollama yourself so that 'ollama' is on PATH, then re-run;"
+      echo "the installer skips the download when it finds one."
+      exit 1
+  fi
+
   # ── Where this machine installs ────────────────────────────────────────
   # Deliberately after the prerequisite check: these use hostname/stat/tr, and
   # a box missing them should get the "Missing:" message above, not a bare 127.
@@ -290,18 +306,35 @@ PY
       echo "Ollama already installed (user-local)."
       OLLAMA_USER_LOCAL=1
   else
-      echo "Installing Ollama into $DAEMON_DIR (no root needed)..."
-      # The tarball ships bin/ollama plus lib/ (needed for GPU support);
-      # extract the whole tree under the install directory.
-      if curl -fL "https://ollama.com/download/ollama-linux-amd64.tgz" -o "$DAEMON_DIR/ollama.tgz"; then
-          tar -xzf "$DAEMON_DIR/ollama.tgz" -C "$DAEMON_DIR"
-          rm -f "$DAEMON_DIR/ollama.tgz"
-          chmod +x "$DAEMON_DIR/bin/ollama"
-          OLLAMA_USER_LOCAL=1
-      else
-          echo "ERROR: Ollama download failed — install it manually, then re-run."
-          exit 1
-      fi
+      # The base tarball ships bin/ollama plus lib/ (CPU and CUDA); AMD
+      # support is a separate ROCm tarball unpacked over it, published for
+      # amd64 only. Extract each whole tree under the install directory.
+      OLLAMA_TARBALLS="ollama-linux-$OLLAMA_ARCH.tgz"
+      case "$GPU_TOOLING" in
+        *amd*)
+          if [ "$OLLAMA_ARCH" = "amd64" ]; then
+              OLLAMA_TARBALLS="$OLLAMA_TARBALLS ollama-linux-amd64-rocm.tgz"
+          else
+              echo "WARNING: Ollama publishes no ROCm build for $OLLAMA_ARCH — jobs will run on CPU."
+          fi
+          ;;
+      esac
+      echo "Installing Ollama ($OLLAMA_TARBALLS) into $DAEMON_DIR (no root needed)..."
+      for tarball in $OLLAMA_TARBALLS; do
+          if curl -fL "https://ollama.com/download/$tarball" -o "$DAEMON_DIR/ollama.tgz" \
+             && tar -xzf "$DAEMON_DIR/ollama.tgz" -C "$DAEMON_DIR"; then
+              rm -f "$DAEMON_DIR/ollama.tgz"
+          else
+              # Drop the binary too: a re-run skips the download whenever
+              # bin/ollama exists, so a base install whose ROCm half failed
+              # would otherwise never get it.
+              rm -f "$DAEMON_DIR/ollama.tgz" "$DAEMON_DIR/bin/ollama"
+              echo "ERROR: Ollama download failed ($tarball) — install it manually, then re-run."
+              exit 1
+          fi
+      done
+      chmod +x "$DAEMON_DIR/bin/ollama"
+      OLLAMA_USER_LOCAL=1
   fi
 
   # 4. Daemon code + Python environment

@@ -46,7 +46,7 @@ You can stop lending at any time with one command — see
 |---|---|
 | **Linux** | The installer exits on anything else. |
 | **Python 3.10+**, **git**, **curl** | Checked, not installed. If any is missing the installer stops and prints the package list to hand your admin. |
-| **A GPU the daemon can see** | Optional but the entire point. The daemon detects NVIDIA (via `nvidia-smi`), AMD (via `rocm-smi`) and Apple Silicon (via Metal); on anything else it runs, reports no GPU, and sits idle — set `DAEMON_VRAM_GB` to advertise a capacity by hand. **Detected is not yet the same as runnable:** the installer still fetches an x86-64 Ollama whatever the host, so an AMD or arm64 machine gets no working runtime out of the box ([#81](https://github.com/gamekeepers/sheshnag/issues/81)), and the installer is Linux-only regardless. |
+| **A GPU the daemon can see** | Optional but the entire point. The daemon detects NVIDIA (via `nvidia-smi`), AMD (via `rocm-smi`) and Apple Silicon (via Metal); on anything else it runs, reports no GPU, and sits idle — set `DAEMON_VRAM_GB` to advertise a capacity by hand. The installer fetches the Ollama build for your architecture (x86-64 or arm64, anything else stops with an error) and adds the ROCm build on AMD; an AMD card still needs group access only an admin can grant — see [AMD GPUs](provider-hardware.md#amd-gpus). The installer is Linux-only. |
 | **The platform URL** | From whoever runs the deployment, e.g. `https://sheshnag.example.edu`. |
 | **A worker key** (`gk-…`) | See below. |
 

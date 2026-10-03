@@ -3,8 +3,9 @@
 **Who this is for:** you have installed the daemon (see [Lend your GPU](provider.md)) and
 want it to do useful work rather than sit idle or fail jobs.
 
-The installer sets up Ollama and assumes a single NVIDIA GPU. That is the right default for
-most machines and the wrong one for several. This page is how to tell which you have.
+The installer sets up Ollama — the build for your CPU architecture, plus its ROCm half when it
+finds an AMD GPU — and otherwise assumes a single GPU. That is the right default for most
+machines and the wrong one for several. This page is how to tell which you have.
 
 ---
 
@@ -17,7 +18,7 @@ most machines and the wrong one for several. This page is how to tell which you 
 | Several GPUs | **Ollama**, and read [Several GPUs](#several-gpus) | Less than you expect — see below |
 | Small GPU, plenty of system RAM | **llama.cpp** | Models far larger than your card, slowly |
 | No GPU, 32 GB RAM or more | **llama.cpp** | Small models on CPU; tens of seconds per prompt |
-| AMD GPU | **Ollama**, installed by hand | See [AMD](#amd-gpus) |
+| AMD GPU | **Ollama** — the installer fetches the ROCm build | One step needs an admin; see [AMD](#amd-gpus) |
 | Apple Silicon | Not supported by the installer | The installer exits on non-Linux |
 
 ---
@@ -314,9 +315,12 @@ vllm serve <model> --tensor-parallel-size 2 --port 8100
 
 Detected, and usable, but not automatically:
 
-- **The installer fetches an x86-64 Ollama build regardless of your host**, so an AMD or
-  arm64 machine gets no working runtime from it. Install Ollama's ROCm build yourself first;
-  the installer then detects it on `PATH` and skips the download.
+- **The installer adds Ollama's ROCm build when `rocm-smi` is on `PATH`.** No `rocm-smi`, no
+  ROCm build: install ROCm first, or the card is never used. Ollama publishes ROCm for x86-64
+  only, so an arm64 host with an AMD card gets a CPU-only runtime and a warning saying so.
+- **An install made before the installer added ROCm has the CPU/CUDA build only**, and a
+  re-run keeps it, because the installer skips the download whenever `bin/ollama` is already
+  there. Delete `~/.gpu-daemon/bin/ollama` (or your instance's directory) and re-run.
 - `/dev/kfd` normally requires membership of the `video` or `render` group. Adding yourself
   needs an admin, and without it everything installs cleanly and then finds no usable GPU.
 - vLLM on AMD needs a ROCm build. The default PyPI wheels are CUDA-only and will not see the
