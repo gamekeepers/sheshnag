@@ -24,7 +24,7 @@ function fileName(result) {
 export default function ShareDialog({ result, onClose }) {
   const answerTokens = result.logprobs?.answer?.length ? result.logprobs.answer : null;
   const [opts, setOpts] = useState({
-    theme: 'dark',
+    theme: 'light',
     width: 1200,
     length: 'full',
     lines: 12,
@@ -136,8 +136,8 @@ export default function ShareDialog({ result, onClose }) {
           <div className="field">
             <label>Theme</label>
             <select value={opts.theme} onChange={set('theme')}>
-              <option value="dark">Dark</option>
               <option value="light">Light</option>
+              <option value="dark">Dark</option>
             </select>
           </div>
           <div className="field">
