@@ -64,6 +64,18 @@ is offered only when an online runtime for the model returns
 log-probabilities (vLLM, llama.cpp, Ollama ≥ 0.12.11). In grid mode it applies
 to every arm and the export carries the per-token data.
 
+**Share as image**, beside a single-prompt answer, turns the run into a PNG for
+a post or a slide. The card shows the model, the parameters on the line, the
+system prompt, the prompt, the answer and the token counts; the worker and the
+batch id stay off it. Choose **Light** or **Dark**, 1200 or 1080 pixels wide,
+and the whole answer or its first N lines. With logprobs on, the answer is the
+shaded token strip, and numbered callouts show the alternatives at chosen
+positions: up to three of the least certain are picked for you, and clicking a
+token in the preview — or pressing Enter on it — adds or removes one. **Around
+marked tokens** trims a long answer to the stretch the callouts explain.
+**Download PNG** saves the image at 2× resolution; **Copy image** puts it on
+the clipboard.
+
 ## Point your code at it
 
 The base URL is your deployment's host plus `/v1`:

@@ -1769,6 +1769,7 @@ mark.grid-diverge {
 .lp-static .lp-tok:hover { border-color: transparent; }
 .lp-static .lp-tok.lp-flip:hover { border-color: var(--danger); }
 .lp-static .lp-tok.lp-pickable { cursor: pointer; }
+.lp-tok:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .lp-tok.lp-marked { border-color: var(--accent); }
 .lp-cut { color: var(--dim); padding: 0 3px; }
 .lp-mark {

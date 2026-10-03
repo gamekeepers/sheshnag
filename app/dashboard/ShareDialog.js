@@ -10,6 +10,12 @@ const WIDTHS = [
 ];
 const CARD_BG = { dark: '#0B0B10', light: '#FFFFFF' };
 
+const FOCUSABLE = 'button:not([disabled]), select:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
+
+function focusables(root) {
+  return root ? [...root.querySelectorAll(FOCUSABLE)] : [];
+}
+
 function fileName(result) {
   const model = String(result.servedModel || result.model || 'run').replace(/[^a-z0-9._-]+/gi, '-');
   return `sheshnag-${model}-${new Date().toISOString().slice(0, 10)}.png`;
@@ -47,8 +53,32 @@ export default function ShareDialog({ result, onClose }) {
     setMarked(pickCallouts(visible));
   };
 
+  // Modal focus: move into the dialog on open, keep Tab inside it, and hand
+  // focus back to whatever opened it on close.
+  const dialogRef = useRef(null);
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    const opener = document.activeElement;
+    focusables(dialogRef.current)[0]?.focus();
+    return () => { if (opener?.isConnected) opener.focus(); };
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') { onClose(); return; }
+      if (e.key !== 'Tab') return;
+      const items = focusables(dialogRef.current);
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const inside = dialogRef.current.contains(document.activeElement);
+      if (e.shiftKey && (document.activeElement === first || !inside)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !inside)) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -125,7 +155,7 @@ export default function ShareDialog({ result, onClose }) {
 
   return (
     <div className="modal-overlay open" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal share-modal" role="dialog" aria-label="Share run as image">
+      <div ref={dialogRef} className="modal share-modal" role="dialog" aria-modal="true" aria-label="Share run as image">
         <h3>Share as image</h3>
         <p className="modal-sub">
           A PNG of this run for a post or a slide. Worker and batch id are left off.

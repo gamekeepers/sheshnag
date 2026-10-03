@@ -92,16 +92,26 @@ export default function LogprobStrip({
           </button>
         )) : tokens.map(t => {
           const mark = markers?.get(t.i);
-          return (
-            <span
-              key={t.i}
-              className={`${tokClass(t)}${mark != null ? ' lp-marked' : ''}${onTokenClick ? ' lp-pickable' : ''}`}
-              style={{ background: shade(t.p) }}
-              onClick={onTokenClick ? () => onTokenClick(t.i) : undefined}
-            >
+          const className = `${tokClass(t)}${mark != null ? ' lp-marked' : ''}`;
+          const body = (
+            <>
               {glyph(t.token)}
               {mark != null && <span className="lp-mark">{mark}</span>}
-            </span>
+            </>
+          );
+          return onTokenClick ? (
+            <button
+              key={t.i}
+              type="button"
+              className={`${className} lp-pickable`}
+              style={{ background: shade(t.p) }}
+              aria-pressed={mark != null}
+              onClick={() => onTokenClick(t.i)}
+            >
+              {body}
+            </button>
+          ) : (
+            <span key={t.i} className={className} style={{ background: shade(t.p) }}>{body}</span>
           );
         })}
         {cutEnd && <span className="lp-cut">…</span>}

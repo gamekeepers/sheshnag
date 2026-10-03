@@ -344,14 +344,26 @@ export function pickCallouts(tokens, max = 3) {
 // lines; `around` keeps `pad` tokens either side of the marked span; anything
 // else keeps them all. `cutStart` / `cutEnd` say where the card draws an
 // ellipsis.
+//
+// A token can carry text on both sides of a newline (`"line one\n"`), so the
+// line cut lands inside the token holding the nth newline: the text before
+// that newline stays, as a token of its own with the original `i`.
 export function tokenWindow(tokens, { mode, lines, marked = [], pad = 40 }) {
   let start = 0;
   let end = tokens.length;
   if (mode === 'lines' && lines > 0) {
     let seen = 0;
     for (let k = 0; k < tokens.length; k += 1) {
-      seen += (tokens[k].token.match(/\n/g) || []).length;
-      if (seen >= lines) { end = k; break; }
+      const parts = tokens[k].token.split('\n');
+      if (seen + parts.length - 1 >= lines) {
+        const keep = lines - seen;
+        const head = parts.slice(0, keep).join('\n');
+        const rest = parts.slice(keep).join('\n');
+        const kept = tokens.slice(0, k);
+        if (head) kept.push({ ...tokens[k], token: head });
+        return { tokens: kept, cutStart: false, cutEnd: rest !== '' || k < tokens.length - 1 };
+      }
+      seen += parts.length - 1;
     }
   } else if (mode === 'around' && marked.length) {
     const at = marked.map(i => tokens.findIndex(t => t.i === i)).filter(k => k >= 0);
