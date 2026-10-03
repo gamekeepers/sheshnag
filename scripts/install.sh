@@ -146,7 +146,10 @@ PY
       GPU_TOOLING="nvidia"
   fi
   if command -v rocm-smi >/dev/null 2>&1; then
-      ROCM_VER="$(sed -n '1s/^\([0-9.]*\).*/\1/p' /opt/rocm/.info/version 2>/dev/null)"
+      # The version file is only there for a ROCm installed under /opt; a
+      # distribution's rocm-smi package has none. `|| true`, or set -e ends
+      # the install here with no message at all.
+      ROCM_VER="$(sed -n '1s/^\([0-9.]*\).*/\1/p' /opt/rocm/.info/version 2>/dev/null || true)"
       echo "AMD GPU tooling detected (rocm-smi${ROCM_VER:+, ROCm $ROCM_VER})."
       GPU_TOOLING="${GPU_TOOLING:+$GPU_TOOLING+}amd"
   fi
