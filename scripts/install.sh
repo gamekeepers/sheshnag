@@ -115,6 +115,11 @@ main() {
   for cmd in python3 git curl; do
     command -v "$cmd" >/dev/null 2>&1 || missing="$missing $cmd"
   done
+  # Ollama ships its Linux builds as .tar.zst. Only needed if step 3 has to
+  # download one; a system ollama on PATH means it never does.
+  if ! command -v ollama >/dev/null 2>&1 && ! command -v zstd >/dev/null 2>&1; then
+    missing="$missing zstd"
+  fi
   if command -v python3 >/dev/null 2>&1; then
     python3 - <<'PY' || missing="$missing python3>=3.10"
 import sys
@@ -125,9 +130,9 @@ PY
     echo "Missing:$missing"
     echo
     echo "Install these, then re-run. Package names vary by distribution:"
-    echo "  Debian/Ubuntu  sudo apt-get install -y python3 python3-venv python3-pip git curl"
-    echo "  Fedora/RHEL    sudo dnf install -y python3 python3-pip git curl"
-    echo "  Arch           sudo pacman -S --needed python python-pip git curl"
+    echo "  Debian/Ubuntu  sudo apt-get install -y python3 python3-venv python3-pip git curl zstd"
+    echo "  Fedora/RHEL    sudo dnf install -y python3 python3-pip git curl zstd"
+    echo "  Arch           sudo pacman -S --needed python python-pip git curl zstd"
     case "$missing" in
       *python3'>='*)
         echo
@@ -309,11 +314,15 @@ PY
       # The base tarball ships bin/ollama plus lib/ (CPU and CUDA); AMD
       # support is a separate ROCm tarball unpacked over it, published for
       # amd64 only. Extract each whole tree under the install directory.
-      OLLAMA_TARBALLS="ollama-linux-$OLLAMA_ARCH.tgz"
+      #
+      # They are .tar.zst: the .tgz names this script used to fetch now 404.
+      # Decompress with zstd(1) rather than tar's own --zstd, which older GNU
+      # tar lacks.
+      OLLAMA_TARBALLS="ollama-linux-$OLLAMA_ARCH.tar.zst"
       case "$GPU_TOOLING" in
         *amd*)
           if [ "$OLLAMA_ARCH" = "amd64" ]; then
-              OLLAMA_TARBALLS="$OLLAMA_TARBALLS ollama-linux-amd64-rocm.tgz"
+              OLLAMA_TARBALLS="$OLLAMA_TARBALLS ollama-linux-amd64-rocm.tar.zst"
           else
               echo "WARNING: Ollama publishes no ROCm build for $OLLAMA_ARCH — jobs will run on CPU."
           fi
@@ -321,14 +330,14 @@ PY
       esac
       echo "Installing Ollama ($OLLAMA_TARBALLS) into $DAEMON_DIR (no root needed)..."
       for tarball in $OLLAMA_TARBALLS; do
-          if curl -fL "https://ollama.com/download/$tarball" -o "$DAEMON_DIR/ollama.tgz" \
-             && tar -xzf "$DAEMON_DIR/ollama.tgz" -C "$DAEMON_DIR"; then
-              rm -f "$DAEMON_DIR/ollama.tgz"
+          if curl -fL "https://ollama.com/download/$tarball" -o "$DAEMON_DIR/ollama.tar.zst" \
+             && zstd -dc "$DAEMON_DIR/ollama.tar.zst" | tar -xf - -C "$DAEMON_DIR"; then
+              rm -f "$DAEMON_DIR/ollama.tar.zst"
           else
               # Drop the binary too: a re-run skips the download whenever
               # bin/ollama exists, so a base install whose ROCm half failed
               # would otherwise never get it.
-              rm -f "$DAEMON_DIR/ollama.tgz" "$DAEMON_DIR/bin/ollama"
+              rm -f "$DAEMON_DIR/ollama.tar.zst" "$DAEMON_DIR/bin/ollama"
               echo "ERROR: Ollama download failed ($tarball) — install it manually, then re-run."
               exit 1
           fi

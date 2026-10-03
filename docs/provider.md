@@ -45,7 +45,7 @@ You can stop lending at any time with one command — see
 | You need | Notes |
 |---|---|
 | **Linux** | The installer exits on anything else. |
-| **Python 3.10+**, **git**, **curl** | Checked, not installed. If any is missing the installer stops and prints the package list to hand your admin. |
+| **Python 3.10+**, **git**, **curl**, **zstd** | Checked, not installed. `zstd` unpacks Ollama's download and is not needed if `ollama` is already on `PATH`. If any is missing the installer stops and prints the package list to hand your admin. |
 | **A GPU the daemon can see** | Optional but the entire point. The daemon detects NVIDIA (via `nvidia-smi`), AMD (via `rocm-smi`) and Apple Silicon (via Metal); on anything else it runs, reports no GPU, and sits idle — set `DAEMON_VRAM_GB` to advertise a capacity by hand. The installer fetches the Ollama build for your architecture (x86-64 or arm64, anything else stops with an error) and adds the ROCm build on AMD; an AMD card still needs group access only an admin can grant — see [AMD GPUs](provider-hardware.md#amd-gpus). The installer is Linux-only. |
 | **The platform URL** | From whoever runs the deployment, e.g. `https://sheshnag.example.edu`. |
 | **A worker key** (`gk-…`) | See below. |
@@ -313,8 +313,8 @@ and restart the service.
 daemon works while you are logged in and stops when you log out. To fix
 permanently, ask an admin to run `sudo loginctl enable-linger <your-user>`.
 
-**Missing `python3`, `git` or `curl`** — the installer prints exactly what to
-ask for: `sudo apt-get install -y python3 python3-venv python3-pip git curl`.
+**Missing `python3`, `git`, `curl` or `zstd`** — the installer prints exactly what to
+ask for: `sudo apt-get install -y python3 python3-venv python3-pip git curl zstd`.
 
 **Registration fails with an authentication error** — the key is wrong, or it
 was revoked in the dashboard. Revoking a key stops every daemon using it
