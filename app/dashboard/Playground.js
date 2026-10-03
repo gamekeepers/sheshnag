@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { CopyableCode } from '../components/Teaching';
 import PlaygroundGrid from './PlaygroundGrid';
 import LogprobStrip from './LogprobStrip';
+import ShareDialog from './ShareDialog';
 import {
   POLL_MS, TERMINAL, num, JSON_OBJECT_NUDGE, needsJsonNudge, buildRow, SCHEMA_SAMPLE,
   buildResponseFormat, prettyJson, downloadText, parseOutputRows, extractAnswer, formatElapsed,
@@ -68,6 +69,7 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
   const [error, setError] = useState(null);
   const [elapsed, setElapsed] = useState(null);
   const [history, setHistory] = useState([]);
+  const [sharing, setSharing] = useState(false);
 
   const runRef = useRef(0);          // bumps per run so a stale poll loop exits
   const startedRef = useRef(null);
@@ -423,7 +425,12 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
 
           {result && (
             <>
-              <div className="section-title">Answer</div>
+              <div className="playground-answer-head">
+                <div className="section-title">Answer</div>
+                <button className="btn" style={{ padding: '2px 10px', fontSize: '0.72rem' }} onClick={() => setSharing(true)}>
+                  Share as image
+                </button>
+              </div>
               {result.reasoning && (
                 <details className="playground-reasoning">
                   <summary>Reasoning{result.logprobs?.reasoningStats?.n ? ` · ${result.logprobs.reasoningStats.flip} flip-prone of ${result.logprobs.reasoningStats.n}` : ''}</summary>
@@ -482,6 +489,8 @@ export default function Playground({ backend, getHeaders, catalog, servableIds, 
           )}
         </div>
       </div>
+
+      {sharing && result && <ShareDialog key={result.id} result={result} onClose={() => setSharing(false)} />}
 
       {history.length > 1 && (
         <div className="panel">

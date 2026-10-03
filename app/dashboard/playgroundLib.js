@@ -303,3 +303,68 @@ export function firstDivergence(base, text) {
   }
   return -1;
 }
+
+// ── Share card ──────────────────────────────────────────────────────────────
+
+// The request parameters a share card states, read off the exported line so
+// the card says exactly what the batch was asked for and omits what was left
+// to the runtime default.
+export function paramsFromLine(line) {
+  let body;
+  try { body = JSON.parse(line).body || {}; } catch { return []; }
+  const chips = [];
+  const add = (k, v) => { if (v != null) chips.push([k, String(v)]); };
+  add('temperature', body.temperature);
+  add('top_p', body.top_p);
+  add('top_k', body.top_k);
+  add('seed', body.seed);
+  add('max_tokens', body.max_tokens);
+  const think = body.chat_template_kwargs?.enable_thinking;
+  if (think != null) add('thinking', think ? 'on' : 'off');
+  if (body.response_format) add('format', body.response_format.type);
+  if (body.logprobs) add('top_logprobs', body.top_logprobs);
+  return chips;
+}
+
+// Positions worth a callout: flip-prone first, tightest gap first, then the
+// least probable of the rest. Whitespace-only tokens are passed over while
+// anything else qualifies — a tie between a space and a newline is rarely
+// what a post is about. Returned in reading order, as token `i` values.
+export const CALLOUT_P = 0.95;
+
+export function pickCallouts(tokens, max = 3) {
+  const words = tokens.filter(t => t.token.trim() !== '');
+  const pool = words.length ? words : tokens;
+  const flips = pool.filter(t => t.flipProne).sort((a, b) => a.gap - b.gap);
+  const unsure = pool.filter(t => !t.flipProne && t.p < CALLOUT_P).sort((a, b) => a.p - b.p);
+  return [...flips, ...unsure].slice(0, max).map(t => t.i).sort((a, b) => a - b);
+}
+
+// The slice of an answer's tokens a card shows. `lines` keeps the first `n`
+// lines; `around` keeps `pad` tokens either side of the marked span; anything
+// else keeps them all. `cutStart` / `cutEnd` say where the card draws an
+// ellipsis.
+export function tokenWindow(tokens, { mode, lines, marked = [], pad = 40 }) {
+  let start = 0;
+  let end = tokens.length;
+  if (mode === 'lines' && lines > 0) {
+    let seen = 0;
+    for (let k = 0; k < tokens.length; k += 1) {
+      seen += (tokens[k].token.match(/\n/g) || []).length;
+      if (seen >= lines) { end = k; break; }
+    }
+  } else if (mode === 'around' && marked.length) {
+    const at = marked.map(i => tokens.findIndex(t => t.i === i)).filter(k => k >= 0);
+    if (at.length) {
+      start = Math.max(0, Math.min(...at) - pad);
+      end = Math.min(tokens.length, Math.max(...at) + pad + 1);
+    }
+  }
+  return { tokens: tokens.slice(start, end), cutStart: start > 0, cutEnd: end < tokens.length };
+}
+
+export function clipLines(text, n) {
+  const lines = (text || '').split('\n');
+  if (!(n > 0) || lines.length <= n) return { text: text || '', cut: false };
+  return { text: lines.slice(0, n).join('\n'), cut: true };
+}

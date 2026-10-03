@@ -8,6 +8,11 @@ import { FLIP_GAP, pct } from './playgroundLib';
  * when the top-2 gap is within one bf16 ulp, and clickable for the top-k
  * alternatives at that position. The number a hosted API never shows: how
  * many positions were a coin toss.
+ *
+ * With `interactive={false}` the strip is a picture of itself — spans, no
+ * hover titles, no detail panel — for the share card, where `markers` numbers
+ * the positions its callouts explain and `onTokenClick` lets the preview
+ * choose them.
  */
 
 function shade(p) {
@@ -16,13 +21,50 @@ function shade(p) {
   return `rgba(251, 191, 36, ${(0.08 + heat * 0.55).toFixed(3)})`;
 }
 
-export default function LogprobStrip({ tokens, stats, label, compact = false }) {
+function glyph(token) {
+  return token === '\n' ? '⏎' : token === '\n\n' ? '⏎⏎' : token;
+}
+
+/** One position's alternatives: the chosen token, its probability, and the top-k it beat. */
+export function TokenDetail({ tok, mark }) {
+  return (
+    <div className="lp-detail">
+      <div className="lp-detail-head mono">
+        {mark != null && <span className="lp-mark lp-mark-head">{mark}</span>}
+        #{tok.i} {JSON.stringify(tok.token)} · {pct(tok.p)} · logprob {tok.logprob.toFixed(4)}
+        {tok.gap != null && <> · top-2 gap {tok.gap.toFixed(4)}{tok.flipProne ? ` (≤ ${FLIP_GAP}, flip-prone)` : ''}</>}
+        {tok.offArgmax && ' · sampled, not the argmax'}
+      </div>
+      <table className="lp-alts">
+        <tbody>
+          {tok.alts.map((a, k) => (
+            <tr key={k} className={a.token === tok.token ? 'lp-alt-chosen' : ''}>
+              <td className="mono">{JSON.stringify(a.token)}</td>
+              <td className="mono">{a.logprob.toFixed(4)}</td>
+              <td>
+                <span className="lp-bar" style={{ width: `${Math.max(1, Math.exp(a.logprob) * 100)}%` }} />
+                <span className="mono dim">{pct(Math.exp(a.logprob))}</span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export default function LogprobStrip({
+  tokens, stats, label, compact = false,
+  interactive = true, markers, onTokenClick, cutStart = false, cutEnd = false,
+}) {
   const [picked, setPicked] = useState(null);
   if (!tokens || tokens.length === 0) return null;
-  const sel = picked != null ? tokens.find(t => t.i === picked) : null;
+  const sel = interactive && picked != null ? tokens.find(t => t.i === picked) : null;
+
+  const tokClass = (t) => `lp-tok${t.flipProne ? ' lp-flip' : ''}${t.offArgmax ? ' lp-off' : ''}`;
 
   return (
-    <div className={`lp ${compact ? 'lp-compact' : ''}`}>
+    <div className={`lp${compact ? ' lp-compact' : ''}${interactive ? '' : ' lp-static'}`}>
       {(label || stats) && (
         <div className="lp-head">
           {label && <span className="lp-label">{label}</span>}
@@ -36,42 +78,35 @@ export default function LogprobStrip({ tokens, stats, label, compact = false }) 
         </div>
       )}
       <div className="lp-strip">
-        {tokens.map(t => (
+        {cutStart && <span className="lp-cut">…</span>}
+        {interactive ? tokens.map(t => (
           <button
             key={t.i}
             type="button"
-            className={`lp-tok${t.flipProne ? ' lp-flip' : ''}${t.offArgmax ? ' lp-off' : ''}${picked === t.i ? ' lp-picked' : ''}`}
+            className={`${tokClass(t)}${picked === t.i ? ' lp-picked' : ''}`}
             style={{ background: shade(t.p) }}
             title={`${JSON.stringify(t.token)} · ${pct(t.p)}${t.gap != null ? ` · gap ${t.gap.toFixed(3)}` : ''}`}
             onClick={() => setPicked(picked === t.i ? null : t.i)}
           >
-            {t.token === '\n' ? '⏎' : t.token === '\n\n' ? '⏎⏎' : t.token}
+            {glyph(t.token)}
           </button>
-        ))}
+        )) : tokens.map(t => {
+          const mark = markers?.get(t.i);
+          return (
+            <span
+              key={t.i}
+              className={`${tokClass(t)}${mark != null ? ' lp-marked' : ''}${onTokenClick ? ' lp-pickable' : ''}`}
+              style={{ background: shade(t.p) }}
+              onClick={onTokenClick ? () => onTokenClick(t.i) : undefined}
+            >
+              {glyph(t.token)}
+              {mark != null && <span className="lp-mark">{mark}</span>}
+            </span>
+          );
+        })}
+        {cutEnd && <span className="lp-cut">…</span>}
       </div>
-      {sel && (
-        <div className="lp-detail">
-          <div className="lp-detail-head mono">
-            #{sel.i} {JSON.stringify(sel.token)} · {pct(sel.p)} · logprob {sel.logprob.toFixed(4)}
-            {sel.gap != null && <> · top-2 gap {sel.gap.toFixed(4)}{sel.flipProne ? ` (≤ ${FLIP_GAP}, flip-prone)` : ''}</>}
-            {sel.offArgmax && ' · sampled, not the argmax'}
-          </div>
-          <table className="lp-alts">
-            <tbody>
-              {sel.alts.map((a, k) => (
-                <tr key={k} className={a.token === sel.token ? 'lp-alt-chosen' : ''}>
-                  <td className="mono">{JSON.stringify(a.token)}</td>
-                  <td className="mono">{a.logprob.toFixed(4)}</td>
-                  <td>
-                    <span className="lp-bar" style={{ width: `${Math.max(1, Math.exp(a.logprob) * 100)}%` }} />
-                    <span className="mono dim">{pct(Math.exp(a.logprob))}</span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {sel && <TokenDetail tok={sel} />}
     </div>
   );
 }

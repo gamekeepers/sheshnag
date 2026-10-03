@@ -1765,6 +1765,183 @@ mark.grid-diverge {
   padding: 2px 9px;
   font-size: 0.7rem;
 }
+.lp-static .lp-tok { cursor: default; }
+.lp-static .lp-tok:hover { border-color: transparent; }
+.lp-static .lp-tok.lp-flip:hover { border-color: var(--danger); }
+.lp-static .lp-tok.lp-pickable { cursor: pointer; }
+.lp-tok.lp-marked { border-color: var(--accent); }
+.lp-cut { color: var(--dim); padding: 0 3px; }
+.lp-mark {
+  display: inline-block;
+  min-width: 1.15em;
+  margin-left: 2px;
+  padding: 0 0.3em;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 0.7em;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: center;
+  vertical-align: super;
+  white-space: nowrap;
+}
+.lp-mark-head { margin: 0 0.5em 0 0; vertical-align: baseline; font-size: 0.85em; }
+
+/* ─── Playground: share card ─────────────────────────────────────────────── */
+
+.playground-answer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.modal.share-modal { width: 1000px; max-width: 94vw; max-height: 92vh; }
+.share-controls { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+.share-controls .field { flex: 1 1 140px; margin-bottom: 0.5rem; }
+.share-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.1rem;
+  font-size: 0.8rem;
+  color: var(--dim);
+  margin-bottom: 1rem;
+}
+.share-toggles label { display: inline-flex; align-items: center; gap: 0.35rem; cursor: pointer; }
+.share-mini { padding: 2px 10px; font-size: 0.72rem; }
+.share-preview {
+  overflow: hidden;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+.share-status { margin-right: auto; align-self: center; font-size: 0.8rem; color: var(--dim); }
+.share-status.ok { color: var(--online); }
+.share-status.error { color: var(--danger); }
+
+/* The card owns its palette: the dashboard tokens are redefined on its root,
+   so the logprob strip inside it renders in whichever theme is exported. */
+.share-card {
+  --bg: #0B0B10;
+  --fg: #F5F5F2;
+  --dim: #9A9A96;
+  --border: rgba(255, 255, 255, 0.12);
+  --border-soft: rgba(255, 255, 255, 0.08);
+  --accent: #C9C4FF;
+  --busy: #FBBF24;
+  --danger: #F87171;
+  --chip: rgba(255, 255, 255, 0.06);
+  --block: rgba(255, 255, 255, 0.03);
+  --brand: #9fff00;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  padding: 40px 44px 30px;
+  box-sizing: border-box;
+}
+.share-card[data-theme="light"] {
+  --bg: #FFFFFF;
+  --fg: #18181B;
+  --dim: #6B6B70;
+  --border: rgba(0, 0, 0, 0.14);
+  --border-soft: rgba(0, 0, 0, 0.09);
+  --accent: #5B4FD6;
+  --busy: #B45309;
+  --danger: #DC2626;
+  --chip: rgba(0, 0, 0, 0.05);
+  --block: rgba(0, 0, 0, 0.025);
+  --brand: #4D7C0F;
+}
+.share-card .dim { color: var(--dim); }
+.sc-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  padding-bottom: 20px;
+  margin-bottom: 22px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.sc-model { font-size: 17px; font-weight: 500; }
+.sc-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.sc-chip {
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--chip);
+  border: 1px solid var(--border-soft);
+}
+.sc-chip-k { color: var(--dim); }
+.sc-block { margin-bottom: 22px; }
+.sc-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: 8px;
+}
+.sc-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'Inter', sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--fg);
+  background: var(--block);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.sc-text.mono { font-family: 'IBM Plex Mono', monospace; font-size: 14px; }
+.sc-prompt { font-weight: 500; }
+.sc-dim { color: var(--dim); font-size: 14px; }
+.share-card .lp { margin: 0; }
+.share-card .lp-strip { font-size: 15px; line-height: 1.75; background: var(--block); padding: 12px 14px; }
+.share-card .lp-stats { font-size: 12px; }
+.share-card .lp-label { display: none; }
+.share-card .lp-head { justify-content: flex-end; }
+.share-card .lp-detail { margin-top: 0; background: var(--block); }
+.share-card .lp-bar { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+.sc-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--dim);
+}
+.sc-ramp {
+  display: inline-block;
+  width: 64px;
+  height: 10px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, rgba(251, 191, 36, 0.08), rgba(251, 191, 36, 0.63));
+}
+.sc-key { margin-left: 14px; padding: 0 4px; border-radius: 4px; color: var(--fg); border: 1px solid transparent; }
+.sc-key-flip { border-color: var(--danger); box-shadow: inset 0 -2px 0 var(--danger); }
+.sc-key-off { text-decoration: underline dotted var(--accent); }
+.sc-callouts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+.sc-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 12px;
+  color: var(--dim);
+}
+.sc-brand { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; font-size: 13px; color: var(--fg); letter-spacing: 0.02em; }
+.sc-brand-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--brand); }
 
 /* ─── Collapsible sidebar ────────────────────────────────────────────────── */
 
