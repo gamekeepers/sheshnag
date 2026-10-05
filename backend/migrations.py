@@ -10,7 +10,7 @@ SQLite (the two dialects in the deployment matrix).
 import logging
 
 from sqlalchemy import inspect, text
-from sqlalchemy import Integer, String
+from sqlalchemy import Integer, String, Boolean
 
 from database import get_engine
 from models import Base, Batch, BatchAssignment, UsageRecord  # noqa: F401 — ensure models are registered
@@ -64,6 +64,8 @@ MIGRATIONS = [
                "batch_assignments", "org_id", String()),
     _Migration("batch_assignments.worker_hostname",
                "batch_assignments", "worker_hostname", String()),
+    _Migration("batches.usage_ingestion_pending",
+               "batches", "usage_ingestion_pending", Boolean()),
 ]
 
 

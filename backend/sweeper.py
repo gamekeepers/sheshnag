@@ -103,6 +103,27 @@ def sweep_stale_workers(db) -> tuple[int, int]:
     return len(stale_workers), requeued
 
 
+def sweep_pending_ingestions(db) -> int:
+    """Pick up completed batches whose token ingestion failed or was dropped."""
+    from services.usage_ingest import ingest_usage_records
+    from models import File as FileModel
+
+    pending_batches = db.query(Batch).filter(
+        Batch.status == "completed",
+        Batch.usage_ingestion_pending.is_(True),
+    ).all()
+
+    requeued = 0
+    for batch in pending_batches:
+        output_file = db.query(FileModel).filter(FileModel.id == batch.output_file_id).first()
+        if output_file:
+            logger.info("Sweeper retrying usage ingestion for batch %s", batch.id)
+            ingest_usage_records(batch.id, output_file.filepath)
+            requeued += 1
+
+    return requeued
+
+
 async def run_sweeper() -> None:
     """Periodic sweep loop — started as an asyncio task at app startup."""
     from database import SessionLocal
@@ -112,6 +133,7 @@ async def run_sweeper() -> None:
         db = SessionLocal()
         try:
             sweep_stale_workers(db)
+            sweep_pending_ingestions(db)
         except Exception:
             logger.exception("Worker sweep failed — retrying next interval")
         finally:
