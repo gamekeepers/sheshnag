@@ -6,13 +6,14 @@
 #   scripts/build-offline-bundle.sh                 # wheels only
 #   WITH_PYTHON=1 scripts/build-offline-bundle.sh   # add a portable CPython
 #
-# It carries software, not configuration: config.yaml, .env and whatever
-# supervises the daemon are the target's own and are left untouched, so the
-# same bundle installs a new host and updates an existing one.
+# It carries software, not configuration: the daemon, an installer and the
+# supervisor setup script travel in the archive, while config.yaml and .env are
+# the target's own and are left untouched, so the same bundle installs a new
+# host and updates an existing one.
 #
 # The wheels are resolved for the *target*, not for this machine. A host on
-# glibc 2.17 (CentOS 7, the GICS boxes) cannot load a manylinux_2_28 wheel, so
-# the tags below are part of the contract, not a default worth drifting.
+# glibc 2.17 cannot load a manylinux_2_28 wheel, so the tags below are part
+# of the contract, not a default worth drifting.
 
 set -euo pipefail
 
@@ -57,7 +58,7 @@ else
   echo "[3/4] Skipping CPython (WITH_PYTHON=1 to include it)."
 fi
 
-echo "[4/4] Writing the installer..."
+echo "[4/4] Writing the installer and staging the supervisor..."
 cat > "$STAGE/install.sh" <<'INSTALLER'
 #!/usr/bin/env bash
 # Install or update the worker daemon from this bundle. No network required.
@@ -106,6 +107,12 @@ echo "Run it:    $TARGET/venv/bin/gpu-daemon --config $TARGET/config.yaml"
 INSTALLER
 chmod +x "$STAGE/install.sh"
 
+# The supervisor runs on the target, which is a host with no route to the
+# repository the script lives in. Carrying it in the archive is what makes the
+# configure-and-supervise step reachable there.
+cp "$REPO_ROOT/scripts/setup-offline-worker.sh" "$STAGE/setup-offline-worker.sh"
+chmod +x "$STAGE/setup-offline-worker.sh"
+
 mkdir -p "$OUT_DIR"
 ARCHIVE="$OUT_DIR/sheshnag-daemon-offline-$(date +%Y%m%d).tar.gz"
 tar -czf "$ARCHIVE" -C "$STAGE" .
@@ -116,4 +123,6 @@ echo "Size:   $(du -h "$ARCHIVE" | cut -f1)"
 echo "Wheels: $(ls "$STAGE/wheels" | wc -l)"
 echo
 echo "Ship it, then on the target:"
-echo "    tar -xzf $(basename "$ARCHIVE") -C ~/bundle && ~/bundle/install.sh"
+echo "    tar -xzf $(basename "$ARCHIVE") -C ~/bundle"
+echo "    INSTANCE=\$(hostname -s) ~/bundle/install.sh"
+echo "    BACKEND_URL=... API_KEY=gk-... bash ~/bundle/setup-offline-worker.sh"

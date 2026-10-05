@@ -12,12 +12,32 @@ use it — this page exists for where they do not.
 
 ---
 
+## TL;DR — what you are about to do
+
+**Build everything on a machine that has the internet and a compiler. The worker only ever
+receives finished files**, and nothing done to it needs `sudo`.
+
+| # | Step | Runs on | The command |
+|---|---|---|---|
+| 1 | [Build the bundle](#1-build-the-bundle) | Build host | `WITH_PYTHON=1 scripts/build-offline-bundle.sh` |
+| 2 | [Build the runtime](#2-build-the-inference-runtime) | Build host, in Docker | `docker run … manylinux2014_x86_64` |
+| 3 | [Carry it in and install](#3-carry-it-in-and-install) | Build host → worker | `~/bundle/install.sh` |
+| 4 | [Stage the models](#4-stage-the-model-files) | Build host → worker | Any copy — `scp`, `rsync`, `stage-models.sh` |
+| 5 | [Configure and supervise](#5-configure-and-supervise) | Worker | `~/bundle/setup-offline-worker.sh` |
+| 6 | [Check it worked](#6-check-it-worked) | Worker | `ctl.sh status` |
+
+Every section says which machine it runs on — **the build host**, **the worker**, or a
+transfer between them. Commands that only report state, and change nothing, sit in a
+**Check** box.
+
+---
+
 ## What is different
 
 | The usual path | Here |
 |---|---|
 | `curl … \| bash` fetches the installer | An archive is built elsewhere and carried in |
-| The installer downloads Ollama | The runtime is built or copied in; llama.cpp is the usual choice |
+| The installer downloads Ollama | The runtime is built elsewhere and carried in; llama.cpp is the usual choice ([step 2](#2-build-the-inference-runtime)) |
 | Models are pulled on demand | GGUF files are staged by hand |
 | `systemctl --user` supervises | `cron` plus `flock` supervises |
 | The daemon dials the control plane directly | It dials through a proxy or an SSH forward |
@@ -25,7 +45,7 @@ use it — this page exists for where they do not.
 Everything else — the worker key, registration, how work is dispatched — is
 unchanged. A worker installed this way is an ordinary worker.
 
-!!! warning "Check the interpreter before anything else"
+!!! warning "Check — on the worker, before anything else"
     A Python that cannot do HTTPS fails at registration with a TLS error rather
     than at install, which reads as a network fault and is not one:
 
@@ -40,7 +60,7 @@ unchanged. A worker installed this way is an ordinary worker.
 
 ## 1. Build the bundle
 
-On a machine that can reach PyPI and your repository host:
+**On the build host** — it needs to reach PyPI and your repository host.
 
 ```bash
 cd sheshnag
@@ -62,11 +82,93 @@ Those are the defaults, and they are a contract rather than a preference: a
 host on glibc 2.17 cannot load a `manylinux_2_28` wheel, and a wheel built for
 the wrong interpreter fails on import.
 
-## 2. Carry it in and install
+## 2. Build the inference runtime
+
+The daemon attaches to a runtime and never builds or starts one, so the binary
+is yours to produce. Upstream's
+[build guide](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md)
+covers building llama.cpp on a machine that will also run it. The case this page
+exists for is the other one: the target has no compiler, and the binary has to
+run on a host older than whatever built it.
+
+**On the build host**, inside a glibc 2.17 image, so nothing in the result needs
+a glibc newer than the target carries:
+
+```bash
+git clone --depth 1 https://github.com/ggml-org/llama.cpp
+mkdir -p out
+cat > build.sh <<'EOF'
+set -e
+export PATH=/opt/python/cp312-cp312/bin:$PATH
+pip install -q cmake ninja
+cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=OFF -DLLAMA_CURL=OFF \
+  -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON \
+  -DGGML_OPENMP=OFF -DGGML_BLAS=OFF -DGGML_CUDA=OFF \
+  -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
+  -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=ON
+cmake --build /build -j"$(nproc)" --target llama-server llama-cli
+cp /build/bin/llama-server /build/bin/llama-cli /out/
+EOF
+docker run --rm \
+  -v "$PWD/llama.cpp:/src:ro" -v "$PWD/out:/out" -v "$PWD/build.sh:/build.sh:ro" \
+  quay.io/pypa/manylinux2014_x86_64 bash /build.sh
+```
+
+Those flags are a contract, and each one is a failure that lands on the target
+while the build host stays silent:
+
+| Flag | What it keeps out of the binary |
+|---|---|
+| `GGML_NATIVE=OFF`, with `AVX`, `AVX2`, `FMA` and `F16C` named | Instructions detected from the build machine's own CPU. An older target traps on them, and it arrives as `Illegal instruction` on the first prompt, not at startup |
+| `-static-libstdc++ -static-libgcc`, `BUILD_SHARED_LIBS=OFF` | A dependency on a C++ runtime newer than the target's, which cannot be resolved at load |
+| `GGML_OPENMP=OFF`, `GGML_BLAS=OFF` | Shared libraries the target has no copy of |
+| `LLAMA_CURL=OFF` | A libcurl linked against a TLS stack the target does not carry |
+
+**Name the instruction sets your oldest machine has**, not the newest. The set
+above is a Haswell floor; a fleet containing anything older serves that machine
+a binary it cannot execute. `GGML_CUDA` is the one flag that follows the
+individual machine, not the fleet — turn it on only where the driver is new
+enough for the card it drives, since a driver older than the card's compute
+capability leaves the GPU reporting itself and serving nothing.
+
+!!! tip "Check — on the build host"
+    Assert the result before carrying it anywhere. The highest glibc symbol the
+    binary references must not exceed what the target provides:
+
+    ```bash
+    objdump -T out/llama-server | grep -o 'GLIBC_2\.[0-9]*' | sort -uV | tail -1
+    ```
+
+Carry the binary in and put it where the supervisor looks.
+
+**Build host → worker**
+
+```bash
+tar -czf llama-bin.tar.gz -C out llama-server llama-cli
+scp llama-bin.tar.gz worker:~/
+```
+
+**On the worker**
+
+```bash
+mkdir -p ~/opt/llama/bin && tar -xzf ~/llama-bin.tar.gz -C ~/opt/llama/bin
+```
+
+`~/opt/llama/bin/llama-server` is where `setup-offline-worker.sh` expects it;
+`LLAMA_BIN` names any other path.
+
+## 3. Carry it in and install
+
+**Build host → worker**
 
 ```bash
 scp dist/sheshnag-daemon-offline-*.tar.gz worker:~/bundle.tgz
-# on the worker
+```
+
+**On the worker**
+
+```bash
 mkdir -p ~/bundle && tar -xzf ~/bundle.tgz -C ~/bundle
 INSTANCE=$(hostname -s) ~/bundle/install.sh
 ```
@@ -75,14 +177,25 @@ INSTANCE=$(hostname -s) ~/bundle/install.sh
 it they share one config, one virtual environment and — worst — one credentials
 file holding a single worker id, so two machines heartbeat as one worker.
 
-The same bundle updates an existing install. It carries software only:
-configuration and whatever supervises the daemon are the host's own and are
-left alone.
+The same bundle updates an existing install. It carries software only — the
+daemon, this installer and the supervisor script step 5 runs — while
+configuration is the host's own and is left alone.
 
-## 3. Stage the model files
+## 4. Stage the model files
 
-The daemon does not download models here. Copy the GGUFs in, naming each file
-after the `runtime_model_id` of a `llamacpp` profile in the model catalogue:
+The daemon downloads nothing here, so the GGUFs arrive by whatever means the
+machine already gives you — `scp`, `rsync`, a USB disk, or a share it mounts.
+**Only the end state matters.**
+
+**On the worker, once the copy is done**
+
+| | |
+|---|---|
+| Where | `MODELS_DIR` — `/tmp/gguf` by default |
+| Named | `<runtime_model_id>.gguf`, from a `llamacpp` profile in the catalogue |
+| Beside it, optionally | `<runtime_model_id>.gguf.json`, declaring the file's hash and origin |
+
+**File names** — not a command, a contract:
 
 ```
 gpt-oss-20b.gguf        ← catalogue row gpt-oss-20b-mxfp4, llamacpp profile
@@ -93,30 +206,44 @@ In router mode `llama-server` reports each file's stem as its model id. Name a
 file anything else and the worker is online, healthy, and never dispatched to —
 the same failure the `--alias` flag causes on a single-model server.
 
-For a fleet behind a jump host, `scripts/stage-models.sh` takes a manifest of
-`name path source` rows and copies them to each worker over one connection,
-skipping files already present and resuming partial ones:
+### Declaring what a file is
+
+A model's identity is the sha256 of its weights. **A sidecar is optional.**
+Without one the worker hashes the file itself, once, at one file per heartbeat,
+and writes the result beside it — a slow first heartbeat on a large model and
+nothing worse.
+
+A sidecar spares that read, and its `source_ref` names the public repo the bytes
+came from, which lets the platform confirm the model and add it to the catalogue
+by itself. With no origin the worker reports a model nobody can vouch for, and
+each entry has to be written by hand.
+
+```json
+{"sha256": "9f2e…", "size": 20401094656, "source_ref": "unsloth/gpt-oss-20B-GGUF"}
+```
+
+**`size` has to equal the file's own size**, or the sidecar is ignored and the
+file is hashed as though it were absent — which is what keeps a sidecar that
+outlived its bytes from publishing one artifact's identity for another's.
+
+### Staging several workers at once
+
+`scripts/stage-models.sh` does the copy and the sidecar over a single
+connection, skipping files already present and resuming partial ones. It reaches
+the workers through a jump host, which is the case it exists for.
+
+`models.txt` — one row per model, `name path source`, paths absolute:
 
 ```
 gemma4-26b    /var/models/gemma4-26b-q4km.gguf    unsloth/gemma-4-26B-GGUF
 llama3-2-3b   /var/models/llama3.2-3b-q4km.gguf   unsloth/Llama-3.2-3B-GGUF
 ```
 
+**Build host → worker**
+
 ```bash
 JUMP=user@jump-host scripts/stage-models.sh models.txt worker1 worker2
 ```
-
-**Name the source.** A model's identity is the sha256 of its weights, and the
-third column says which public repo those bytes came from. With both, the
-platform confirms the model against that repo and adds it to the catalogue by
-itself; without them the worker reports a model nobody can vouch for, and each
-one needs a catalogue entry written by hand.
-
-The script computes each hash where the file already is and ships a
-`<name>.gguf.json` sidecar alongside, so a worker never reads back a
-multi-gigabyte model to learn what it received. A file staged by other means
-is hashed on the worker instead — once, at one file per heartbeat, with the
-result written beside it.
 
 !!! note "`/tmp` is swept"
     `tmpwatch` removes files under `/tmp` on a ten-day window and judges by
@@ -125,12 +252,14 @@ result written beside it.
     in daily use looks untouched. The setup script in the next section installs
     a nightly `touch` that keeps all three fresh.
 
-## 4. Configure and supervise
+## 5. Configure and supervise
+
+**On the worker**
 
 ```bash
 BACKEND_URL=https://sheshnag.example.edu API_KEY=gk-... \
 PROXY=socks5h://127.0.0.1:1080 TUNNEL_HOST=jump-host \
-    bash scripts/setup-offline-worker.sh
+    bash ~/bundle/setup-offline-worker.sh
 ```
 
 It writes the config, a supervisor loop, a control script and the cron entries,
@@ -158,11 +287,12 @@ certificate verification behaves as it would on a direct connection.
 ### Why cron rather than systemd
 
 `systemctl --user` needs a user D-Bus, which systemd 219 does not provide and a
-container often lacks. Check before assuming:
+container often lacks.
 
-```bash
-systemctl --user show-environment >/dev/null 2>&1 && echo yes || echo no
-```
+!!! tip "Check — on the worker"
+    ```bash
+    systemctl --user show-environment >/dev/null 2>&1 && echo yes || echo no
+    ```
 
 Where it answers `no`, the supervisor loop plus `@reboot` and a five-minute
 cron entry gives the same three guarantees — start on boot, restart on failure,
@@ -170,7 +300,9 @@ one instance — with `flock` enforcing the last. The lock lives on local disk
 because `flock` cannot take one over NFS, and a shared home would otherwise let
 two machines supervise as one worker.
 
-## 5. Check it worked
+## 6. Check it worked
+
+**On the worker**
 
 ```bash
 ~/.gpu-daemon-<instance>/ctl.sh status
