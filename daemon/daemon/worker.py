@@ -283,6 +283,29 @@ class Worker:
         # ── Step 3: Execute each prompt ──────────────────────────
         results = await self._run_prompts(prompts, job)
 
+        # ── Step 3b: Fill in synthetic failures for unrun prompts ─
+        # _run_prompts returns only prompts that were picked up before
+        # shutdown. Any prompt still in the queue when _running went False
+        # has no result at all. We synthesize an explicit failure so that:
+        #   - the output file has exactly one line per input prompt (no gaps)
+        #   - the backend receives honest completed/failed counts
+        #   - the dashboard can distinguish "never ran" from "inference error"
+        #     via the "worker_shutdown:" prefix
+        results_by_id: dict[str, CompletionResult] = {r.custom_id: r for r in results}
+        for prompt in prompts:
+            if prompt.custom_id not in results_by_id:
+                logger.warning(
+                    f"[{job.job_id}] Prompt {prompt.custom_id} was not executed "
+                    f"before shutdown — recording as failure"
+                )
+                results_by_id[prompt.custom_id] = CompletionResult(
+                    custom_id=prompt.custom_id,
+                    error="worker_shutdown:prompt not executed before daemon stopped",
+                )
+
+        # Restore input order for a deterministic output file
+        results = [results_by_id[p.custom_id] for p in prompts]
+
         # ── Step 4: Write output JSONL ───────────────────────────
         self._write_output(output_path, results)
 
