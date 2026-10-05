@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import random
 import signal
 import time
@@ -38,11 +37,12 @@ from daemon.client import BackendClient
 from daemon.config import DaemonConfig
 from daemon.executors.base import BaseExecutor
 from daemon.executors.ollama import OllamaExecutor
+from daemon.executor_factory import VLLM_ROCM_HINT
+from daemon.hardware import gpu_vendors_present
 from daemon.log import get_logger
 from daemon.models import CompletionResult, Job, PromptRequest
 from daemon.heartbeat import HeartbeatManager
 from daemon.model_manager import ModelManager
-from daemon.concurrency import AIMDConcurrencyController
 
 logger = get_logger(__name__)
 
@@ -72,10 +72,6 @@ class Worker:
         self._executor = executor
         self._running = False
         self._current_job_id: str | None = None
-        self._concurrency_controller = AIMDConcurrencyController(
-            initial_concurrency=config.max_concurrent_prompts,
-            max_concurrency=128
-        )
 
         self._heartbeat = HeartbeatManager(
             client=client,
@@ -83,6 +79,7 @@ class Worker:
             interval=config.heartbeat_interval,
             get_loaded_models=self._get_loaded_models,
             get_loaded_model_digests=self._get_loaded_model_digests,
+            declared_vram_gb=config.vram_gb,
         )
 
         self._model_manager = None
@@ -145,22 +142,6 @@ class Worker:
 
         # Pre-flight: check vLLM health
         await self._wait_for_executor()
-
-        # Query runtime for concurrency limit
-        if not self._config.concurrency_explicit:
-            detected_limit = await self._executor.query_concurrency_limit()
-            if detected_limit is not None:
-                initial = max(1, math.floor(detected_limit * 0.75))
-                maximum = max(initial, detected_limit)
-                self._concurrency_controller.reset(initial, maximum)
-                logger.info(
-                    f"Runtime capacity detected: {detected_limit}, "
-                    f"AIMD starting at {initial} (max {maximum})"
-                )
-            else:
-                logger.info("Could not detect runtime capacity, using default concurrency")
-        else:
-            logger.info(f"Using explicitly configured concurrency: {self._config.max_concurrent_prompts}")
 
         while self._running:
             try:
@@ -377,192 +358,203 @@ class Worker:
         self, prompts: List[PromptRequest], job: Job
     ) -> List[CompletionResult]:
         """
-        Execute all prompts concurrently using a bounded task pool.
-        """
-        # 1. Duplicate custom_id detection (pre-flight)
-        seen_ids = set()
-        for p in prompts:
-            if p.custom_id in seen_ids:
-                logger.error(f"[{job.job_id}] Duplicate custom_id '{p.custom_id}' in input")
-                raise ValueError(f"Duplicate custom_id '{p.custom_id}' in input")
-            seen_ids.add(p.custom_id)
+        Execute all prompts through a bounded pool of concurrent workers.
 
-        # 2. Set up shared state
+        Concurrency is fixed at ``config.max_concurrent_prompts`` for the life
+        of the job. Deriving that number from the runtime instead of trusting
+        the config value is issue #101.
+
+        Every input row produces exactly one output row, in input order. No
+        single prompt can fail the job: rejections are recorded per row before
+        execution starts, and an unexpected exception inside a pool worker
+        fails only the rows that worker was holding.
+        """
         total = len(prompts)
-        queue = asyncio.Queue()
-        results_by_id: dict[str, CompletionResult] = {}
+        # Keyed by input index, not custom_id — duplicate ids still get their
+        # own row, and out-of-order completion still writes in input order.
+        results_by_index: dict[int, CompletionResult] = {}
         lock = asyncio.Lock()
         completed = 0
         failed = 0
+        last_progress_report = 0.0
 
-        chat_prompts = []
-        embedding_prompts = []
-        for p in prompts:
+        # ── Partition ────────────────────────────────────────────
+        # Every rejection is decided here, before any path forks, so one input
+        # cannot get different treatment depending on the runtime it lands on.
+        seen_ids: set[str] = set()
+        chat_units: List[List[tuple[int, PromptRequest]]] = []
+        embedding_rows: List[tuple[int, PromptRequest]] = []
+
+        for idx, p in enumerate(prompts):
+            if p.custom_id in seen_ids:
+                # The backend's validator already rejects these at upload, so
+                # this only fires on a bypass. Fail the row, not the job.
+                logger.warning(
+                    f"[{job.job_id}] Duplicate custom_id '{p.custom_id}' "
+                    f"at row {idx} — failing that row"
+                )
+                results_by_index[idx] = CompletionResult(
+                    custom_id=p.custom_id,
+                    error=(
+                        "DUPLICATE_CUSTOM_ID: custom_id "
+                        f"'{p.custom_id}' appears more than once in the input"
+                    ),
+                )
+                failed += 1
+                continue
+            seen_ids.add(p.custom_id)
+
+            if p.body.get("stream"):
+                # Applies to every endpoint — batch execution cannot honor
+                # streaming and the response shape changes completely if
+                # passed through.
+                results_by_index[idx] = CompletionResult(
+                    custom_id=p.custom_id,
+                    error=(
+                        "UNSUPPORTED_PARAMETER: stream=true is not "
+                        "supported in batch mode. Batch requests are "
+                        "executed synchronously and the streaming "
+                        "response shape is incompatible."
+                    ),
+                )
+                failed += 1
+                continue
+
             if p.url == "/v1/embeddings":
-                embedding_prompts.append(p)
+                embedding_rows.append((idx, p))
             else:
-                chat_prompts.append(p)
-                queue.put_nowait(p)
+                chat_units.append([(idx, p)])
 
-        # 3. Worker coroutine
-        # This function processes items from the queue until it's empty or shutdown is requested.
-        # It's spawned dynamically by the pool_manager below.
-        active_workers = set()
+        # Embeddings go through the same pool as chat. Where the runtime can
+        # serve several rows in one request (Ollama's /api/embed), a chunk is
+        # one unit of work; where it cannot, each row is its own unit and gets
+        # the pool's concurrency instead of running serially after it.
+        chunk_size = getattr(self._executor, "embedding_chunk_size", 1)
+        if not isinstance(chunk_size, int) or chunk_size < 1:
+            # Executors are free not to declare this, and test doubles often
+            # don't. Anything unusable means "no coalescing".
+            chunk_size = 1
 
-        async def pool_worker(task_ref=None):
-            if task_ref is None:
-                task_ref = asyncio.current_task()
-            
+        # Ask before chunking. A row the runtime cannot coalesce (Ollama
+        # rejects list-valued inputs) would otherwise be swept into a chunk and
+        # run one-at-a-time inside a single pool slot — so a job made entirely
+        # of such rows collapsed to one worker no matter how the pool was
+        # sized.
+        can_coalesce = getattr(self._executor, "can_coalesce_embedding", None)
+        if chunk_size > 1 and callable(can_coalesce):
+            coalescable, solo = [], []
+            for row in embedding_rows:
+                try:
+                    (coalescable if can_coalesce(row[1]) else solo).append(row)
+                except Exception:
+                    # A predicate that raises means "don't risk it".
+                    solo.append(row)
+        else:
+            coalescable, solo = [], list(embedding_rows)
+
+        embedding_units = [
+            coalescable[i:i + chunk_size]
+            for i in range(0, len(coalescable), chunk_size)
+        ] + [[row] for row in solo]
+
+        units = chat_units + embedding_units
+        queue: asyncio.Queue = asyncio.Queue()
+        for unit in units:
+            queue.put_nowait(unit)
+
+        async def _run_unit(
+            unit: List[tuple[int, PromptRequest]]
+        ) -> List[tuple[int, CompletionResult]]:
+            """Execute one unit of work, mapping failures back to its rows."""
+            unit_prompts = [p for _, p in unit]
             try:
-                nonlocal completed, failed
-                while True:
-                    # Graceful shutdown check between each prompt execution
-                    if not self._running:
-                        return
-                    
-                    # AIMD Scaling down logic:
-                    # If the controller detected network strain (e.g. 429 Too Many Requests)
-                    # and decreased current_concurrency, excess workers will exit here naturally
-                    # before picking up the next prompt from the queue.
-                    if len(active_workers) > self._concurrency_controller.current_concurrency:
-                        return
-                        
-                    try:
-                        # Non-blocking get. The manager ensures queue has items when workers are spawned.
-                        prompt = queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        return
+                if len(unit) == 1 and unit_prompts[0].url != "/v1/embeddings":
+                    results = [await self._executor.execute(unit_prompts[0])]
+                else:
+                    results = await self._executor.batch_execute(unit_prompts)
+            except Exception as exc:
+                # A crash here must cost only this unit's rows. Losing the
+                # whole batch to one poisoned prompt is what the sequential
+                # loop never did.
+                logger.error(
+                    f"[{job.job_id}] Unit of {len(unit)} prompt(s) raised: "
+                    f"{exc!r}",
+                    exc_info=True,
+                )
+                return [
+                    (i, CompletionResult(
+                        custom_id=p.custom_id,
+                        error=f"INTERNAL_ERROR: {type(exc).__name__}: {exc}",
+                    ))
+                    for i, p in unit
+                ]
 
-                    logger.info(
-                        f"[{job.job_id}] Executing prompt "
-                        f"(id: {prompt.custom_id})"
+            if len(unit) == 1:
+                # One prompt in, one result out — it belongs to this row by
+                # construction, so don't second-guess the custom_id.
+                if results:
+                    return [(unit[0][0], results[0])]
+                return [(unit[0][0], CompletionResult(
+                    custom_id=unit_prompts[0].custom_id,
+                    error="INTERNAL_ERROR: executor returned no result for this prompt",
+                ))]
+
+            # Coalesced chunk: batch_execute gives no ordering guarantee, so
+            # pair on custom_id rather than position.
+            by_id = {r.custom_id: r for r in results}
+            paired = []
+            for i, p in unit:
+                res = by_id.get(p.custom_id)
+                if res is None:
+                    res = CompletionResult(
+                        custom_id=p.custom_id,
+                        error="INTERNAL_ERROR: executor returned no result for this prompt",
                     )
+                paired.append((i, res))
+            return paired
 
-                    # Pre-executor validation
-                    if prompt.body.get("stream"):
-                        result = CompletionResult(
-                            custom_id=prompt.custom_id,
-                            error=(
-                                "UNSUPPORTED_PARAMETER: stream=true is not "
-                                "supported in batch mode. Batch requests are "
-                                "executed synchronously and the streaming "
-                                "response shape is incompatible."
-                            ),
-                        )
-                    else:
-                        start_time = time.monotonic()
-                        result = await self._executor.execute(prompt)
-                        latency = time.monotonic() - start_time
-                        
-                        if result.is_success:
-                            self._concurrency_controller.on_success(latency)
-                        else:
-                            self._concurrency_controller.on_failure(result.error)
+        async def pool_worker() -> None:
+            nonlocal completed, failed, last_progress_report
 
-                    should_report = False
-                    report_completed = 0
-                    report_failed = 0
+            while True:
+                # Graceful shutdown check between units.
+                if not self._running:
+                    return
 
-                    # Thread-safe (async-safe) state updates since multiple workers run concurrently.
-                    async with lock:
-                        results_by_id[prompt.custom_id] = result
+                try:
+                    unit = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+
+                logger.info(
+                    f"[{job.job_id}] Executing "
+                    f"{len(unit)} prompt(s) (id: {unit[0][1].custom_id}"
+                    f"{'…' if len(unit) > 1 else ''})"
+                )
+
+                paired = await _run_unit(unit)
+
+                should_report = False
+                report_completed = 0
+                report_failed = 0
+
+                # Async-safe state updates — several workers land here at once.
+                async with lock:
+                    for i, result in paired:
+                        results_by_index[i] = result
                         if result.is_success:
                             completed += 1
                             tokens = result.usage.get("total_tokens", "?")
                             logger.debug(
-                                f"[{job.job_id}] Prompt {prompt.custom_id} "
+                                f"[{job.job_id}] Prompt {result.custom_id} "
                                 f"completed ({tokens} tokens)"
                             )
                         else:
                             failed += 1
                             logger.warning(
-                                f"[{job.job_id}] Prompt {prompt.custom_id} "
+                                f"[{job.job_id}] Prompt {result.custom_id} "
                                 f"failed: {result.error}"
                             )
-    
-                        done = completed + failed
-                        # Report to the backend periodically (every 10 prompts or at the end)
-                        if done % 10 == 0 or done == total:
-                            should_report = True
-                            report_completed = completed
-                            report_failed = failed
-    
-                        # Update heartbeat
-                        self._heartbeat.update_status(
-                            status="busy",
-                            job_id=job.job_id,
-                            progress={
-                                "total_prompts": total,
-                                "completed_prompts": completed,
-                                "failed_prompts": failed,
-                            }
-                        )
-    
-                    if should_report:
-                        await self._client.report_progress(
-                            job_id=job.job_id,
-                            completed=report_completed,
-                            failed=report_failed,
-                            total=total,
-                        )
-            finally:
-                active_workers.discard(task_ref)
-
-        # 4. Launch dynamic pool manager and wait
-        # The pool_manager constantly polls the AIMD concurrency limit and spawns new tasks
-        # to fill available capacity if the queue still has pending prompts.
-        async def pool_manager():
-            while self._running and not queue.empty():
-                target = self._concurrency_controller.current_concurrency
-                
-                # We update active_workers synchronously immediately after spawning
-                # to prevent the manager from spinning in an infinite loop while waiting 
-                # for the spawned coroutine to actually execute its first line.
-                while len(active_workers) < target and not queue.empty():
-                    task = asyncio.create_task(pool_worker())
-                    active_workers.add(task)
-                    
-                # Poll interval. Short enough to scale up fast, long enough to save CPU.
-                await asyncio.sleep(0.5)
-                
-        manager_task = asyncio.create_task(pool_manager())
-        
-        # Wait until the job queue is fully depleted by the active workers
-        # Checking self._running breaks the wait immediately during graceful shutdowns.
-        while self._running and not queue.empty():
-            await asyncio.sleep(0.5)
-            
-        # Ensure the manager loop exits cleanly and await all currently executing workers
-        # so we don't accidentally orphan running HTTP tasks.
-        manager_task.cancel()
-        if active_workers:
-            res_list = await asyncio.gather(*active_workers, return_exceptions=True)
-            for res in res_list:
-                if isinstance(res, Exception):
-                    logger.error(f"Worker crashed with exception: {res}")
-                    raise res
-
-        # 5. Handle embeddings
-        if embedding_prompts and self._running:
-            logger.info(f"[{job.job_id}] Executing {len(embedding_prompts)} embeddings via batch_execute")
-            try:
-                emb_results = await self._executor.batch_execute(embedding_prompts)
-                
-                should_report = False
-                report_completed = 0
-                report_failed = 0
-
-                async with lock:
-                    for r in emb_results:
-                        results_by_id[r.custom_id] = r
-                        if r.is_success:
-                            completed += 1
-                        else:
-                            failed += 1
-
-                    should_report = True
-                    report_completed = completed
-                    report_failed = failed
 
                     self._heartbeat.update_status(
                         status="busy",
@@ -571,8 +563,16 @@ class Worker:
                             "total_prompts": total,
                             "completed_prompts": completed,
                             "failed_prompts": failed,
-                        }
+                        },
                     )
+
+                    # Report progress to platform (time-throttled).
+                    now = time.monotonic()
+                    if (now - last_progress_report) >= self._config.progress_interval_seconds:
+                        should_report = True
+                        report_completed = completed
+                        report_failed = failed
+                        last_progress_report = now
 
                 if should_report:
                     await self._client.report_progress(
@@ -581,45 +581,49 @@ class Worker:
                         failed=report_failed,
                         total=total,
                     )
-            except Exception as exc:
-                logger.error(f"[{job.job_id}] Batch embedding execution failed: {exc}")
-                async with lock:
-                    for p in embedding_prompts:
-                        results_by_id[p.custom_id] = CompletionResult(
-                            custom_id=p.custom_id, error=str(exc)
-                        )
-                        failed += 1
-                        
-                    self._heartbeat.update_status(
-                        status="busy",
-                        job_id=job.job_id,
-                        progress={
-                            "total_prompts": total,
-                            "completed_prompts": completed,
-                            "failed_prompts": failed,
-                        }
+
+        # ── Run the pool ─────────────────────────────────────────
+        if units:
+            pool_size = max(1, min(self._config.max_concurrent_prompts, len(units)))
+            logger.info(
+                f"[{job.job_id}] Running {len(units)} unit(s) "
+                f"({len(chat_units)} chat, {len(embedding_rows)} embedding rows) "
+                f"at concurrency {pool_size}"
+            )
+            workers = [
+                asyncio.create_task(pool_worker()) for _ in range(pool_size)
+            ]
+            outcomes = await asyncio.gather(*workers, return_exceptions=True)
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    # _run_unit already converts per-unit failures into rows, so
+                    # reaching here means the pool loop itself broke. Log it and
+                    # still return everything that finished.
+                    logger.error(
+                        f"[{job.job_id}] Pool worker crashed: {outcome!r}",
+                        exc_info=outcome,
                     )
-                
-                await self._client.report_progress(
-                    job_id=job.job_id,
-                    completed=completed,
-                    failed=failed,
-                    total=total,
-                )
 
         if not self._running:
             logger.warning(
-                f"[{job.job_id}] Shutdown requested — "
-                f"stopping early"
+                f"[{job.job_id}] Shutdown requested — stopping early "
+                f"({completed + failed}/{total} prompts done)"
             )
 
-        # 6. Return results in input order (only what completed)
-        final_results = []
-        for p in prompts:
-            if p.custom_id in results_by_id:
-                final_results.append(results_by_id[p.custom_id])
-                
-        return final_results
+        # Final progress report — always sent, regardless of throttle.
+        await self._client.report_progress(
+            job_id=job.job_id,
+            completed=completed,
+            failed=failed,
+            total=total,
+        )
+
+        # Return in input order, skipping anything shutdown left unrun.
+        return [
+            results_by_index[i]
+            for i in range(total)
+            if i in results_by_index
+        ]
 
     # ── Output Writing ───────────────────────────────────────────
 
@@ -660,9 +664,12 @@ class Worker:
 
         # Don't crash — proceed anyway, individual prompts will fail
         # with descriptive errors if the executor is truly down
+        hint = ""
+        if self._config.runtime == "vllm" and gpu_vendors_present() == ["amd"]:
+            hint = f" {VLLM_ROCM_HINT}"
         logger.error(
             "Executor health check failed after all retries — "
-            "proceeding anyway (prompts may fail)"
+            f"proceeding anyway (prompts may fail).{hint}"
         )
 
     # ── Signal Handling ──────────────────────────────────────────
@@ -675,9 +682,9 @@ class Worker:
             try:
                 loop.add_signal_handler(sig, self._handle_shutdown_signal, sig)
             except NotImplementedError:
-                # add_signal_handler is not supported on Windows event loops.
-                # Graceful shutdown via signals will not work, but KeyboardInterrupt
-                # will still be raised on Ctrl+C.
+                # Not supported on Windows event loops. Signal-driven graceful
+                # shutdown is unavailable there, but Ctrl+C still raises
+                # KeyboardInterrupt.
                 pass
 
     def _handle_shutdown_signal(self, sig: signal.Signals) -> None:

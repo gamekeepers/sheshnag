@@ -1,6 +1,11 @@
 # systemd USER unit — install to ~/.config/systemd/user/ and manage with
 # `systemctl --user`. Rootless by design: everything under ~/.gpu-daemon.
 # %h expands to the user's home directory.
+#
+# These paths must match what scripts/install.sh creates — ~/.gpu-daemon/{src,venv}
+# and ~/.gpu-daemon/config.yaml — not a development checkout. They pointed at
+# ~/workplace/... until 2026-08-27, so the unit enabled cleanly and then
+# crash-looped every 10s on every machine except the one it was written on.
 [Unit]
 Description=Sheshnag GPU Worker Daemon
 After=network-online.target ollama.service

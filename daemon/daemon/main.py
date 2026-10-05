@@ -173,7 +173,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-concurrent-prompts",
         type=int,
         default=None,
-        help="Max prompts in flight concurrently (default: 8)",
+        help="Prompts executed concurrently per job (default: 8)",
     )
 
     return parser

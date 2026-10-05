@@ -57,6 +57,10 @@ def generate_catalog_id():
     return f"mdl-{uuid.uuid4().hex[:24]}"
 
 
+def generate_usage_id():
+    return f"usage-{uuid.uuid4().hex[:24]}"
+
+
 def unix_now():
     return int(datetime.now(timezone.utc).timestamp())
 
@@ -419,6 +423,39 @@ class Batch(Base):
     request_counts_failed    = Column(Integer, default=0)
     error_details            = Column(String, nullable=True)
     attempts                 = Column(Integer, default=0)  # execution attempts (spec §12 requeue)
+    prompt_tokens            = Column(Integer, nullable=True)
+    completion_tokens        = Column(Integer, nullable=True)
+    total_tokens             = Column(Integer, nullable=True)
+
+    usage_records = relationship(
+        "UsageRecord", back_populates="batch",
+        cascade="all, delete-orphan",
+    )
+
+
+class UsageRecord(Base):
+    """Per-prompt token usage record for batch auditing and pricing (spec §16).
+
+    Unique on (batch_id, custom_id) to guarantee idempotency across
+    worker retries and requeued batches.
+    """
+    __tablename__ = "usage_records"
+    __table_args__ = (
+        UniqueConstraint("batch_id", "custom_id"),
+    )
+
+    id                = Column(String, primary_key=True, default=generate_usage_id)
+    batch_id          = Column(
+        String, ForeignKey("batches.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    custom_id         = Column(String, nullable=False)
+    model             = Column(String, nullable=True)
+    prompt_tokens     = Column(Integer, nullable=False, default=0)
+    completion_tokens = Column(Integer, nullable=False, default=0)
+    total_tokens      = Column(Integer, nullable=False, default=0)
+    created_at        = Column(Integer, default=unix_now)
+
+    batch = relationship("Batch", back_populates="usage_records")
 
 
 class BatchAssignment(Base):

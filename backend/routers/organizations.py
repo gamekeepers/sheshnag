@@ -18,6 +18,9 @@ from auth import (
     get_current_user, generate_api_key, hash_api_key, get_api_key_prefix,
 )
 import secrets
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -27,7 +30,7 @@ INVITE_EXPIRY_SECONDS = 7 * 24 * 3600  # 7 days
 # ─── Request Schemas ────────────────────────────────────────
 
 class InviteRequest(BaseModel):
-    email: str
+    email: EmailStr
     role: str = "viewer"   # "owner" | "admin" | "viewer"
 
 class RoleUpdateRequest(BaseModel):
@@ -330,26 +333,40 @@ def rename_org(
 def list_org_served_batches(
     org_id: str,
     limit: int = 100,
+    since: Optional[int] = None,
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Batches served by this org's workers — provider view (spec §15).
 
     BatchSummary shape only: metadata, never input files or prompt content.
+
+    `since` bounds `assigned_at` (unix seconds). Anything drawing a time series
+    must pass it. Rows come back newest-first, so a bare `limit` drops the
+    *oldest* ones — a 14-day chart over a busy org would quietly become a 6-day
+    chart with its early days rendered as zero, which reads as "served nothing"
+    rather than "not loaded".
+
+    `truncated` says the cap was reached and rows beyond it exist, so a caller
+    that hits the ceiling anyway can say so instead of drawing a short window
+    under a long label.
     """
     _require_membership(db, user, org_id)
 
-    rows = (
+    capped = max(1, min(limit, 500))
+    query = (
         db.query(Batch, BatchAssignment, Worker)
         .join(BatchAssignment, BatchAssignment.batch_id == Batch.id)
         .outerjoin(Worker, Worker.id == BatchAssignment.worker_id)
         .filter(BatchAssignment.org_id == org_id)
-        .order_by(BatchAssignment.assigned_at.desc())
-        .limit(max(1, min(limit, 500)))
-        .all()
     )
+    if since is not None:
+        query = query.filter(BatchAssignment.assigned_at >= since)
+
+    rows = query.order_by(BatchAssignment.assigned_at.desc()).limit(capped).all()
     return {
         "object": "list",
+        "truncated": len(rows) == capped,
         "data": [
             {
                 "id": b.id,
@@ -364,6 +381,20 @@ def list_org_served_batches(
                     "completed": b.request_counts_completed or 0,
                     "failed": b.request_counts_failed or 0,
                 },
+                # Mirrors BatchSummary.usage: absent until ingestion has run.
+                "usage": (
+                    {
+                        "prompt_tokens": b.prompt_tokens,
+                        "completion_tokens": b.completion_tokens,
+                        "total_tokens": b.total_tokens,
+                    }
+                    if (
+                        b.prompt_tokens is not None
+                        or b.completion_tokens is not None
+                        or b.total_tokens is not None
+                    )
+                    else None
+                ),
                 "worker_id": a.worker_id,
                 # Live hostname when the worker still exists, else the name it
                 # had when it served the batch.
@@ -376,6 +407,41 @@ def list_org_served_batches(
     }
 
 
+def _batch_tokens(batch):
+    """(prompt, completion, total) once the rollup has landed, else None.
+
+    Restricted to completed batches on purpose. Rollups are written when the
+    output file is ingested (§16), so a running batch has no counts *yet* and a
+    failed one never will — folding either in as a zero would report "produced
+    nothing" for work that is merely unfinished. Any one of the three columns
+    being set means ingestion ran, matching BatchOut/BatchSummary.
+    """
+    if batch.status != "completed":
+        return None
+    if (batch.prompt_tokens is None and batch.completion_tokens is None
+            and batch.total_tokens is None):
+        return None
+    return (batch.prompt_tokens or 0, batch.completion_tokens or 0, batch.total_tokens or 0)
+
+
+def _token_bucket():
+    return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "counted_jobs": 0}
+
+
+def _add_tokens(bucket, tokens):
+    prompt, completion, total = tokens
+    bucket["prompt_tokens"] += prompt
+    bucket["completion_tokens"] += completion
+    bucket["total_tokens"] += total
+    bucket["counted_jobs"] += 1
+
+
+# Tokens first, requests as the tie-break: once tokens are the headline number
+# a list sorted by request count stops naming the top contributor.
+def _rank(bucket):
+    return (-bucket["total_tokens"], -bucket["requests_completed"])
+
+
 @router.get("/orgs/{org_id}/stats")
 def org_served_stats(
     org_id: str,
@@ -385,8 +451,15 @@ def org_served_stats(
 ):
     """Contribution aggregates for the provider portal (spec §15).
 
-    Counts requests served (no token accounting on batches yet — that
-    lands with real usage metering, §16).
+    Requests served and tokens produced, split by model and by worker. For a
+    provider contributing GPUs the token figure is the meaningful one: request
+    sizes vary by orders of magnitude, so a request count says little about
+    what the hardware actually did.
+
+    Every bucket carries `counted_jobs` beside its token sums — the number of
+    jobs whose rollup had landed. A bucket with jobs but `counted_jobs: 0` has
+    not been counted rather than produced nothing, and callers must render the
+    two differently.
     """
     _require_membership(db, user, org_id)
 
@@ -399,7 +472,8 @@ def org_served_stats(
         .all()
     )
 
-    totals = {"jobs": 0, "completed": 0, "failed": 0, "in_progress": 0, "requests_completed": 0}
+    totals = {"jobs": 0, "completed": 0, "failed": 0, "in_progress": 0,
+              "requests_completed": 0, **_token_bucket()}
     by_model, by_worker = {}, {}
     for b, _a, w in rows:
         totals["jobs"] += 1
@@ -408,7 +482,10 @@ def org_served_stats(
         reqs = b.request_counts_completed or 0
         totals["requests_completed"] += reqs
 
-        m = by_model.setdefault(b.model or "unknown", {"jobs": 0, "requests_completed": 0})
+        m = by_model.setdefault(
+            b.model or "unknown",
+            {"jobs": 0, "requests_completed": 0, **_token_bucket()},
+        )
         m["jobs"] += 1
         m["requests_completed"] += reqs
 
@@ -419,16 +496,25 @@ def org_served_stats(
                 "removed": w is None,
                 "jobs": 0,
                 "requests_completed": 0,
+                **_token_bucket(),
             },
         )
         wk["jobs"] += 1
         wk["requests_completed"] += reqs
 
+        tokens = _batch_tokens(b)
+        if tokens:
+            _add_tokens(totals, tokens)
+            _add_tokens(m, tokens)
+            _add_tokens(wk, tokens)
+
     return {
         "window_days": days,
         "totals": totals,
-        "by_model": [{"model": k, **v} for k, v in sorted(by_model.items(), key=lambda kv: -kv[1]["requests_completed"])],
-        "by_worker": [{"worker_id": k, **v} for k, v in sorted(by_worker.items(), key=lambda kv: -kv[1]["requests_completed"])],
+        "by_model": [{"model": k, **v}
+                     for k, v in sorted(by_model.items(), key=lambda kv: _rank(kv[1]))],
+        "by_worker": [{"worker_id": k, **v}
+                      for k, v in sorted(by_worker.items(), key=lambda kv: _rank(kv[1]))],
     }
 
 
@@ -634,7 +720,7 @@ def invite_member(
         join_link = f"{frontend_url}/join?token={token}"
         org = db.query(Organization).filter(Organization.id == org_id).first()
         org_name = org.name if org else "an organization"
-        send_email(
+        sent = send_email(
             req.email,
             f"You're invited to join {org_name} on Sheshnag",
             f"{user.full_name} invited you to join '{org_name}' as {req.role}.\n\n"
@@ -642,8 +728,19 @@ def invite_member(
             f"This invite expires in 7 days.\n"
             f"If you don't have an account, sign up first, then use the link above.",
         )
-    except Exception:
-        pass  # Email is best-effort
+        if not sent:
+            logger.warning(
+                "Failed to send invite email to %s for org %s: send_email returned False",
+                req.email,
+                org_id,
+            )  # Email is best-effort
+    except Exception as e:
+        logger.warning(
+            "Failed to send invite email to %s for org %s: %s",
+            req.email,
+            org_id,
+            e,
+        )  # Email is best-effort
 
     return {
         "status": "invite_sent",

@@ -44,9 +44,11 @@ class JobStatus(str, Enum):
 
 class GPUInfo(BaseModel):
     name: str = "unknown"
+    vendor: str = "other"        # spec §8.4: nvidia | amd | intel | apple | other
     vram_gb: float = 0.0
     driver_version: str = ""
-    cuda_version: str = ""
+    cuda_version: str = ""       # NVIDIA only
+    rocm_version: str = ""       # AMD only
     index: int = 0
 
 class HardwareInfo(BaseModel):
@@ -186,6 +188,9 @@ class CompletionResult(BaseModel):
         Note: Some providers return float values for certain usage
         fields, so we accept both int and float.
         """
-        if self.response and "usage" in self.response:
+        # `.get()`, not `in` — a runtime that answers with "usage": null
+        # otherwise returns None here and breaks the documented contract for
+        # every caller that treats this as a dict.
+        if self.response and self.response.get("usage"):
             return self.response["usage"]
         return {}

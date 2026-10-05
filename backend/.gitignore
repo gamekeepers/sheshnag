@@ -18,7 +18,6 @@ files/
 
 # Test files
 test_*.jsonl
-test_*.py
 
 # IDE
 .vscode/

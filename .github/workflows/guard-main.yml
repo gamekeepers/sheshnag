@@ -1,0 +1,28 @@
+# Blocks pull requests into `main` unless they come from `develop`.
+#
+# `develop` is the trunk (see CONTRIBUTING.md). `main` only receives release
+# merges from `develop`. A contributor who branches from `main` and opens a PR
+# against it gets a failing check with the retarget command, instead of a
+# maintainer discovering it at merge time.
+#
+# To make this binding, add the `only-develop-may-merge-to-main` job as a
+# required status check in the `key-branches-protection` ruleset.
+
+name: Guard main
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  only-develop-may-merge-to-main:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless head is develop
+        if: github.head_ref != 'develop'
+        run: |
+          echo "::error::PRs into main must come from develop. Retarget this PR: gh pr edit ${{ github.event.number }} --base develop"
+          exit 1
+      - name: Allow release merge
+        if: github.head_ref == 'develop'
+        run: echo "Release PR from develop, allowed."

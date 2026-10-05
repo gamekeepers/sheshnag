@@ -157,3 +157,152 @@ def test_history_survives_worker_removal(auth_client, _engine, _test_user):
     by_worker = {w["worker_id"]: w for w in stats["by_worker"]}
     assert by_worker[worker.id]["hostname"] == "prov-worker-1"
     assert by_worker[worker.id]["removed"] is True
+
+
+# ── Token aggregation ───────────────────────────────────────────────────────
+# For a provider contributing GPUs, tokens is the meaningful figure — request
+# sizes vary by orders of magnitude. The trap is that rollups land only on
+# completed batches, so an unguarded sum reports unfinished work as zero output.
+
+def _org_with_workers(engine, user_id, hostnames):
+    SM = sessionmaker(bind=engine, expire_on_commit=False)
+    db = SM()
+    try:
+        org = Organization(name="Token Stats Org")
+        db.add(org)
+        db.flush()
+        db.add(OrganizationMembership(org_id=org.id, user_id=user_id, role="owner"))
+        workers = []
+        for h in hostnames:
+            w = Worker(org_id=org.id, hostname=h, status="online")
+            db.add(w)
+            db.flush()
+            workers.append(w)
+        db.commit()
+        return org, workers
+    finally:
+        db.close()
+
+
+def _serve(engine, org, worker, *, model, status="completed", requests=10,
+           tokens=None, assigned_at=None):
+    """One batch served by `worker`. `tokens` is (prompt, completion, total)."""
+    SM = sessionmaker(bind=engine, expire_on_commit=False)
+    db = SM()
+    try:
+        batch = Batch(
+            endpoint="/v1/chat/completions",
+            model=model,
+            input_file_id="file-x",
+            status=status,
+            request_counts_total=requests,
+            request_counts_completed=requests,
+            prompt_tokens=tokens[0] if tokens else None,
+            completion_tokens=tokens[1] if tokens else None,
+            total_tokens=tokens[2] if tokens else None,
+        )
+        db.add(batch)
+        db.flush()
+        db.add(BatchAssignment(
+            batch_id=batch.id,
+            worker_id=worker.id,
+            org_id=org.id,
+            worker_hostname=worker.hostname,
+            assigned_at=assigned_at if assigned_at is not None else unix_now(),
+        ))
+        db.commit()
+        return batch
+    finally:
+        db.close()
+
+
+def test_stats_sums_tokens_by_model_and_worker(auth_client, _engine, _test_user):
+    org, (w1, w2) = _org_with_workers(_engine, _test_user.id, ["tok-a", "tok-b"])
+    _serve(_engine, org, w1, model="gemma3:27b", tokens=(100, 40, 140))
+    _serve(_engine, org, w1, model="gemma3:27b", tokens=(200, 60, 260))
+    _serve(_engine, org, w2, model="qwen3:8b", tokens=(10, 5, 15))
+
+    body = auth_client.get(f"/v1/orgs/{org.id}/stats?days=7").json()
+
+    assert body["totals"]["total_tokens"] == 415
+    assert body["totals"]["prompt_tokens"] == 310
+    assert body["totals"]["counted_jobs"] == 3
+
+    models = {m["model"]: m for m in body["by_model"]}
+    assert models["gemma3:27b"]["total_tokens"] == 400
+    assert models["gemma3:27b"]["counted_jobs"] == 2
+    assert models["qwen3:8b"]["total_tokens"] == 15
+
+    workers = {w["hostname"]: w for w in body["by_worker"]}
+    assert workers["tok-a"]["total_tokens"] == 400
+    assert workers["tok-b"]["total_tokens"] == 15
+
+
+@pytest.mark.parametrize("status", ["in_progress", "failed"])
+def test_stats_ignores_tokens_on_unfinished_batches(auth_client, _engine, _test_user, status):
+    """A rollup on a batch that did not complete is not throughput.
+
+    The columns are writable in any state, so the guard has to be on status —
+    otherwise a requeued or failed job inflates the provider's contribution.
+    """
+    org, (w,) = _org_with_workers(_engine, _test_user.id, ["tok-unfinished"])
+    _serve(_engine, org, w, model="m", status=status, tokens=(999, 999, 999))
+
+    body = auth_client.get(f"/v1/orgs/{org.id}/stats?days=7").json()
+
+    assert body["totals"]["total_tokens"] == 0
+    assert body["totals"]["counted_jobs"] == 0
+    assert body["totals"]["jobs"] == 1  # the job still served, it just has no count
+
+
+def test_stats_distinguishes_uncounted_from_zero(auth_client, _engine, _test_user):
+    """A batch predating §16 has jobs but no rollup — not a worker that idled.
+
+    counted_jobs is what lets the UI render an em dash instead of a hard 0.
+    """
+    org, (w,) = _org_with_workers(_engine, _test_user.id, ["tok-uncounted"])
+    _serve(_engine, org, w, model="legacy", tokens=None)
+
+    worker = auth_client.get(f"/v1/orgs/{org.id}/stats?days=7").json()["by_worker"][0]
+    assert worker["jobs"] == 1
+    assert worker["counted_jobs"] == 0
+    assert worker["total_tokens"] == 0
+
+
+def test_stats_ranks_by_tokens_not_requests(auth_client, _engine, _test_user):
+    """Many tiny requests must not outrank fewer large ones."""
+    org, (w1, w2) = _org_with_workers(_engine, _test_user.id, ["tok-small", "tok-big"])
+    _serve(_engine, org, w1, model="small", requests=500, tokens=(50, 50, 100))
+    _serve(_engine, org, w2, model="big", requests=5, tokens=(5000, 5000, 10000))
+
+    body = auth_client.get(f"/v1/orgs/{org.id}/stats?days=7").json()
+    assert body["by_model"][0]["model"] == "big"
+    assert body["by_worker"][0]["hostname"] == "tok-big"
+
+
+# ── Windowing on the served-batches list ────────────────────────────────────
+
+def test_served_batches_since_bounds_the_window(auth_client, _engine, _test_user):
+    org, (w,) = _org_with_workers(_engine, _test_user.id, ["tok-window"])
+    now = unix_now()
+    old = _serve(_engine, org, w, model="m", assigned_at=now - 30 * 86400)
+    recent = _serve(_engine, org, w, model="m", assigned_at=now - 86400)
+
+    ids = {b["id"] for b in
+           auth_client.get(f"/v1/orgs/{org.id}/batches?since={now - 7 * 86400}").json()["data"]}
+    assert recent.id in ids
+    assert old.id not in ids
+
+
+def test_served_batches_flags_truncation(auth_client, _engine, _test_user):
+    """Silence here is what turns a capped list into a chart that understates.
+
+    Rows come back newest-first, so hitting the cap drops the oldest — the
+    caller has to be told rather than left to render the gap as zero.
+    """
+    org, (w,) = _org_with_workers(_engine, _test_user.id, ["tok-trunc"])
+    for _ in range(3):
+        _serve(_engine, org, w, model="m")
+
+    assert auth_client.get(f"/v1/orgs/{org.id}/batches?limit=2").json()["truncated"] is True
+    assert auth_client.get(f"/v1/orgs/{org.id}/batches?limit=50").json()["truncated"] is False

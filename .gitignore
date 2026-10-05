@@ -224,3 +224,7 @@ __marimo__/
 node_modules/
 .next/
 .env.local
+
+# MkDocs — built site and its dedicated venv (see docs/requirements.txt)
+site/
+.venv-docs/

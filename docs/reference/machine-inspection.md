@@ -1,3 +1,7 @@
+# Machine inspection
+
+*Last updated 2026-07-07 — the oldest document here. Survey notes on how a host can be inspected, kept because the daemon draws on them; it is **not** a description of what the daemon currently collects. For that, read [Daemon internals](daemon.md). Not re-verified against code.*
+
 
 | Information                  | Preferred तरीका                                           | Python package / command           |
 | ---------------------------- | --------------------------------------------------------- | ---------------------------------- |
