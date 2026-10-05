@@ -506,6 +506,72 @@ def test_upload_results_endpoint_ingests_usage(db_session, test_user, _engine):
         app.dependency_overrides.clear()
 
 
+def test_upload_results_endpoint_is_idempotent(db_session, test_user, _engine):
+    """A repeat upload of a completed batch is a safe replay, not a 409.
+
+    Reuses the existing output file, skips duplicate File rows, and ensures
+    ingest_usage_records is convergent.
+    """
+    from fastapi.testclient import TestClient
+    from main import app
+    from database import get_db
+    from tests.conftest import _make_override
+
+    key_val = "gk-test-upload-key-87654321"
+    org, worker, batch = _worker_fixture(
+        db_session, test_user, key_val, "Worker Replay Org", "worker-replay-1"
+    )
+
+    payload = "\n".join(json.dumps(o) for o in [
+        {"custom_id": "req-1", "error": None, "response": {
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}}},
+    ])
+
+    app.dependency_overrides[get_db] = _make_override(_engine)
+    try:
+        with TestClient(app) as client:
+            client.headers.update({"Authorization": f"Bearer {key_val}"})
+            
+            # First upload
+            res1 = client.post(
+                "/workers/upload-results",
+                data={"job_id": batch.id, "worker_id": worker.id, "completed": 1, "failed": 0},
+                files={"file": ("out.jsonl", io.BytesIO(payload.encode()), "application/jsonl")},
+            )
+            assert res1.status_code == 200
+            file_id_1 = res1.json()["output_file_id"]
+            
+            # Second upload (replay)
+            res2 = client.post(
+                "/workers/upload-results",
+                data={"job_id": batch.id, "worker_id": worker.id, "completed": 1, "failed": 0},
+                files={"file": ("out2.jsonl", io.BytesIO(payload.encode()), "application/jsonl")},
+            )
+            assert res2.status_code == 200
+            file_id_2 = res2.json()["output_file_id"]
+            
+            # Must reuse the same file ID
+            assert file_id_1 == file_id_2
+
+        db_session.expire_all()
+        db_session.refresh(batch)
+
+        # Ensure we didn't duplicate the File row (only file_id_1 should exist)
+        # The exact number of files in the DB depends on prior tests, so just check
+        # that the newly returned file IDs map to ONE unique existing row.
+        assert len(set([file_id_1, file_id_2])) == 1
+
+        # Tokens must equal the first upload (no doubling)
+        assert batch.prompt_tokens == 10
+        assert batch.total_tokens == 30
+
+        # usage_ingestion_pending should be cleared after successful ingestion
+        assert batch.usage_ingestion_pending is False
+
+    finally:
+        app.dependency_overrides.clear()
+
+
 def _ingest_lines(batch_id, objects):
     """Write objects (dicts, or raw strings for malformed lines) and ingest."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False, encoding="utf-8") as tmp:

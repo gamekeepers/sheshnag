@@ -625,6 +625,7 @@ class Batch(Base):
     prompt_tokens            = Column(Integer, nullable=True)
     completion_tokens        = Column(Integer, nullable=True)
     total_tokens             = Column(Integer, nullable=True)
+    usage_ingestion_pending  = Column(Boolean, default=False)
 
     usage_records = relationship(
         "UsageRecord", back_populates="batch",

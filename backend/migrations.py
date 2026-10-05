@@ -10,7 +10,7 @@ SQLite (the two dialects in the deployment matrix).
 import logging
 
 from sqlalchemy import inspect, text
-from sqlalchemy import BigInteger, Float, Integer, String, JSON
+from sqlalchemy import BigInteger, Boolean, Float, Integer, String, JSON
 
 from database import get_engine
 from models import Base, Batch, BatchAssignment, UsageRecord  # noqa: F401 — ensure models are registered
@@ -114,6 +114,10 @@ MIGRATIONS = [
     # platform with no reading reports None rather than 0.
     _Migration("workers.ram_available_gb",
                "workers", "ram_available_gb", Float()),
+    # Outbox flag for usage ingestion (sub-issue 4): marks a completed batch
+    # as pending ingestion so the sweeper can pick it up.
+    _Migration("batches.usage_ingestion_pending",
+               "batches", "usage_ingestion_pending", Boolean()),
 ]
 
 
