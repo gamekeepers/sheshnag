@@ -21,7 +21,7 @@ receives finished files**, and nothing done to it needs `sudo`.
 |---|---|---|---|
 | 1 | [Build the bundle](#1-build-the-bundle) | Build host | `WITH_PYTHON=1 scripts/build-offline-bundle.sh` |
 | 2 | [Build the runtime](#2-build-the-inference-runtime) | Build host, in Docker | `docker run … manylinux2014_x86_64` |
-| 3 | [Carry it in and install](#3-carry-it-in-and-install) | Build host → worker | `~/bundle/install.sh` |
+| 3 | [Carry it in and install](#3-carry-it-in-and-install) | Build host → worker | `INSTANCE=$(hostname -s) ~/bundle/install.sh` |
 | 4 | [Stage the models](#4-stage-the-model-files) | Build host → worker | Any copy — `scp`, `rsync`, `stage-models.sh` |
 | 5 | [Configure and supervise](#5-configure-and-supervise) | Worker | `~/bundle/setup-offline-worker.sh` |
 | 6 | [Check it worked](#6-check-it-worked) | Worker | `ctl.sh status` |
@@ -102,7 +102,7 @@ set -e
 export PATH=/opt/python/cp312-cp312/bin:$PATH
 pip install -q cmake ninja
 cmake -S /src -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_SHARED_LIBS=OFF -DLLAMA_CURL=OFF \
+  -DBUILD_SHARED_LIBS=OFF -DLLAMA_OPENSSL=OFF \
   -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON \
   -DGGML_OPENMP=OFF -DGGML_BLAS=OFF -DGGML_CUDA=OFF \
   -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
@@ -123,14 +123,23 @@ while the build host stays silent:
 | `GGML_NATIVE=OFF`, with `AVX`, `AVX2`, `FMA` and `F16C` named | Instructions detected from the build machine's own CPU. An older target traps on them, and it arrives as `Illegal instruction` on the first prompt, not at startup |
 | `-static-libstdc++ -static-libgcc`, `BUILD_SHARED_LIBS=OFF` | A dependency on a C++ runtime newer than the target's, which cannot be resolved at load |
 | `GGML_OPENMP=OFF`, `GGML_BLAS=OFF` | Shared libraries the target has no copy of |
-| `LLAMA_CURL=OFF` | A libcurl linked against a TLS stack the target does not carry |
+| `LLAMA_OPENSSL=OFF` | An OpenSSL the target does not carry. It serves only model downloads over HTTPS, and the router loads staged files |
 
 **Name the instruction sets your oldest machine has**, not the newest. The set
 above is a Haswell floor; a fleet containing anything older serves that machine
-a binary it cannot execute. `GGML_CUDA` is the one flag that follows the
-individual machine, not the fleet — turn it on only where the driver is new
-enough for the card it drives, since a driver older than the card's compute
-capability leaves the GPU reporting itself and serving nothing.
+a binary it cannot execute.
+
+**This recipe builds a CPU-only binary.** The manylinux image carries no CUDA
+toolkit, and `GGML_CUDA=ON` fails to configure without one. A GPU build needs:
+
+- **An image with the CUDA toolkit** whose glibc is no newer than the target's.
+- **`-DCMAKE_CUDA_ARCHITECTURES`** naming each card's compute capability, e.g.
+  `61;86` for a GTX 1080 beside an RTX 3090. A card left out loads no kernels.
+- **A toolkit no newer than the target's driver supports.** `nvidia-smi` on the
+  worker prints the highest CUDA version its driver runs; a binary built past it
+  leaves the GPU reporting itself and serving nothing.
+
+`GGML_CUDA` is the one flag that follows the individual machine, not the fleet.
 
 !!! tip "Check — on the build host"
     Assert the result before carrying it anywhere. The highest glibc symbol the
@@ -272,6 +281,10 @@ then starts everything. Useful settings:
 | `MODELS_DIR` | `/tmp/gguf` | Directory of GGUFs for router mode; also written to the daemon config, which needs it to identify what it serves |
 | `MODELS_MAX` | `1` | How many models may be resident at once |
 | `THREADS` | `nproc`, capped at 16 | `llama-server -t` |
+| `N_CTX` | `4096` | `llama-server -c` |
+| `NGL` | unset | `llama-server -ngl`: a layer count, `auto` or `all`. Unset leaves llama-server's `auto`, which fits layers to free VRAM; an exact count can fail to load a model the card cannot hold |
+| `CUDA_VISIBLE_DEVICES` | unset | GPUs llama-server may use, as `nvidia-smi` indices or `GPU-` UUIDs. The daemon advertises only these cards. Unset, a multi-GPU host splits weights across every card and runs at the slowest one's pace |
+| `LLAMA_LD_LIBRARY_PATH` | unset | Prepended to `LD_LIBRARY_PATH` for llama-server only — for a build whose `libstdc++` is newer than the system's |
 | `PROXY` | unset | `socks5h://…` or `http://…` for a host with no route out |
 | `TUNNEL_HOST` | unset | SSH host to keep a SOCKS forward open through |
 | `PROBE_URL` | `BACKEND_URL` | What the supervisor fetches through the forward to confirm it carries |

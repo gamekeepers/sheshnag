@@ -123,6 +123,6 @@ echo "Size:   $(du -h "$ARCHIVE" | cut -f1)"
 echo "Wheels: $(ls "$STAGE/wheels" | wc -l)"
 echo
 echo "Ship it, then on the target:"
-echo "    tar -xzf $(basename "$ARCHIVE") -C ~/bundle"
+echo "    mkdir -p ~/bundle && tar -xzf $(basename "$ARCHIVE") -C ~/bundle"
 echo "    INSTANCE=\$(hostname -s) ~/bundle/install.sh"
 echo "    BACKEND_URL=... API_KEY=gk-... bash ~/bundle/setup-offline-worker.sh"

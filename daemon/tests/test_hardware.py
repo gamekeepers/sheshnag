@@ -834,3 +834,59 @@ def test_available_ram_survives_vm_stat_failure(monkeypatch):
 def test_available_ram_is_unknown_on_an_unsupported_platform(monkeypatch):
     monkeypatch.setattr(hardware.platform, "system", lambda: "Windows")
     assert hardware.available_ram_gb() is None
+
+
+# ── CUDA_VISIBLE_DEVICES ──────────────────────────────────────────
+
+NVIDIA_SMI_DETECT_PAIR = (
+    "0, NVIDIA GeForce RTX 4090, 24564\n"
+    "1, NVIDIA GeForce GTX 1080, 8192\n"
+)
+NVIDIA_SMI_USE_PAIR = "80, 12288, 24564\n10, 1024, 8192\n"
+NVIDIA_SMI_UUIDS = (
+    "0, GPU-aaaa1111-0000-0000-0000-000000000000\n"
+    "1, GPU-bbbb2222-0000-0000-0000-000000000000\n"
+)
+_PAIR_OUTPUTS = {
+    ("nvidia-smi", "--query-gpu=index,name,memory.total"): NVIDIA_SMI_DETECT_PAIR,
+    ("nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total"): NVIDIA_SMI_USE_PAIR,
+    ("nvidia-smi", "--query-gpu=index,uuid"): NVIDIA_SMI_UUIDS,
+    ("nvidia-smi", None): NVIDIA_SMI_BANNER,
+}
+
+
+def _pair_probe(monkeypatch, mask):
+    if mask is not None:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    with patch.object(hardware.shutil, "which", _which("nvidia-smi")), \
+         patch.object(hardware.subprocess, "run", _fake_run(_PAIR_OUTPUTS)):
+        return hardware.detect_hardware()["gpus"], hardware.get_gpu_utilization()
+
+
+def test_unset_mask_reports_every_card(monkeypatch):
+    gpus, stats = _pair_probe(monkeypatch, None)
+    assert [g["index"] for g in gpus] == [0, 1]
+    assert stats["memory_total_gb"] == round((24564 + 8192) / 1024, 2)
+
+
+@pytest.mark.parametrize("mask", ["1", "GPU-bbbb", " 1 "])
+def test_mask_limits_inventory_and_utilization(monkeypatch, mask):
+    gpus, stats = _pair_probe(monkeypatch, mask)
+    assert [(g["index"], g["name"]) for g in gpus] == [(1, "NVIDIA GeForce GTX 1080")]
+    assert stats["utilization"] == 10.0
+    assert stats["memory_total_gb"] == round(8192 / 1024, 2)
+
+
+def test_mask_order_is_kept(monkeypatch):
+    gpus, _ = _pair_probe(monkeypatch, "1,0")
+    assert [g["index"] for g in gpus] == [1, 0]
+
+
+@pytest.mark.parametrize("mask,expected", [
+    ("", []),           # CUDA sees no device at all
+    ("0,7,1", [0]),     # enumeration stops at the first entry naming no card
+    ("0,GPU-", [0]),    # a prefix shared by every card names no single one
+])
+def test_mask_edge_cases(monkeypatch, mask, expected):
+    gpus, _ = _pair_probe(monkeypatch, mask)
+    assert [g["index"] for g in gpus] == expected

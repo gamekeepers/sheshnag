@@ -137,7 +137,7 @@ PY
     echo "  Fedora/RHEL    sudo dnf install -y python3 python3-pip git curl"
     echo "  Arch           sudo pacman -S --needed python python-pip git curl"
     case "$missing" in
-      *python3'>='*|*python3-ssl*)
+      *python3*)
         echo
         echo "The offline bundle carries its own interpreter and every wheel, so"
         echo "it needs nothing from this machine's Python:"
@@ -145,8 +145,8 @@ PY
         echo "  Where there is internet and a checkout of the repository:"
         echo "    WITH_PYTHON=1 scripts/build-offline-bundle.sh"
         echo "  Copy the archive to this machine, then:"
-        echo "    tar -xzf sheshnag-daemon-offline-*.tar.gz -C ~/bundle"
-        echo "    ~/bundle/install.sh"
+        echo "    mkdir -p ~/bundle && tar -xzf sheshnag-daemon-offline-*.tar.gz -C ~/bundle"
+        echo "    INSTANCE=\$(hostname -s) ~/bundle/install.sh"
         echo "    BACKEND_URL=... API_KEY=gk-... bash ~/bundle/setup-offline-worker.sh"
         echo
         echo "docs/offline-worker.md covers that path, and with it a host that"
