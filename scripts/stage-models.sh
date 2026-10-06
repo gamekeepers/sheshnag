@@ -68,13 +68,14 @@ send() {   # $1 worker, $2 name, $3 source path, $4 source ref (may be empty)
   local worker="$1" name="$2" src="$3" ref="${4:-}" dest="$DEST/$2.gguf" want have
   [ -r "$src" ] || { echo "  $name: cannot read $src — skipped"; return; }
   want=$(stat -c %s "$src")
-  have=$(J "ssh $worker 'stat -c %s $dest 2>/dev/null || echo 0'" | tr -d '\r')
+  # -n keeps the outer ssh from eating the manifest the while-read loop is on.
+  have=$(ssh -n -o ControlPath="$CM" "$JUMP" "ssh $worker 'stat -c %s $dest 2>/dev/null || echo 0'" | tr -d '\r')
 
   if [ "$have" = "$want" ]; then
     echo "  $name: already complete ($((want / 1000000)) MB)"
     return
   fi
-  J "ssh $worker 'mkdir -p $DEST'"
+  ssh -n -o ControlPath="$CM" "$JUMP" "ssh $worker 'mkdir -p $DEST'"
   if [ "${have:-0}" -gt 0 ] 2>/dev/null; then
     echo "  $name: resuming at $((have / 1000000)) of $((want / 1000000)) MB"
     tail -c +$((have + 1)) "$src" | J "ssh $worker 'cat >> $dest'"
@@ -96,7 +97,7 @@ SIDECAR
 }
 
 drop_sidecar() {   # $1 worker, $2 name
-  J "ssh $1 'rm -f $DEST/$2.gguf.json'"
+  ssh -n -o ControlPath="$CM" "$JUMP" "ssh $1 'rm -f $DEST/$2.gguf.json'"
 }
 
 manifest_field() {   # $1 name, $2 field index — compared literally
@@ -116,7 +117,7 @@ for worker in "$@"; do
   echo "  verifying..."
   # Read the worker's own bytes back, then write or withdraw each identity.
   # A pipeline would run this in a subshell; the file keeps it in this one.
-  J "ssh $worker 'cd $DEST && sha256sum *.gguf 2>/dev/null'" | tr -d '\r' \
+  ssh -n -o ControlPath="$CM" "$JUMP" "ssh $worker 'cd $DEST && sha256sum *.gguf 2>/dev/null'" | tr -d '\r' \
     > "$SHA_CACHE/remote.$$"
   while read -r remote_sha file; do
     name="${file%.gguf}"

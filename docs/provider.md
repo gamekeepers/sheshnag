@@ -12,6 +12,25 @@ refuses to run as root.
 
 ---
 
+## Which path to follow
+
+The one-command install below wants a recent distribution, working systemd user
+units, and a route to the internet. Where one of those does not hold, start at
+[Lend a GPU offline](offline-worker.md): it carries the daemon in as an archive,
+supervises it with cron, and reaches the control plane through a proxy.
+
+| On this machine | Path |
+|---|---|
+| A recent distribution, and `systemctl --user` works | [Install](#2-install) below |
+| Python older than 3.12, or one that cannot do HTTPS | [Offline](offline-worker.md) — the bundle carries its own interpreter |
+| No user D-Bus, so `systemctl --user` fails | [Offline](offline-worker.md) — cron and `flock` supervise |
+| Home on NFS, or under a quota smaller than a model | [Offline](offline-worker.md) — weights stage to local disk |
+| No outbound route to the control plane | [Offline](offline-worker.md) — an SSH forward is the route |
+
+Institutional cluster nodes are commonly several of these at once.
+
+---
+
 ## What you are agreeing to
 
 A small daemon runs on your machine. Every few seconds it asks the control plane
@@ -45,8 +64,8 @@ You can stop lending at any time with one command — see
 | You need | Notes |
 |---|---|
 | **Linux** | The installer exits on anything else. |
-| **Python 3.10+**, **git**, **curl** | Checked, not installed. If any is missing the installer stops and prints the package list to hand your admin. |
-| **A GPU the daemon can see** | Optional but the entire point. The daemon detects NVIDIA (via `nvidia-smi`), AMD (via `rocm-smi`) and Apple Silicon (via Metal); on anything else it runs, reports no GPU, and sits idle — set `DAEMON_VRAM_GB` to advertise a capacity by hand. **Detected is not yet the same as runnable:** the installer still fetches an x86-64 Ollama whatever the host, so an AMD or arm64 machine gets no working runtime out of the box ([#81](https://github.com/gamekeepers/sheshnag/issues/81)), and the installer is Linux-only regardless. |
+| **Python 3.12+**, **git**, **curl** | Checked, not installed. The interpreter must also be able to do HTTPS; one built without `_ssl` is refused here, where the message names it, and not at registration, where it arrives as a TLS error. |
+| **A GPU the daemon can see** | Optional but the entire point. The daemon detects NVIDIA (via `nvidia-smi`), AMD (via `rocm-smi`) and Apple Silicon (via Metal); on anything else it runs, reports no GPU, and sits idle — set `DAEMON_VRAM_GB` to advertise a capacity by hand. **Detected is not yet the same as runnable**, in three ways: the installer fetches an x86-64 Ollama whatever the host, so an AMD or arm64 machine gets no working runtime out of the box ([#81](https://github.com/gamekeepers/sheshnag/issues/81)); a driver too old for the card it drives reports a GPU no runtime can use; and Ollama's binary needs a newer glibc than a long-term-support distribution carries, where llama.cpp serves. The installer is Linux-only regardless. |
 | **The platform URL** | From whoever runs the deployment, e.g. `https://sheshnag.example.edu`. |
 | **A worker key** (`gk-…`) | See below. |
 
@@ -115,7 +134,8 @@ BACKEND_URL=https://sheshnag.example.edu API_KEY=gk-... bash install.sh
 
 Worth knowing, because it is your machine:
 
-1. **Checks prerequisites** — `python3` (3.10+), `git`, `curl`. Reports
+1. **Checks prerequisites** — `python3` (3.12+, able to do HTTPS), `git`,
+   `curl`. Reports
    `nvidia-smi` as a warning only, never a failure.
 2. **Asks its questions and writes `~/.gpu-daemon/config.yaml`**, `chmod 600`
    because it contains the key. Everything interactive happens here, before the
@@ -307,7 +327,11 @@ above.
 
 **"WARNING: nvidia-smi not found"** — the daemon installs and runs, but reports
 no GPU and will never be given work. Install the NVIDIA drivers (an admin task)
-and restart the service.
+and restart the service. A driver that *is* present can still be too old for the
+card it drives, which looks identical from the dashboard: the worker is online
+and no batch ever runs on the GPU. `nvidia-smi` names the driver version; where
+it predates the card's compute capability the GPU contributes nothing, and the
+machine is worth lending as a CPU worker through llama.cpp.
 
 **"enable-linger failed"** — your distro requires an administrator for this. The
 daemon works while you are logged in and stops when you log out. To fix
@@ -315,6 +339,27 @@ permanently, ask an admin to run `sudo loginctl enable-linger <your-user>`.
 
 **Missing `python3`, `git` or `curl`** — the installer prints exactly what to
 ask for: `sudo apt-get install -y python3 python3-venv python3-pip git curl`.
+Where there is no `sudo` and no package new enough, take the
+[offline path](offline-worker.md) — its bundle carries an interpreter and every
+wheel, so nothing has to be installed on the machine.
+
+**Registration fails with a TLS or certificate error** — usually the
+interpreter, not the network. One built without `_ssl` cannot verify anything.
+Check it:
+
+```bash
+python3 -c "import ssl; print(ssl.OPENSSL_VERSION)"
+```
+
+No output, or an OpenSSL older than 1.0.2, and the interpreter in the
+[offline bundle](offline-worker.md) is the fix.
+
+**The worker is online and healthy but is never given a batch** — the name a
+runtime advertises a model under is a contract with the catalogue. A
+`llama-server` started with `--alias` set to anything but the catalogue entry's
+runtime model id leaves the worker serving a model nobody can ask for. Compare
+the `Runtime '…' serves:` line in the daemon log against the model ids in the
+dashboard's **Models** tab.
 
 **Registration fails with an authentication error** — the key is wrong, or it
 was revoked in the dashboard. Revoking a key stops every daemon using it

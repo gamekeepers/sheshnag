@@ -52,8 +52,49 @@ def _run_rocm_smi(args: List[str], timeout: int = _SMI_TIMEOUT) -> str:
 # ── NVIDIA ─────────────────────────────────────────────────────────
 
 
+def _cuda_visible_indices(timeout: int = _SMI_TIMEOUT) -> Optional[List[int]]:
+    """
+    nvidia-smi indices of the cards CUDA_VISIBLE_DEVICES leaves usable, in
+    mask order; None when the variable is unset and every card is usable.
+
+    nvidia-smi ignores the mask, so a worker whose runtime is pinned to one
+    card would otherwise advertise every card and be scheduled against
+    capacity it cannot reach. Entries are indices or GPU-UUID prefixes, and
+    enumeration stops at the first entry that names no card, as CUDA's does.
+    Indices match nvidia-smi's only under CUDA_DEVICE_ORDER=PCI_BUS_ID, which
+    setup-offline-worker.sh exports alongside the mask.
+    """
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return None
+    try:
+        csv_out = _run_smi(["--query-gpu=index,uuid", "--format=csv,noheader"],
+                           timeout=timeout).strip()
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+        logger.debug(f"GPU uuid lookup via nvidia-smi failed: {e}")
+        return []
+    uuids: Dict[int, str] = {}
+    for line in csv_out.split('\n'):
+        parts = [p.strip() for p in line.split(',')]
+        if len(parts) >= 2 and parts[0].isdigit():
+            uuids[int(parts[0])] = parts[1]
+
+    visible: List[int] = []
+    for token in (t.strip() for t in raw.split(',')):
+        if token.isdigit() and int(token) in uuids:
+            match = int(token)
+        else:
+            hits = [i for i, u in uuids.items() if token and u.startswith(token)]
+            if len(hits) != 1:
+                break
+            match = hits[0]
+        if match not in visible:
+            visible.append(match)
+    return visible
+
+
 def _detect_nvidia_gpus() -> List[Dict[str, Any]]:
-    """GPUs visible to nvidia-smi; [] when it is absent or fails."""
+    """GPUs visible to nvidia-smi and CUDA; [] when it is absent or fails."""
     if shutil.which("nvidia-smi") is None:
         return []
     gpus: List[Dict[str, Any]] = []
@@ -92,6 +133,11 @@ def _detect_nvidia_gpus() -> List[Dict[str, Any]]:
                 })
     except (subprocess.TimeoutExpired, subprocess.CalledProcessError, ValueError) as e:
         logger.debug(f"GPU detection via nvidia-smi failed: {e}")
+        return gpus
+    visible = _cuda_visible_indices(timeout=_SMI_DETECT_TIMEOUT)
+    if visible is not None:
+        by_index = {g["index"]: g for g in gpus}
+        gpus = [by_index[i] for i in visible if i in by_index]
     return gpus
 
 
@@ -117,6 +163,11 @@ def _nvidia_utilization() -> List[Dict[str, float]]:
                 })
     except (subprocess.TimeoutExpired, subprocess.CalledProcessError, ValueError) as e:
         logger.debug(f"GPU stats via nvidia-smi failed: {e}")
+        return samples
+    # nvidia-smi lists cards in index order, so a row's position is its index.
+    visible = _cuda_visible_indices()
+    if visible is not None:
+        samples = [samples[i] for i in visible if i < len(samples)]
     return samples
 
 

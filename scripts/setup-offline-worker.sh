@@ -18,6 +18,15 @@
 #   LLAMA_BIN    path to llama-server              (default ~/opt/llama/bin/llama-server)
 #   THREADS      llama-server -t                   (default: nproc, capped at 16)
 #   N_CTX        llama-server -c                   (default 4096)
+#   NGL          llama-server -ngl: a layer count, auto or all (default: unset,
+#                llama-server's own auto, which fits layers to free VRAM)
+#   CUDA_VISIBLE_DEVICES  e.g. 0 — the GPUs llama-server may use and the daemon
+#                advertises, as nvidia-smi indices or GPU-UUIDs. On a
+#                multi-GPU box an unset mask splits weights across every card,
+#                which drags the whole run down to the slowest one.
+#   LLAMA_LD_LIBRARY_PATH  prepended to LD_LIBRARY_PATH for llama-server only —
+#                for builds whose libstdc++ is newer than the system's and
+#                that cron's bare environment cannot find
 #   PROXY        e.g. socks5h://127.0.0.1:1080, when the host has no route out
 #   TUNNEL_HOST  ssh host to open a SOCKS forward through, if PROXY is a local
 #                socks5h port this script should maintain
@@ -36,6 +45,10 @@ LLAMA_BIN="${LLAMA_BIN:-$HOME/opt/llama/bin/llama-server}"
 THREADS="${THREADS:-$(nproc 2>/dev/null || echo 8)}"
 [ "$THREADS" -gt 16 ] && THREADS=16
 N_CTX="${N_CTX:-4096}"
+NGL="${NGL:-}"
+# Unset and empty differ to CUDA: empty hides every card.
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES-__unset__}"
+LLAMA_LD_LIBRARY_PATH="${LLAMA_LD_LIBRARY_PATH:-}"
 PROXY="${PROXY:-}"
 TUNNEL_HOST="${TUNNEL_HOST:-}"
 PROBE_URL="${PROBE_URL:-$BACKEND_URL}"
@@ -93,6 +106,9 @@ fi
   echo "MODELS_MAX=\"$MODELS_MAX\""
   echo "THREADS=\"$THREADS\""
   echo "N_CTX=\"$N_CTX\""
+  echo "NGL=\"$NGL\""
+  echo "CUDA_VISIBLE_DEVICES=\"$CUDA_VISIBLE_DEVICES\""
+  echo "LLAMA_LD_LIBRARY_PATH=\"$LLAMA_LD_LIBRARY_PATH\""
   echo "RUNTIME=\"$RUNTIME\""
   echo "TUNNEL_HOST=\"$TUNNEL_HOST\""
   echo "PROBE_URL=\"$PROBE_URL\""
@@ -102,6 +118,17 @@ exec 9>"/tmp/gpu-daemon-$INSTANCE.lock"
 flock -n 9 || { echo "another supervisor holds the lock"; exit 0; }
 
 set -a; [ -f "$DIR/.env" ] && . "$DIR/.env"; set +a
+
+# cron's bare shell carries no GPU selection, so the mask is pinned here for
+# both processes: the daemon filters its nvidia-smi inventory by it, and a
+# daemon that saw a different mask from llama-server would advertise cards
+# the runtime cannot reach. PCI_BUS_ID numbers cards as nvidia-smi does; under
+# CUDA's default ordering an index can name a different card.
+if [ "$CUDA_VISIBLE_DEVICES" != __unset__ ]; then
+  export CUDA_VISIBLE_DEVICES CUDA_DEVICE_ORDER=PCI_BUS_ID
+else
+  unset CUDA_VISIBLE_DEVICES
+fi
 
 port_open() { (exec 3<>/dev/tcp/127.0.0.1/"$1") 2>/dev/null; }
 
@@ -158,10 +185,16 @@ while true; do
   # Router mode: llama-server answers for every GGUF in the directory and
   # loads on demand, reporting each file's stem as its model id.
   if [ "$RUNTIME" = llamacpp ] && ! port_open "$LLAMA_PORT"; then
-    "$LLAMA_BIN" --models-dir "$MODELS_DIR" --models-max "$MODELS_MAX" \
-      --host 127.0.0.1 --port "$LLAMA_PORT" \
-      -c "$N_CTX" --parallel 1 -t "$THREADS" --numa distribute \
-      >> "$DIR/llama.log" 2>&1 &
+    # The library path is set in the router's subshell only: the daemon's
+    # interpreter must keep loading the system libraries it was built against,
+    # and the loop must not prepend the path again on every restart.
+    (
+      [ -n "$LLAMA_LD_LIBRARY_PATH" ] && export LD_LIBRARY_PATH="$LLAMA_LD_LIBRARY_PATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+      exec "$LLAMA_BIN" --models-dir "$MODELS_DIR" --models-max "$MODELS_MAX" \
+        --host 127.0.0.1 --port "$LLAMA_PORT" \
+        -c "$N_CTX" --parallel 1 -t "$THREADS" --numa distribute \
+        ${NGL:+-ngl "$NGL"}
+    ) >> "$DIR/llama.log" 2>&1 &
     sleep 30
   fi
 

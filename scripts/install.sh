@@ -116,9 +116,17 @@ main() {
     command -v "$cmd" >/dev/null 2>&1 || missing="$missing $cmd"
   done
   if command -v python3 >/dev/null 2>&1; then
-    python3 - <<'PY' || missing="$missing python3>=3.10"
+    # The floor is the daemon package's own requires-python. An interpreter
+    # below it passes this check and fails at pip, after the slow steps.
+    python3 - <<'PY' || missing="$missing python3>=3.12"
 import sys
-sys.exit(0 if sys.version_info >= (3, 10) else 1)
+sys.exit(0 if sys.version_info >= (3, 12) else 1)
+PY
+    # An interpreter built without _ssl satisfies every version check and then
+    # fails at registration with a TLS error, which reads as a network fault.
+    python3 - <<'PY' || missing="$missing python3-ssl"
+import ssl
+ssl.create_default_context()
 PY
   fi
   if [ -n "$missing" ]; then
@@ -129,11 +137,20 @@ PY
     echo "  Fedora/RHEL    sudo dnf install -y python3 python3-pip git curl"
     echo "  Arch           sudo pacman -S --needed python python-pip git curl"
     case "$missing" in
-      *python3'>='*)
+      *python3*)
         echo
-        echo "Python 3.10 or newer is required and older distributions do not"
-        echo "package it. pyenv, conda, or a source build all work; the daemon"
-        echo "needs nothing from the system Python."
+        echo "The offline bundle carries its own interpreter and every wheel, so"
+        echo "it needs nothing from this machine's Python:"
+        echo
+        echo "  Where there is internet and a checkout of the repository:"
+        echo "    WITH_PYTHON=1 scripts/build-offline-bundle.sh"
+        echo "  Copy the archive to this machine, then:"
+        echo "    mkdir -p ~/bundle && tar -xzf sheshnag-daemon-offline-*.tar.gz -C ~/bundle"
+        echo "    INSTANCE=\$(hostname -s) ~/bundle/install.sh"
+        echo "    BACKEND_URL=... API_KEY=gk-... bash ~/bundle/setup-offline-worker.sh"
+        echo
+        echo "docs/offline-worker.md covers that path, and with it a host that"
+        echo "has no route out, no user systemd units, or a shared home."
         ;;
     esac
     exit 1
