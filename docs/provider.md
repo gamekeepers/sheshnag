@@ -263,6 +263,14 @@ systemctl --user start gpu-daemon       # resume
 **Take the machine back for a while** — stop the daemon. Any batch in flight is
 requeued to another worker; nothing is lost.
 
+**Lend only at certain hours, or only small batches** — an organisation owner or
+admin can give each worker an availability window (say 18:00–08:00 in your
+timezone) and a cap on prompts per batch. Outside the window the machine is
+offered nothing new, and a batch larger than the cap is never offered to it; a
+batch already running when the window closes finishes. There is no portal form
+for this yet — it is the `PATCH /v1/orgs/{org_id}/workers/{worker_id}/policy`
+endpoint, described under [Provider policy](reference/api.md#provider-policy).
+
 **Update to a newer daemon:**
 
 ```bash

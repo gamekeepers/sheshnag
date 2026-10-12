@@ -336,4 +336,6 @@ def _worker_hosting(models, vram_gb, engine="vllm"):
                     for n, d in models],
         )],
         vram_total_gb=vram_gb, ram_total_gb=None, ram_available_gb=None,
+        window_start_min=None, window_end_min=None, window_tz=None,
+        max_batch_prompts=None,
     )

@@ -5,8 +5,10 @@ Issue #16: Full membership management, invites, self-service, API key CRUD.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from database import get_db
 from models import (
     ApiKey, Organization, OrganizationMembership, OrganizationInvite,
@@ -290,6 +292,7 @@ def list_org_workers(
                 "vram_total_gb": w.vram_total_gb,
                 "vram_available_gb": w.vram_available_gb,
                 "loaded_models": w.loaded_model_names(),
+                "policy": _policy(w),
                 "last_heartbeat": w.last_heartbeat,
                 "created_at": w.created_at,
             }
@@ -562,6 +565,85 @@ def undrain_worker(
     worker.status = "online"
     db.commit()
     return {"id": worker.id, "status": worker.status}
+
+
+class WorkerPolicyRequest(BaseModel):
+    """Provider policy for one worker (#163). Only the fields sent change;
+    null clears one."""
+    window_start: Optional[str] = None   # "HH:MM", local to window_tz
+    window_end: Optional[str] = None
+    window_tz: Optional[str] = None      # IANA name, e.g. "Asia/Kolkata"
+    max_batch_prompts: Optional[int] = Field(None, ge=1)
+
+
+def _to_minutes(value: Optional[str], field: str) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        t = datetime.strptime(value, "%H:%M")
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{field} must be HH:MM, got {value!r}")
+    return t.hour * 60 + t.minute
+
+
+def _to_hhmm(minutes: Optional[int]) -> Optional[str]:
+    return None if minutes is None else f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _policy(worker) -> dict:
+    return {
+        "window_start": _to_hhmm(worker.window_start_min),
+        "window_end": _to_hhmm(worker.window_end_min),
+        "window_tz": worker.window_tz,
+        "max_batch_prompts": worker.max_batch_prompts,
+    }
+
+
+@router.patch("/orgs/{org_id}/workers/{worker_id}/policy")
+def set_worker_policy(
+    org_id: str,
+    worker_id: str,
+    req: WorkerPolicyRequest,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Set when a worker takes work and how large a batch it accepts.
+
+    Owner/admin only, like drain. The scheduler reads these through
+    `can_serve`, so pool capacity moves with them. The window is
+    all-or-nothing: after the update start, end and timezone are either all
+    set or all clear, and start must differ from end.
+    """
+    _require_membership(db, user, org_id, roles=["owner", "admin"])
+
+    worker = db.query(Worker).filter(Worker.id == worker_id, Worker.org_id == org_id).first()
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found in this organization")
+
+    sent = req.model_fields_set
+    start = _to_minutes(req.window_start, "window_start") if "window_start" in sent else worker.window_start_min
+    end = _to_minutes(req.window_end, "window_end") if "window_end" in sent else worker.window_end_min
+    tz = req.window_tz if "window_tz" in sent else worker.window_tz
+    if tz is not None:
+        try:
+            ZoneInfo(tz)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise HTTPException(status_code=400, detail=f"Unknown timezone {tz!r}")
+
+    window = (start, end, tz)
+    if any(v is None for v in window) and any(v is not None for v in window):
+        raise HTTPException(
+            status_code=400,
+            detail="window_start, window_end and window_tz are set together or cleared together",
+        )
+    if start is not None and start == end:
+        raise HTTPException(status_code=400, detail="window_start and window_end must differ")
+
+    worker.window_start_min, worker.window_end_min, worker.window_tz = window
+    if "max_batch_prompts" in sent:
+        worker.max_batch_prompts = req.max_batch_prompts
+    db.commit()
+    return {"id": worker.id, "policy": _policy(worker)}
 
 
 @router.delete("/orgs/{org_id}/workers/{worker_id}")
