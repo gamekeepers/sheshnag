@@ -169,16 +169,25 @@ batch's count; the capacity endpoint passes nothing and instead reports, per
 servable model, the largest batch some eligible online worker accepts (`null` if
 any of them has no limit). A user can see the ceiling before submitting.
 
-**Starvation:** permanent, so it is caught at validation. When
+**Starvation:** permanent, so it is caught at validation, by the same rule the
+capability gate already applies (`batch_validator.py:604`). When
 `validate_batch_file` (`backend/services/batch_validator.py:496`) has counted the
-prompts, it asks whether **any registered worker** would accept the batch,
-ignoring availability windows and liveness, which are temporary:
+prompts, it looks at the **online** workers that host the model, ignoring their
+availability windows, which always reopen:
 
 | Situation | Outcome |
 |---|---|
-| No registered worker accepts a batch this large for this model | Validation **fails**, the same way a malformed file does, with a message that names the limit: *"No worker accepts more than 500 prompts for this model — split the file."* |
-| Only workers that are offline right now would | Batch is `validated` and waits, with a visible reason ([#165](https://github.com/gamekeepers/sheshnag/issues/165)). |
-| An online worker would | Normal. |
+| Online workers host the model, and none accepts a batch this large | Validation **fails**, the same way a malformed file does, with a message that names the limit: *"No online worker accepts more than 500 prompts for this model — split the file."* |
+| No online worker hosts the model | Batch is `validated` and waits, with a visible reason ([#165](https://github.com/gamekeepers/sheshnag/issues/165)). |
+| An online worker accepts it | Normal. |
+
+Online, not every registered worker: a registered worker may be gone for good,
+and counting it would accept a batch that nothing will ever run — the exact
+silent wait this check exists to prevent. The cost is the opposite mistake, a
+rejection while an accepting worker is briefly offline, which the user sees and
+can act on. A batch that is accepted and then loses every eligible worker still
+waits; `expires_at` is stored but nothing enforces it today, so that case is
+outside this design.
 
 ## 5. Where each control is enforced
 
@@ -264,8 +273,8 @@ nullable; NULL means "no constraint", so existing rows keep today's behaviour.
 |---|---|
 | Daemon stops uploading partial output as `completed` on shutdown — report a failure instead until release exists. A live bug, independent of the rest. | new |
 | Release: daemon grace period, `POST /workers/release`, `batches.releases`, attempts exemption, `provider.md` wording | new |
-| Availability window and max batch size: columns, policy endpoint, checks in `can_serve`, validation-time starvation check, reason codes | [#163](https://github.com/gamekeepers/sheshnag/issues/163) |
-| Capacity: batch-size ceiling, "no eligible worker", queue depth | [#165](https://github.com/gamekeepers/sheshnag/issues/165) |
+| Availability window and max batch size: columns, policy endpoint, checks in `can_serve`, validation-time starvation check | [#163](https://github.com/gamekeepers/sheshnag/issues/163) |
+| Capacity: batch-size ceiling, "no eligible worker", queue depth, eligibility reason codes | [#165](https://github.com/gamekeepers/sheshnag/issues/165) |
 | Context-aware VRAM fit | [#164](https://github.com/gamekeepers/sheshnag/issues/164) |
 | Requeue affinity | [#166](https://github.com/gamekeepers/sheshnag/issues/166) |
 | Own organisation only | V2, not filed |
