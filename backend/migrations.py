@@ -64,6 +64,7 @@ MIGRATIONS = [
                "batch_assignments", "org_id", String()),
     _Migration("batch_assignments.worker_hostname",
                "batch_assignments", "worker_hostname", String()),
+
     # Caller tags on a batch (playground grids group their arms by it).
     _Migration("batches.metadata",
                "batches", "metadata", JSON()),
