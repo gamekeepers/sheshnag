@@ -253,7 +253,12 @@ def test_policy_rejects_bad_input(auth_client, _engine, _test_user):
     assert _patch(auth_client, org, worker, {**full, "window_tz": "Mars/Olympus"}).status_code == 400
     assert _patch(auth_client, org, worker, {**full, "window_end": "18:00"}).status_code == 400
     assert _patch(auth_client, org, worker, {"window_start": "18:00"}).status_code == 400  # half a window
+    assert _patch(auth_client, org, worker, {**full, "window_start": "9:00"}).status_code == 400  # not zero-padded
+    assert _patch(auth_client, org, worker, {**full, "window_end": "8:5"}).status_code == 400
     assert _patch(auth_client, org, worker, {"max_batch_prompts": 0}).status_code == 422
+    assert _patch(auth_client, org, worker, {"max_batch_prompts": 50_001}).status_code == 422  # over MAX_LINES
+    assert _patch(auth_client, org, worker, {"max_batch_prompts": 2**31}).status_code == 422  # would overflow INTEGER
+    assert _patch(auth_client, org, worker, {"max_batch_prompts": 50_000}).status_code == 200
 
 
 def test_viewer_cannot_set_policy(auth_client, _engine, _test_user):

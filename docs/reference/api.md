@@ -490,11 +490,20 @@ worker in `GET /v1/orgs/{org_id}/workers`, carries the result as `policy`.
 - **`max_batch_prompts`.** A batch with more requests than this is never offered
   to the worker. At least `1`; `null` is no limit.
 
-Both are checked in `scheduler.can_serve`, so dispatch and pool capacity move
-together. When every online worker that hosts a file's model caps below its
-size, validation fails with `batch_too_large` and names the largest limit; when
-none is online the batch queues. A worker outside its window still counts for
-that check — it is off for now, not unable.
+Both are checked in `scheduler.can_serve`, but they reach pool capacity
+differently. The window does: a worker outside it drops out of
+`models_servable`. The size cap does not, because capacity asks about a model
+without a batch size — a model servable for small batches stays listed even if
+every worker caps below yours. That is what the validation check below is for.
+
+When every online worker that hosts a file's model caps below its size,
+validation fails with `batch_too_large` and names the largest limit; when none
+is online the batch queues. A worker outside its window still counts for that
+check — it is off for now, not unable.
+
+Capacity is served from the 15-second cache above, so a window opening or
+closing, or a policy edit, reaches `models_servable` within 15 seconds. Dispatch
+reads the policy live and is never stale.
 
 ### Validation errors
 

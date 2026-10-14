@@ -16,6 +16,7 @@ from models import (
     Batch, BatchAssignment, User, get_org_owner, unix_now,
     generate_org_id, generate_membership_id,
 )
+from services.batch_validator import MAX_LINES
 from auth import (
     get_current_user, generate_api_key, hash_api_key, get_api_key_prefix,
 )
@@ -573,7 +574,9 @@ class WorkerPolicyRequest(BaseModel):
     window_start: Optional[str] = None   # "HH:MM", local to window_tz
     window_end: Optional[str] = None
     window_tz: Optional[str] = None      # IANA name, e.g. "Asia/Kolkata"
-    max_batch_prompts: Optional[int] = Field(None, ge=1)
+    # No batch file may hold more than MAX_LINES requests, so a larger cap
+    # means nothing — and past 2**31 - 1 it would overflow the INTEGER column.
+    max_batch_prompts: Optional[int] = Field(None, ge=1, le=MAX_LINES)
 
 
 def _to_minutes(value: Optional[str], field: str) -> Optional[int]:
@@ -582,6 +585,10 @@ def _to_minutes(value: Optional[str], field: str) -> Optional[int]:
     try:
         t = datetime.strptime(value, "%H:%M")
     except ValueError:
+        t = None
+    # strptime takes "9:0" and "18:5" too. Only the zero-padded form is
+    # unambiguous, so the parse must round-trip to what was sent.
+    if t is None or t.strftime("%H:%M") != value:
         raise HTTPException(status_code=400, detail=f"{field} must be HH:MM, got {value!r}")
     return t.hour * 60 + t.minute
 
