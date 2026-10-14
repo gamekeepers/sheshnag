@@ -114,6 +114,16 @@ MIGRATIONS = [
     # platform with no reading reports None rather than 0.
     _Migration("workers.ram_available_gb",
                "workers", "ram_available_gb", Float()),
+    # Provider policy (#163). NULL is "no constraint", so existing workers
+    # keep scheduling exactly as before.
+    _Migration("workers.window_start_min",
+               "workers", "window_start_min", Integer()),
+    _Migration("workers.window_end_min",
+               "workers", "window_end_min", Integer()),
+    _Migration("workers.window_tz",
+               "workers", "window_tz", String()),
+    _Migration("workers.max_batch_prompts",
+               "workers", "max_batch_prompts", Integer()),
 ]
 
 

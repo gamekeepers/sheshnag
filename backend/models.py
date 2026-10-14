@@ -238,6 +238,15 @@ class Worker(Base):
     # daemon reports totals, not per-GPU stats.
     vram_total_gb     = Column(Float, nullable=True)
     vram_available_gb = Column(Float, nullable=True)
+    # Provider policy (#163), set through PATCH /orgs/{org}/workers/{id}/policy
+    # and read by `scheduler.can_serve`. NULL is "no constraint", so a row that
+    # predates the columns keeps today's behaviour. The window is minutes after
+    # local midnight in `window_tz`; a start later than the end wraps past
+    # midnight (18:00-08:00). All three window columns are set or none is.
+    window_start_min  = Column(Integer, nullable=True)
+    window_end_min    = Column(Integer, nullable=True)
+    window_tz         = Column(String, nullable=True)
+    max_batch_prompts = Column(Integer, nullable=True)
     last_heartbeat = Column(Integer, default=unix_now)
     created_at     = Column(Integer, default=unix_now)
 

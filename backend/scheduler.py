@@ -20,8 +20,11 @@ machine total, and a runtime that offloads layers is bounded by that plus
 free system RAM.
 """
 import logging
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from identity_resolver import bare_digest
 from models import ModelCatalog
@@ -318,6 +321,31 @@ def runtime_has(runtime, needs) -> bool:
     return all(caps.get(key) is True for key in needs)
 
 
+def in_window(worker, at=None) -> bool:
+    """Is `at` (unix seconds, default now) inside the worker's availability window?
+
+    No window means always available. The window is local wall-clock time in
+    the provider's timezone, so it follows their daylight-saving changes. A
+    start later than the end wraps past midnight: 18:00-08:00 is the night.
+    The window governs when a batch may *start*; one already running is not
+    stopped when it closes.
+    """
+    start, end = worker.window_start_min, worker.window_end_min
+    if start is None or end is None:
+        return True
+    local = datetime.fromtimestamp(time.time() if at is None else at, ZoneInfo(worker.window_tz))
+    now = local.hour * 60 + local.minute
+    if start < end:
+        return start <= now < end
+    return now >= start or now < end
+
+
+def accepts_size(worker, prompts) -> bool:
+    """Does the worker's batch-size limit allow `prompts`? None is not checked."""
+    limit = worker.max_batch_prompts
+    return limit is None or prompts is None or prompts <= limit
+
+
 def serving_runtimes(entry, workers, needs=None) -> list:
     """Engine names that could be given a batch for `entry` right now.
 
@@ -338,7 +366,7 @@ def serving_runtimes(entry, workers, needs=None) -> list:
     return sorted(out)
 
 
-def can_serve(entry, worker, needs=None) -> bool:
+def can_serve(entry, worker, needs=None, prompts=None, window=True) -> bool:
     """Could this worker be given a batch for `entry` that needs `needs`?
 
     The single definition of "eligible", shared by the scheduler
@@ -349,9 +377,20 @@ def can_serve(entry, worker, needs=None) -> bool:
     Eligible is necessary, not sufficient: it says a worker *can* run the
     model, not that it is the best place for it. Preferring a faster worker
     is a ranking concern and lives elsewhere.
+
+    The provider's policy (#163) is part of eligibility, so it narrows
+    advertised capacity along with dispatch. `prompts` is the batch's size,
+    checked against the worker's limit when given; the capacity endpoint
+    passes none. `window=False` ignores the availability window, for the
+    validator: a worker outside its hours is unavailable now, not unable, and
+    the window always reopens.
     """
     if entry is None or worker is None:
         return False
+    if window and not in_window(worker):
+        return False  # the provider's hours: off right now
+    if not accepts_size(worker, prompts):
+        return False  # the provider's size limit
     runtime = _hosting_runtime(worker, _target_ids(entry), entry.digest)
     if runtime is None:
         return False  # does not host the artifact on any schedulable runtime
@@ -365,8 +404,8 @@ class Scheduler:
     """
     Matches a polling worker to the best available batch.
 
-    Filter: `can_serve` — the worker must host the model's runtime artifact
-    and satisfy that runtime's fit rule.
+    Filter: `can_serve` — the worker must host the model's runtime artifact,
+    satisfy that runtime's fit rule, and be allowed it by the provider's policy.
     Rank:
       1. Prefer batches whose model is already loaded (in VRAM) here.
       2. Fall back to oldest compatible batch (FIFO).
@@ -385,8 +424,9 @@ class Scheduler:
             if entry is None:
                 continue  # unschedulable — should have failed validation
 
-            if not can_serve(entry, worker, batch.required_capabilities or None):
-                continue  # doesn't host the artifact, can't fit it, or lacks a capability
+            if not can_serve(entry, worker, batch.required_capabilities or None,
+                             prompts=batch.request_counts_total):
+                continue  # doesn't host or fit it, lacks a capability, or the provider's policy says no
 
             if _hosts(loaded, _target_ids(entry), entry.digest):
                 loaded_matches.append(batch)
