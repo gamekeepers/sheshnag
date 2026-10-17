@@ -64,8 +64,8 @@ You can stop lending at any time with one command — see
 | You need | Notes |
 |---|---|
 | **Linux** | The installer exits on anything else. |
-| **Python 3.12+**, **git**, **curl** | Checked, not installed. The interpreter must also be able to do HTTPS; one built without `_ssl` is refused here, where the message names it, and not at registration, where it arrives as a TLS error. |
-| **A GPU the daemon can see** | Optional but the entire point. The daemon detects NVIDIA (via `nvidia-smi`), AMD (via `rocm-smi`) and Apple Silicon (via Metal); on anything else it runs, reports no GPU, and sits idle — set `DAEMON_VRAM_GB` to advertise a capacity by hand. **Detected is not yet the same as runnable**, in three ways: the installer fetches an x86-64 Ollama whatever the host, so an AMD or arm64 machine gets no working runtime out of the box ([#81](https://github.com/gamekeepers/sheshnag/issues/81)); a driver too old for the card it drives reports a GPU no runtime can use; and Ollama's binary needs a newer glibc than a long-term-support distribution carries, where llama.cpp serves. The installer is Linux-only regardless. |
+| **Python 3.12+**, **git**, **curl**, **zstd** | Checked, not installed. The interpreter must also be able to do HTTPS; one built without `_ssl` is refused here, where the message names it, and not at registration, where it arrives as a TLS error. `zstd` unpacks Ollama's download, so it is checked only when the installer has to download one: not when `ollama` is on `PATH`, and not on a re-run over an install that already has it. |
+| **A GPU the daemon can see** | Optional but the entire point. The daemon detects NVIDIA (via `nvidia-smi`), AMD (via `rocm-smi`) and Apple Silicon (via Metal); on anything else it runs, reports no GPU, and sits idle — set `DAEMON_VRAM_GB` to advertise a capacity by hand. The installer fetches the Ollama build for your architecture (x86-64 or arm64, anything else stops with an error) and adds the ROCm build on an x86-64 AMD host — Ollama publishes none for arm64, which runs on CPU; an AMD card still needs group access only an admin can grant — see [AMD GPUs](provider-hardware.md#amd-gpus). **Detected is not yet the same as runnable**, in two ways: a driver too old for the card it drives reports a GPU no runtime can use, and Ollama's binary needs a newer glibc than a long-term-support distribution carries, where llama.cpp serves. The installer is Linux-only regardless. |
 | **The platform URL** | From whoever runs the deployment, e.g. `https://sheshnag.example.edu`. |
 | **A worker key** (`gk-…`) | See below. |
 
@@ -140,6 +140,9 @@ Worth knowing, because it is your machine:
 2. **Asks its questions and writes `~/.gpu-daemon/config.yaml`**, `chmod 600`
    because it contains the key. Everything interactive happens here, before the
    slow steps, so you are not called back to a prompt ten minutes later.
+   If step 3 will have to download Ollama, this is also where it stops, right
+   after the install-directory question, for a CPU architecture Ollama publishes
+   no build for, or for a missing `zstd`.
 3. **Installs Ollama** into `~/.gpu-daemon/` if it is not already on your
    `PATH` — a user-local copy, not a system package.
 4. **Clones the daemon code** into `~/.gpu-daemon/src`.
@@ -342,6 +345,9 @@ ask for: `sudo apt-get install -y python3 python3-venv python3-pip git curl`.
 Where there is no `sudo` and no package new enough, take the
 [offline path](offline-worker.md) — its bundle carries an interpreter and every
 wheel, so nothing has to be installed on the machine.
+
+**"Missing: zstd"** — needed only to unpack the Ollama download. Ask for the
+`zstd` package, or put an `ollama` you already have on `PATH`, and re-run.
 
 **Registration fails with a TLS or certificate error** — usually the
 interpreter, not the network. One built without `_ssl` cannot verify anything.
