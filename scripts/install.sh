@@ -163,13 +163,24 @@ PY
       GPU_TOOLING="nvidia"
   fi
   if command -v rocm-smi >/dev/null 2>&1; then
-      ROCM_VER="$(sed -n '1s/^\([0-9.]*\).*/\1/p' /opt/rocm/.info/version 2>/dev/null)"
+      # The version file is only there for a ROCm installed under /opt; a
+      # distribution's rocm-smi package has none. `|| true`, or set -e ends
+      # the install here with no message at all.
+      ROCM_VER="$(sed -n '1s/^\([0-9.]*\).*/\1/p' /opt/rocm/.info/version 2>/dev/null || true)"
       echo "AMD GPU tooling detected (rocm-smi${ROCM_VER:+, ROCm $ROCM_VER})."
       GPU_TOOLING="${GPU_TOOLING:+$GPU_TOOLING+}amd"
   fi
   if [ -z "$GPU_TOOLING" ]; then
       echo "WARNING: neither nvidia-smi nor rocm-smi found. The daemon will run but report no GPU."
   fi
+
+  # Which Ollama build this host can execute; empty when Ollama publishes
+  # none. Acted on once the install directory is known, below.
+  case "$(uname -m)" in
+    x86_64|amd64)  OLLAMA_ARCH="amd64" ;;
+    aarch64|arm64) OLLAMA_ARCH="arm64" ;;
+    *)             OLLAMA_ARCH="" ;;
+  esac
 
   # ── Where this machine installs ────────────────────────────────────────
   # Deliberately after the prerequisite check: these use hostname/stat/tr, and
@@ -233,6 +244,25 @@ PY
       echo "batches sent to one machine run on the other."
       echo "Give this machine its own directory, e.g.:"
       echo "    INSTANCE=$HOSTTAG bash install.sh"
+      exit 1
+    fi
+  fi
+  # Step 3 downloads Ollama only when there is none on PATH and none already
+  # in this directory, and only a download needs a build for this
+  # architecture and zstd to unpack it. Check here, as soon as the directory
+  # is known and before the remaining questions: the alternative is a binary
+  # that fails to execute with an error naming Ollama, not this script.
+  if ! command -v ollama >/dev/null 2>&1 && [ ! -x "$DAEMON_DIR/bin/ollama" ]; then
+    if [ -z "$OLLAMA_ARCH" ]; then
+      echo "Error: no Ollama build is known for this architecture ($(uname -m))."
+      echo "Install Ollama yourself so that 'ollama' is on PATH, then re-run;"
+      echo "the installer skips the download when it finds one."
+      exit 1
+    fi
+    if ! command -v zstd >/dev/null 2>&1; then
+      echo "Missing: zstd — Ollama's download is a .tar.zst."
+      echo "Install it (the package is 'zstd' on Debian/Ubuntu, Fedora/RHEL and"
+      echo "Arch), or put an existing 'ollama' on PATH, then re-run."
       exit 1
     fi
   fi
@@ -304,18 +334,39 @@ PY
       echo "Ollama already installed (user-local)."
       OLLAMA_USER_LOCAL=1
   else
-      echo "Installing Ollama into $DAEMON_DIR (no root needed)..."
-      # The tarball ships bin/ollama plus lib/ (needed for GPU support);
-      # extract the whole tree under the install directory.
-      if curl -fL "https://ollama.com/download/ollama-linux-amd64.tgz" -o "$DAEMON_DIR/ollama.tgz"; then
-          tar -xzf "$DAEMON_DIR/ollama.tgz" -C "$DAEMON_DIR"
-          rm -f "$DAEMON_DIR/ollama.tgz"
-          chmod +x "$DAEMON_DIR/bin/ollama"
-          OLLAMA_USER_LOCAL=1
-      else
-          echo "ERROR: Ollama download failed — install it manually, then re-run."
-          exit 1
-      fi
+      # The base tarball ships bin/ollama plus lib/ (CPU and CUDA); AMD
+      # support is a separate ROCm tarball unpacked over it, published for
+      # amd64 only. Extract each whole tree under the install directory.
+      #
+      # They are .tar.zst: the .tgz names this script used to fetch now 404.
+      # Decompress with zstd(1) rather than tar's own --zstd, which older GNU
+      # tar lacks.
+      OLLAMA_TARBALLS="ollama-linux-$OLLAMA_ARCH.tar.zst"
+      case "$GPU_TOOLING" in
+        *amd*)
+          if [ "$OLLAMA_ARCH" = "amd64" ]; then
+              OLLAMA_TARBALLS="$OLLAMA_TARBALLS ollama-linux-amd64-rocm.tar.zst"
+          else
+              echo "WARNING: Ollama publishes no ROCm build for $OLLAMA_ARCH — jobs will run on CPU."
+          fi
+          ;;
+      esac
+      echo "Installing Ollama ($OLLAMA_TARBALLS) into $DAEMON_DIR (no root needed)..."
+      for tarball in $OLLAMA_TARBALLS; do
+          if curl -fL "https://ollama.com/download/$tarball" -o "$DAEMON_DIR/ollama.tar.zst" \
+             && zstd -dc "$DAEMON_DIR/ollama.tar.zst" | tar -xf - -C "$DAEMON_DIR"; then
+              rm -f "$DAEMON_DIR/ollama.tar.zst"
+          else
+              # Drop the binary too: a re-run skips the download whenever
+              # bin/ollama exists, so a base install whose ROCm half failed
+              # would otherwise never get it.
+              rm -f "$DAEMON_DIR/ollama.tar.zst" "$DAEMON_DIR/bin/ollama"
+              echo "ERROR: Ollama download failed ($tarball) — install it manually, then re-run."
+              exit 1
+          fi
+      done
+      chmod +x "$DAEMON_DIR/bin/ollama"
+      OLLAMA_USER_LOCAL=1
   fi
 
   # 4. Daemon code + Python environment
