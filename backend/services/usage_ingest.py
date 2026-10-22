@@ -182,6 +182,7 @@ def ingest_usage_records(batch_id: str, filepath: str) -> None:
             batch.prompt_tokens = int(totals.prompt_sum or 0)
             batch.completion_tokens = int(totals.completion_sum or 0)
             batch.total_tokens = int(totals.total_sum or 0)
+            batch.usage_ingestion_pending = False
             db.commit()
             logger.info(
                 "Ingested usage for batch %s: %d prompt, %d completion, %d total tokens",
