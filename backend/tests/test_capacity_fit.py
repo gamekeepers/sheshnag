@@ -49,6 +49,9 @@ def _worker(*, gpus=(), engine="ollama", models=("m:latest",),
         vram_total_gb=vram_total_gb,
         ram_total_gb=ram_total_gb,
         ram_available_gb=ram_available_gb,
+        # No provider policy: these tests are about fit (#163 has its own).
+        window_start_min=None, window_end_min=None, window_tz=None,
+        max_batch_prompts=None,
     )
 
 

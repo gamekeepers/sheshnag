@@ -244,6 +244,11 @@ Stores relatively static information such as:
 
 Dynamic values such as available RAM and heartbeat status are updated over time.
 
+It also carries the provider's policy for the machine — an availability window
+(`window_start_min`, `window_end_min`, `window_tz`) and a batch-size limit
+(`max_batch_prompts`). Every one is nullable, and null means no constraint. See
+[Provider policy](api.md#provider-policy).
+
 ---
 
 ## Worker Runtimes

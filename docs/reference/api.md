@@ -93,7 +93,8 @@ keys during worker registration — it derives the owning org from the key.
 | `POST` | `/v1/orgs/{org_id}/api-keys` | owner/admin | **Create** a worker key; the raw `gk-…` is returned **once** and never again |
 | `DELETE` | `/v1/orgs/{org_id}/api-keys/{key_id}` | owner/admin | Revoke a key — every daemon using it stops registering immediately |
 | `POST` | `/v1/orgs/{org_id}/api-keys/regenerate` | owner/admin | Rotate the org worker key |
-| `GET` | `/v1/orgs/{org_id}/workers` | member | Org's workers incl. `status`, `activity`, live VRAM, loaded models |
+| `GET` | `/v1/orgs/{org_id}/workers` | member | Org's workers incl. `status`, `activity`, live VRAM, loaded models, `policy` |
+| `PATCH` | `/v1/orgs/{org_id}/workers/{worker_id}/policy` | owner/admin | Set a worker's availability window and batch-size limit — see [Provider policy](#provider-policy) |
 
 ### Files — `/v1/files` (OpenAI-compatible; JWT or personal key)
 
@@ -152,8 +153,9 @@ whose. Per-worker rows stay on the superadmin `GET /v1/admin/workers`.
 ```
 
 - **`models_servable`** is what the *scheduler* would dispatch, not what the
-  catalogue lists: an entry appears only when some online worker both hosts
-  the artifact and satisfies that runtime's fit rule, decided by
+  catalogue lists: an entry appears only when some online worker hosts the
+  artifact, satisfies that runtime's fit rule, and is inside its provider's
+  [availability window](#provider-policy), decided by
    `scheduler.can_serve` — the same predicate `POST /workers/poll`
    matches on. **`loaded`** says whether some online worker already has
    the artifact in memory (schedulable rows, digest enforced — the
@@ -357,7 +359,7 @@ Postgres with SQLAlchemy ORM. Tables (see `models.py`):
 | `organizations` | Ownership boundary; owner derived from memberships |
 | `organization_memberships` | `role`: `owner` / `admin` / `viewer` |
 | `api_keys` | Hashed keys; `key_type`: `worker` (org-scoped) or `personal`; prefix for UI |
-| `workers` | Static specs; `status` (liveness, server-managed) vs `activity` (daemon-reported); aggregate `vram_total_gb` / `vram_available_gb` / `ram_available_gb` from heartbeats (`null` = unknown, not zero). `ram_total_gb` is a registration snapshot. Per-card sizes live on `worker_gpus` — that is what the fit rule reads, not the aggregate |
+| `workers` | Static specs; `status` (liveness, server-managed) vs `activity` (daemon-reported); aggregate `vram_total_gb` / `vram_available_gb` / `ram_available_gb` from heartbeats (`null` = unknown, not zero). `ram_total_gb` is a registration snapshot. Per-card sizes live on `worker_gpus` — that is what the fit rule reads, not the aggregate. Provider policy: `window_start_min` / `window_end_min` / `window_tz`, `max_batch_prompts` (`null` = no constraint) |
 | `worker_runtimes` | Inference engines a worker exposes (spec §8.2): engine, base_url, status |
 | `runtime_models` | Per-worker availability rows (spec §8.3): `name`, `runtime_model_id`, `digest`, `status` (on-disk) + `loaded` (in VRAM, heartbeat-updated). Lean by design — descriptive metadata lives on `model_catalog`. |
 | `worker_gpus` | Physical GPUs per worker (spec §8.4): vendor, name, vram_gb, driver, cuda |
@@ -463,6 +465,46 @@ If no host is online at all, the batch queues as usual and waits for a capable
 one. Daemons older than this contract advertise nothing and are never offered
 such batches.
 
+### Provider policy
+
+An organisation owner or admin can limit what one of its workers is given:
+
+```json
+// PATCH /v1/orgs/{org_id}/workers/{worker_id}/policy
+{
+  "window_start": "18:00",
+  "window_end": "08:00",
+  "window_tz": "Asia/Kolkata",
+  "max_batch_prompts": 500
+}
+```
+
+Only the fields sent change, and `null` clears one. The response, and each
+worker in `GET /v1/orgs/{org_id}/workers`, carries the result as `policy`.
+
+- **Availability window.** Outside it the worker is not offered a batch, and it
+  drops out of `models_servable`. A batch already running when the window
+  closes finishes. Times are local to `window_tz` (an IANA name); a start later
+  than the end wraps past midnight. The three fields are set together or cleared
+  together, and start must differ from end — otherwise `400`.
+- **`max_batch_prompts`.** A batch with more requests than this is never offered
+  to the worker. At least `1`; `null` is no limit.
+
+Both are checked in `scheduler.can_serve`, but they reach pool capacity
+differently. The window does: a worker outside it drops out of
+`models_servable`. The size cap does not, because capacity asks about a model
+without a batch size — a model servable for small batches stays listed even if
+every worker caps below yours. That is what the validation check below is for.
+
+When every online worker that hosts a file's model caps below its size,
+validation fails with `batch_too_large` and names the largest limit; when none
+is online the batch queues. A worker outside its window still counts for that
+check — it is off for now, not unable.
+
+Capacity is served from the 15-second cache above, so a window opening or
+closing, or a policy edit, reaches `models_servable` within 15 seconds. Dispatch
+reads the policy live and is never stale.
+
 ### Validation errors
 
 Validation is asynchronous: `POST /v1/batches` returns immediately with
@@ -470,7 +512,7 @@ Validation is asynchronous: `POST /v1/batches` returns immediately with
 with `GET /v1/batches/{batch_id}/events` (SSE) rather than polling.
 
 Each error carries a `code` (`missing_field`, `invalid_json`,
-`duplicate_custom_id`, `unknown_fields`, `unsupported_model`, …), the `line` it
+`duplicate_custom_id`, `unknown_fields`, `unsupported_model`, `batch_too_large`, …), the `line` it
 occurred on, and the `field` where applicable — `null` for whole-line JSON parse
 failures.
 

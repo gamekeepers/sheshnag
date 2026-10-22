@@ -377,7 +377,8 @@ def _set_expires_at(batch: Batch) -> None:
 
 def _online_hosts(db, entry):
     """Online workers (by heartbeat, not the sweeper's lagging flag) that
-    could be given a plain-chat batch for `entry`."""
+    could be given a plain-chat batch for `entry`, at any hour: a worker
+    outside its availability window still counts, because the window reopens."""
     from sqlalchemy.orm import joinedload
     from models import Worker, WorkerRuntime
     from scheduler import can_serve
@@ -390,7 +391,7 @@ def _online_hosts(db, entry):
         .filter(Worker.status == "online", Worker.last_heartbeat >= cutoff)
         .all()
     )
-    return [w for w in workers if can_serve(entry, w)]
+    return [w for w in workers if can_serve(entry, w, window=False)]
 
 
 def backfill_required_capabilities() -> int:
@@ -610,10 +611,10 @@ def validate_batch_file(batch_id: str, filepath: str) -> bool:
                 needs = list(context.required_capabilities)
                 if result.valid and needs:
                     hosts = _online_hosts(db, entry)
-                    if hosts and not any(can_serve(entry, w, needs) for w in hosts):
+                    if hosts and not any(can_serve(entry, w, needs, window=False) for w in hosts):
                         # Empty when every need is met by *some* host but no host
                         # meets all of them; the rows still cannot run anywhere.
-                        missing = [c for c in needs if not any(can_serve(entry, w, [c]) for w in hosts)]
+                        missing = [c for c in needs if not any(can_serve(entry, w, [c], window=False) for w in hosts)]
                         first = (missing or needs)[0]
                         reason = (
                             f"supports {', '.join(missing)}" if missing
@@ -628,6 +629,22 @@ def validate_batch_file(batch_id: str, filepath: str) -> bool:
                             f"Pick a model on a runtime that does (vLLM serves all "
                             f"three; Ollama ≥ 0.12.11 returns logprobs on chat), or "
                             f"remove the field.",
+                        )
+                # 4d. Size gate (#163), by 4c's rule: a provider may cap the
+                # prompts per batch on their worker. When every online host
+                # that can run these rows caps below this file, none of them
+                # will ever be offered it — fail now and name the largest limit.
+                # When no host is online, queue: one with a higher limit may come.
+                if result.valid:
+                    capable = [w for w in _online_hosts(db, entry)
+                               if can_serve(entry, w, needs, window=False)]
+                    limits = [w.max_batch_prompts for w in capable]
+                    if capable and None not in limits and result.total_lines > max(limits):
+                        _fail(
+                            result, "batch_too_large", None, None,
+                            f"No online worker serving '{result.model}' accepts more "
+                            f"than {max(limits)} requests in one batch; this file has "
+                            f"{result.total_lines}. Split it into smaller batches.",
                         )
                 if result.valid:
                     result.required_capabilities = needs
