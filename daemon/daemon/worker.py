@@ -453,11 +453,18 @@ class Worker:
             r.usage.get("total_tokens", 0) for r in results
         )
 
-        logger.info(f"[{job.job_id}] Job completed!")
-        logger.info(
-            f"[{job.job_id}] Results: {successes}/{total} succeeded, "
-            f"{failures} failed, {total_tokens:,} total tokens"
-        )
+        if not self._running:
+            logger.warning(
+                f"[{job.job_id}] Job stopped by shutdown! "
+                f"Results: {successes}/{total} succeeded, "
+                f"{failures} failed, {total_tokens:,} total tokens"
+            )
+        else:
+            logger.info(f"[{job.job_id}] Job completed!")
+            logger.info(
+                f"[{job.job_id}] Results: {successes}/{total} succeeded, "
+                f"{failures} failed, {total_tokens:,} total tokens"
+            )
         
         self._heartbeat.update_status("idle")
 
@@ -782,6 +789,31 @@ class Worker:
                 f"({completed + failed}/{total} prompts done)"
             )
 
+        # Any prompt still in the queue when _running went False has no
+        # result at all. Synthesize an explicit failure per row index so:
+        #   - the output file has exactly one line per input prompt (no gaps)
+        #   - duplicate custom_ids are isolated and never collapse
+        #   - the backend receives honest completed/failed counts
+        #   - the dashboard can distinguish "never ran" from "inference error"
+        #     via the "worker_shutdown:" prefix
+        # A crashed pool worker can also strand rows; those are not a
+        # shutdown, so they must not carry the shutdown sentinel.
+        if self._running:
+            unrun_error = "INTERNAL_ERROR: prompt not executed — pool worker stopped early"
+        else:
+            unrun_error = "worker_shutdown:prompt not executed before daemon stopped"
+        for i, prompt in enumerate(prompts):
+            if i not in results_by_index:
+                logger.warning(
+                    f"[{job.job_id}] Prompt {prompt.custom_id} (row {i}) was not "
+                    f"executed — recording as failure: {unrun_error}"
+                )
+                results_by_index[i] = CompletionResult(
+                    custom_id=prompt.custom_id,
+                    error=unrun_error,
+                )
+                failed += 1
+
         # Final progress report — always sent, regardless of throttle.
         await self._client.report_progress(
             job_id=job.job_id,
@@ -790,12 +822,8 @@ class Worker:
             total=total,
         )
 
-        # Return in input order, skipping anything shutdown left unrun.
-        return [
-            results_by_index[i]
-            for i in range(total)
-            if i in results_by_index
-        ]
+        # Return in input order (now guaranteed to have an entry for every row).
+        return [results_by_index[i] for i in range(total)]
 
     # ── Output Writing ───────────────────────────────────────────
 

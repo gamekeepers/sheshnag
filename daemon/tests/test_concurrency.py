@@ -251,8 +251,10 @@ async def test_graceful_shutdown_drains_in_flight_work(mock_job):
     worker._running = False
     results = await task
 
-    assert len(results) < 20, "shutdown did not stop the pool"
-    assert all(r.is_success for r in results), "a partial result leaked out"
+    completed = [r for r in results if r.is_success]
+    assert len(completed) < 20, "shutdown did not stop the pool"
+    assert len(results) == 20, "unrun prompts must be recorded as shutdown failure rows"
+    assert all(r.error and r.error.startswith("worker_shutdown:") for r in results if not r.is_success)
 
 
 @pytest.mark.asyncio
