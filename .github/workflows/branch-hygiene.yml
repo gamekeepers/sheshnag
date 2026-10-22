@@ -1,0 +1,47 @@
+# Fails a pull request into `develop` whose branch contains a merge commit.
+#
+# A branch that merges `develop` back in carries develop's commits into the
+# pull request: the diff under review grows to include work already on the
+# trunk, and a review thread opened on one of those lines asks the wrong
+# author about the wrong change. A rebased branch is a list of its own
+# commits (CONTRIBUTING.md, "Stacked branches").
+#
+# Only `develop` is guarded. `main` receives release merges from `develop`,
+# which carry every merge commit `develop` has ever accumulated; that path is
+# policed by `guard-main.yml`.
+#
+# To make this binding, add the `no-base-merges` job as a required status
+# check in a ruleset scoped to `refs/heads/develop` alone. It cannot go in
+# `key-branches-protection`: that ruleset also covers `main`, where this job
+# never runs, so a required check there would leave every release pull
+# request waiting for a report that never arrives.
+
+name: Branch hygiene
+
+on:
+  pull_request:
+    branches: [develop]
+
+jobs:
+  no-base-merges:
+    runs-on: ubuntu-latest
+    steps:
+      # `pull_request` checks out a merge of the head into the base, which is
+      # itself a merge commit. The head is what this job inspects.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Reject merge commits between develop and the head
+        run: |
+          git fetch --no-tags origin \
+            "+refs/heads/$GITHUB_BASE_REF:refs/remotes/origin/$GITHUB_BASE_REF"
+          base="$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)"
+          merges="$(git rev-list --merges "$base"..HEAD)"
+          if [ -n "$merges" ]; then
+            git log --merges --oneline "$base"..HEAD
+            echo "::error::This branch merges $GITHUB_BASE_REF back in. Replay it instead: git rebase --onto origin/$GITHUB_BASE_REF $base"
+            exit 1
+          fi
+          echo "No merge commits in $(git rev-list --count "$base"..HEAD) commit(s) since $base."
