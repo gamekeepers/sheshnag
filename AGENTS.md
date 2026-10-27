@@ -143,3 +143,4 @@ A finetuning job is a contract between `/v1/fine_tuning/*` and the runner
 (`/workers/finetune-*`): statuses, LoRA limits that serving imposes, and the
 artifact fields serving needs. Read [`docs/finetune_contract.md`](docs/finetune_contract.md)
 before changing it; constants live in `backend/finetune_contract.py`.
+Who owns which side, and what needs both owners' agreement: [`docs/team.md`](docs/team.md).
