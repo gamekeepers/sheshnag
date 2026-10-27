@@ -36,13 +36,14 @@ signal the task needs a human, not a signal to find a way around the rule.
 
 ---
 
-## Architecture (3-service monorepo)
+## Architecture (monorepo)
 
 | Directory | Service | Stack |
 |---|---|---|
 | Root (`app/`, `package.json`) | Next.js frontend | JS (no TS), React 19, Tailwind v4 |
 | `backend/` | FastAPI REST API + SQLite | Python, no Alembic |
-| `daemon/` | GPU worker daemon | Python 3.12+, polls backend for jobs, runs Ollama (default) or vLLM |
+| `daemon/` | GPU worker daemon | Python 3.12+, polls backend for batch jobs, runs Ollama (default) or vLLM |
+| `runner/` | forge-runner | Python 3.10+, polls backend for finetune jobs, supervises LLaMA-Factory — never part of `daemon/` |
 
 Frontend reads `NEXT_PUBLIC_BACKEND_URL` (default `http://localhost:8000`).
 Copy `.env.example` → `.env` for the frontend and `backend/.env.example` →
@@ -82,8 +83,9 @@ in a separate terminal first.
 
 | Area | Command |
 |---|---|
-| Backend | `cd backend && python -m pytest tests/ -q` — 100 tests, in-memory SQLite |
+| Backend | `cd backend && python -m pytest tests/ -q` — 107 tests, in-memory SQLite |
 | Daemon | `cd daemon && python -m pytest tests/ -q` — needs `pip install -e ".[dev]"` |
+| Runner | `cd runner && python -m pytest tests/ -q` — needs `pip install -e ".[dev]"`; fake engine, no GPU |
 | Frontend | `npm run lint` — no test framework yet |
 
 Two traps:

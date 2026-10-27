@@ -169,6 +169,11 @@ The job's `error.message` is the first problem plus its fix, for example:
 
 ## Runner protocol (`/workers/finetune-*`, worker `gk-` key)
 
+The runner is forge-runner ([`runner/`](../runner/README.md)), a separate
+process from the batch daemon. It registers and heartbeats like any worker
+(`/workers/register`, `/workers/{id}/heartbeat`), including while it
+supervises a run.
+
 1. `POST /workers/finetune-poll`: claims the oldest `queued` job that fits the
    worker's VRAM, moves it to `running`, and returns the hyperparameters, the
    pinned base, `dataset_path`, `engine` and `engine_image`.
@@ -181,16 +186,28 @@ The job's `error.message` is the first problem plus its fix, for example:
 4. `POST /workers/finetune-upload-adapter`: multipart. Send the zip (containing
    `adapter_config.json` and `adapter_model.safetensors`) plus `engine`,
    `engine_version`, `engine_image`, and `metrics` (JSON).
-5. `POST /workers/finetune-report-failure`: the job requeues, and fails for
-   good after 3 attempts.
+5. `POST /workers/finetune-report-failure`: `error` (shown to the user),
+   `code`, and `retryable`. A retryable failure requeues the job, which
+   restarts from step 0, and the event log says so. It fails for good after 3
+   attempts. A non-retryable failure (bad config, nothing to train on, base
+   unavailable) fails at once.
+
+**Training is never restarted silently.** The worker sweep that requeues
+batches leaves finetune jobs alone. If a running job's runner stops
+heartbeating for 10 minutes, the job is **failed** with `runner_lost` and a
+message telling the user to resubmit. It is never requeued from step 0
+without their knowledge.
 
 ## Deliberately not here yet
 
 - **DPO and ORPO.** The engine supports them (`stage: dpo`,
   `pref_loss: sigmoid|orpo|simpo`). Adding them means a new `method.type` and
   a preference-pair validator, not new tables.
-- **Resume from checkpoint.** Requeues restart from step 0. `kind='checkpoint'`
+- **Resume from checkpoint.** A retry restarts from step 0. `kind='checkpoint'`
   artifacts are the intended hook.
+- **The adapter does not record its base revision.** PEFT writes
+  `"revision": null` into `adapter_config.json` (seen on the first forge-runner
+  run, 2026-10-26). The job's pinned revision is the only record of it.
 - **Registering the adapter in the catalogue.** That waits on AC's
   representation, and it is one write to `catalog_entry_id`.
 

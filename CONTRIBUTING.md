@@ -86,7 +86,7 @@ open or how sure you are about it.
 
 | Area | Command | State |
 |---|---|---|
-| Backend | `cd backend && python -m pytest tests/ -q` | 100 tests, in-memory SQLite, no live server needed |
+| Backend | `cd backend && python -m pytest tests/ -q` | 107 tests, in-memory SQLite, no live server needed |
 | Daemon | `cd daemon && pip install -e ".[dev]" && python -m pytest tests/ -q` | mock backend + mock runtimes in `daemon/tests/` |
 | Frontend | `npm run lint` | no test framework yet |
 
