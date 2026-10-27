@@ -79,16 +79,16 @@ Every variable the platform reads at runtime. Defaults are pulled from live code
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `SECRET_KEY` | yes (change in prod) | _(see below)_ | JWT signing key. The code ships a default for dev only; at startup a WARNING is logged if you haven't changed it. Generate one with: `openssl rand -hex 32`. |
+| `SECRET_KEY` | **yes** | _(none)_ | JWT signing key. There is no built-in fallback: **the backend refuses to start without it.** Use a distinct value per environment. Generate one with: `openssl rand -hex 32`. (Tests set their own in `tests/conftest.py`.) |
 | `DATABASE_URL` | no | `sqlite:///./jobs.db` | SQLAlchemy connection string. Swap for PostgreSQL in production. |
 | `GOOGLE_CLIENT_ID` | if Google OAuth | _(must set)_ | Must match the client ID registered with Google, and must also be the same value as `NEXT_PUBLIC_GOOGLE_CLIENT_ID`. |
 | `FRONTEND_URL` | no | `http://localhost:3000` | Base URL used in password-reset and invite email links. |
 | `MAILGUN_API_KEY` | no | — | Mailgun API key. If unset, email sending is gracefully skipped. |
 | `MAILGUN_DOMAIN` | no | — | Mailgun domain. Required alongside `MAILGUN_API_KEY` for emails to work. |
 | `MAILGUN_FROM` | no | `Sheshnag support <noreply@sheshnag.io>` | Default sender address for platform emails. |
-| `CORS_ORIGINS` | no | `"*"` (all origins) | Comma-separated list of allowed origins for CORS. Keep the default for local dev; set to your frontend URL(s) in production. See also the [credentials warning](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS/Errors/CORSMissingAllowCredentialsWildcard). |
+| `CORS_ORIGINS` | yes in prod | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated list of allowed origins. Credentials are always allowed, so **`"*"` is not accepted — it is replaced by the localhost default**, which blocks any deployed frontend. Production must list its real origin(s), e.g. `https://sheshnag.dau.ac.in`. |
 
-**Old `.env` caveat:** `CORS_ORIGINS` used to be listed in `backend/.env.example` while doing nothing — origins were hardcoded to `["*"]` in `main.py`. It is now read from the environment, so the variable behaves as its name suggests and no code change is needed at deploy time.
+**Old `.env` caveat:** older `backend/.env` files have `CORS_ORIGINS=*` and may have no `SECRET_KEY`. Both now break startup or the browser: set `SECRET_KEY`, and replace `*` with concrete origins.
 
 ### Daemon (`daemon/`)
 
@@ -117,9 +117,9 @@ See `daemon/README.md` for full CLI flag and YAML config details.
 
 Before deploying to production, address each item and note whether it requires a code change or just configuration.
 
-- [ ] **`SECRET_KEY`** — set a strong random value (e.g., `openssl rand -hex 32`). At startup the app logs a WARNING if the default is still in use.
+- [ ] **`SECRET_KEY`** — set a strong random value (e.g., `openssl rand -hex 32`). Required: the backend will not start without it.
 - [ ] **Database backend** — swap `DATABASE_URL` from SQLite to PostgreSQL. Configurable via env; no code change needed.
-- [ ] **CORS origins** — set `CORS_ORIGINS` to your frontend URL(s) instead of `"*"`. Also review `allow_credentials=True` — browsers reject wildcard origins with credentials enabled, so you must list concrete origins when using cookies or auth headers.
+- [ ] **CORS origins** — set `CORS_ORIGINS` to your frontend URL(s). `"*"` and an unset value both fall back to localhost only, so a deployed frontend is blocked until this is set.
 - [ ] **HTTPS** — put a reverse proxy (Nginx, Caddy) in front of both frontend and backend. See [docs/services.md](services.md) admin appendix.
 - [ ] **Google OAuth** — register your production domain with Google Cloud Console. Set the same `GOOGLE_CLIENT_ID` in both `.env` and `backend/.env`.
 - [ ] **Email (Mailgun)** — configure `MAILGUN_*` vars for password reset, invites, and notifications. Gracefully skipped if unset, but you lose email functionality.

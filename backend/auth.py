@@ -18,18 +18,13 @@ from google.auth.transport import requests as google_requests
 
 logger = logging.getLogger(__name__)
 
-# Dev fallback. Kept so `cp .env.example .env && uvicorn` still boots, but the
-# key is public (it lives in git history), so anything signed with it is
-# forgeable — hence the startup warning.
-_DEFAULT_SECRET_KEY = "batch-ai-platform-secret-change-in-production"
+# JWT signing must be configured explicitly in the environment. A built-in
+# fallback is not acceptable because it makes token forgery trivial.
+SECRET_KEY = os.getenv("SECRET_KEY")
 
-SECRET_KEY = os.getenv("SECRET_KEY") or _DEFAULT_SECRET_KEY
-
-if SECRET_KEY == _DEFAULT_SECRET_KEY:
-    logger.warning(
-        "SECRET_KEY is unset or still the built-in default — JWTs are signed "
-        "with a publicly known key and can be forged. Do not run this way in "
-        "production. Generate one with: openssl rand -hex 32"
+if not SECRET_KEY:
+    raise RuntimeError(
+        "SECRET_KEY is required. Set it in the environment or backend/.env before starting the API."
     )
 
 ALGORITHM = "HS256"

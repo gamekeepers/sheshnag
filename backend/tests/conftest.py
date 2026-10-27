@@ -5,6 +5,12 @@ Uses an in-memory SQLite database with shared-cache mode so all connections
 Creates a fresh DB session per request (matching production get_db behaviour).
 """
 
+import os
+
+# auth.py refuses to import without SECRET_KEY (no insecure fallback), and
+# pytest imports it during collection — give the test run its own key.
+os.environ.setdefault("SECRET_KEY", "test-only-secret-key")
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
