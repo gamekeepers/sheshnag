@@ -7,6 +7,7 @@ statuses, limits, what serving needs — is finetune_contract.py; the prose
 version is docs/finetune_contract.md.
 """
 import json
+import re
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -24,6 +25,7 @@ from services.finetune_validator import validate_finetune_job
 router = APIRouter()
 
 DATASET_PURPOSE = "fine-tune"
+_COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 # ─── Serialisation ─────────────────────────────────────────
@@ -154,6 +156,15 @@ def create_fine_tuning_job(
             status_code=400,
             detail=f"model: '{req.model}' is not a finetune-eligible catalogue entry. "
                    "Use the id of a huggingface-sourced model from GET /v1/models.",
+        )
+    if not _COMMIT_SHA.fullmatch(entry.source_revision or ""):
+        # The job pins its base from this field; a branch name like "main"
+        # would let the base drift under a trained adapter (G1).
+        raise HTTPException(
+            status_code=400,
+            detail=f"model: catalogue entry '{entry.id}' is pinned to "
+                   f"'{entry.source_revision}', not a commit SHA, so it cannot be "
+                   "finetuned yet. A platform admin must pin source_revision in the catalogue.",
         )
     _check_dataset_file(db, user, req.training_file, "training_file")
     if req.validation_file:

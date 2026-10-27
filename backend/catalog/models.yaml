@@ -210,9 +210,10 @@
 # not pre-quantized serving artifacts like the ollama-library entries
 # above). vram_gb here is the *inference* figure per the ModelCatalog
 # convention; finetune_picker.py applies its own training multiplier on
-# top rather than duplicating a second number here. Sized for a 4GB card
-# under QLoRA — see project memory on the GPU constraint this catalogue
-# was chosen against.
+# top rather than duplicating a second number here.
+# source_revision is a commit SHA, never a branch: a finetune job pins the
+# base it trained on from this field, and vLLM never checks that an
+# adapter is served on the same base (docs/finetune_contract.md).
 - id: qwen2-5-0-5b-instruct-hf
   display_name: Qwen2.5-0.5B-Instruct
   runtime: transformers
@@ -226,7 +227,7 @@
   task_type: chat
   source_type: huggingface
   source_ref: Qwen/Qwen2.5-0.5B-Instruct
-  source_revision: main
+  source_revision: 7ae557604adf67be50417f59c2c2f167def9a775
   homepage_url: https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct
   enabled: true
 - id: tinyllama-1-1b-chat-hf
@@ -242,6 +243,6 @@
   task_type: chat
   source_type: huggingface
   source_ref: TinyLlama/TinyLlama-1.1B-Chat-v1.0
-  source_revision: main
+  source_revision: fe8a4ea1ffedaf415f4da2f062534de366a451e6
   homepage_url: https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0
   enabled: true

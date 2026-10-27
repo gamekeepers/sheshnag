@@ -168,6 +168,23 @@ def test_create_rejects_ollama_base_model(auth_client, good_file):
     assert "not a finetune-eligible" in res.json()["detail"]
 
 
+def test_create_rejects_unpinned_base_model(auth_client, good_file, db_session):
+    """A base on a branch ("main") could move under a trained adapter."""
+    from models import ModelCatalog
+    entry = db_session.query(ModelCatalog).filter(ModelCatalog.id == BASE).first()
+    pinned = entry.source_revision
+    assert len(pinned) == 40
+    entry.source_revision = "main"
+    db_session.commit()
+    try:
+        res = _create(auth_client, good_file)
+        assert res.status_code == 400
+        assert "not a commit SHA" in res.json()["detail"]
+    finally:
+        entry.source_revision = pinned
+        db_session.commit()
+
+
 def test_create_rejects_wrong_file_purpose(auth_client, make_file):
     file_id = make_file(_jsonl([_example()] * 12), purpose="batch")
     res = _create(auth_client, file_id)

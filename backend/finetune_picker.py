@@ -3,27 +3,25 @@ Finetune Picker — job-to-worker matching for LoRA training jobs.
 
 Mirrors provider_picker.py's role for batches, but the fit function is
 different: training doesn't care whether a worker already has the base
-model loaded in an Ollama runtime (QLoRA training loads its own 4-bit
-copy via transformers, independent of any serving runtime) — it only
-cares whether the worker has enough VRAM headroom for training, which
-runs higher than pure inference (base weights + adapter gradients +
-optimizer state + activations, even with 4-bit quantization and a paged
-optimizer).
+model loaded in a serving runtime (the engine loads its own copy of the
+weights) — it only cares whether the worker has enough VRAM headroom for
+training, which runs well above pure inference (base weights + adapter
+gradients + optimizer state + activations + fp32 logits).
 
 `_TRAINING_VRAM_MULTIPLIER` is a safety margin over the catalogue's
-inference `vram_gb`, calibrated against one real measurement (2026-08-18):
-QLoRA on Qwen2.5-0.5B-Instruct (rank=8, 4 target modules, batch=1,
-seq_len=256, paged_adamw_8bit) peaked at 1.52GB against a 1.5GB inference
-figure — essentially 1.0x in that run. 1.3x is kept here rather than
-dropping to the measured ~1.0x because that run used a short sequence
-length and the smallest model in the catalogue; longer sequences, larger
-base models, or bigger LoRA ranks all raise activation/gradient memory in
-ways this single data point doesn't cover. Tighten per-architecture as
-more runs are profiled.
+inference `vram_gb`, calibrated against the week-2 G2 bake-off
+(docs/forge/week2-g1-g2-findings.md): bf16 LoRA on Qwen2.5-0.5B-Instruct
+with the contract defaults (r16 all-linear, seq 1024, micro-batch 1,
+gradient checkpointing) peaked at 4.70 GB under LLaMA-Factory (3.87 GB
+under Axolotl) against a 1.5 GB inference figure — 3.13x. Most of that
+is fp32 logits over Qwen's 152k vocabulary, which does not grow with
+parameter count, so 3.2x overestimates for larger bases; that errs on
+the side of not scheduling a job that would OOM. (The earlier 1.3x came
+from QLoRA at seq 256 on a 4 GB card — a different method and length.)
 """
 from models import ModelCatalog
 
-_TRAINING_VRAM_MULTIPLIER = 1.3
+_TRAINING_VRAM_MULTIPLIER = 3.2
 
 
 def get_base_model_entry(db, base_model_id: str):

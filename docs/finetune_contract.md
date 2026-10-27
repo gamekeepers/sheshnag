@@ -77,8 +77,8 @@ checked against `VALID_TRANSITIONS`, stamps `queued_at`, `started_at` or
 
 The base model's `base_model_name_or_path` is free text with no revision, so a
 match is necessary but not sufficient. **The job's pinned revision is the
-identity serving must load.** Today the catalogue's HF entries say
-`source_revision: main`, so they need pinning to commit SHAs (see open items).
+identity serving must load.** The catalogue stores it as a commit SHA,
+and the API refuses to finetune a base whose revision is not a SHA.
 
 ## Tables
 
@@ -195,11 +195,15 @@ The job's `error.message` is the first problem plus its fix, for example:
 
 ## Open items
 
-- Pin the catalogue's HF entries to commit SHAs (`source_revision: main` today).
-  Until then, "the base this adapter was trained on" is only as stable as
-  `main`.
-- The HF catalogue entries' `vram_gb` and `finetune_picker`'s 1.3× multiplier
-  were sized for QLoRA on a 4 GB card. Re-derive them from G2's LoRA numbers
-  (about 3.9–4.7 GB for 0.5B at micro-batch 1).
-- The backend needs outbound HF hub access for exact token counts. Otherwise
-  stats are estimates. Set `HF_TOKEN` for rate limits.
+- The backend needs outbound HF hub access for exact token counts. Without
+  it, stats are estimates. Set `HF_TOKEN` for rate limits.
+- `finetune_picker` checks a worker's **total** VRAM, but G2 ran with only
+  about 4.8 GB free on a 49 GB shared card. Fitting against reported free
+  VRAM belongs with the runner work.
+
+Resolved 2026-10-26:
+
+- Catalogue HF entries are pinned to commit SHAs. The API refuses to
+  finetune any base whose `source_revision` is not a 40-hex SHA.
+- The training-VRAM multiplier was re-derived from G2: 3.2× inference
+  `vram_gb`, up from the 1.3× sized for QLoRA on the old 4 GB card.
