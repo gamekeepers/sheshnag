@@ -144,7 +144,7 @@ still written in order, and no single row can fail the job:
 | A coalesced embedding request is rejected | Its rows are retried one at a time; only the genuinely bad ones fail |
 | `stream: true` on any endpoint | That row fails with `UNSUPPORTED_PARAMETER` |
 | Repeated `custom_id` | The second and later rows fail with `DUPLICATE_CUSTOM_ID` |
-| Shutdown signal | Prompts in flight finish; the rest are simply absent |
+| Shutdown signal | Prompts in flight finish; unrun prompts fail with synthetic `worker_shutdown:` error |
 
 Coalescing is a throughput optimisation and never costs isolation: Ollama
 rejects an entire `/api/embed` call if any single input is invalid, so a failed
@@ -155,7 +155,10 @@ Rejections are all decided in one pass before execution starts, so an input
 cannot get different treatment depending on which runtime it lands on. A
 repeated `custom_id` is already rejected by the backend's validator at upload,
 so that row only appears on a bypass — it fails the row rather than the job,
-which is what the pre-pool sequential loop did.
+which is what the pre-pool sequential loop did. Prompts left unrun when a
+shutdown signal arrives produce synthetic failure rows with error
+`worker_shutdown:prompt not executed before daemon stopped`, preserving the
+1:1 input-to-output contract and honest counts for the backend and dashboard.
 
 ## Configuration
 
