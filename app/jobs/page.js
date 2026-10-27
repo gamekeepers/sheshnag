@@ -45,14 +45,17 @@ export default function JobsPage() {
   const [jobs, setJobs] = useState([]);
   const [selectedJob, setSelectedJob] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [userName, setUserName] = useState('');
-
-  useEffect(() => {
-    const userRaw = localStorage.getItem('mk_user');
-    if (userRaw) {
-      try { setUserName(JSON.parse(userRaw).full_name || JSON.parse(userRaw).email || ''); } catch {}
+  const [userName] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    try {
+      const userRaw = localStorage.getItem('mk_user');
+      if (!userRaw) return '';
+      const user = JSON.parse(userRaw);
+      return user.full_name || user.email || '';
+    } catch {
+      return '';
     }
-  }, []);
+  });
 
   /* ---- refs for the polling loop ---- */
   const pollTimerRef = useRef(null);        // holds the setTimeout handle

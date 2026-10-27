@@ -27,7 +27,7 @@ export default function DashboardPage() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState('home');
   const [isOrgDropdownOpen, setIsOrgDropdownOpen] = useState(false);
-  const [token, setToken] = useState('');
+  const [token] = useState(() => (typeof window === 'undefined' ? '' : localStorage.getItem('mk_token') || ''));
   
   // User/Profile states
   const [userProfile, setUserProfile] = useState(null);
@@ -81,13 +81,10 @@ export default function DashboardPage() {
 
   // Check auth
   useEffect(() => {
-    const tk = localStorage.getItem('mk_token');
-    if (!tk) {
+    if (!token) {
       router.push('/login');
-      return;
     }
-    setToken(tk);
-  }, [router]);
+  }, [router, token]);
 
   // Utility auth headers
   const getHeaders = useCallback(() => {
@@ -176,7 +173,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (token) {
       loadProfile();
-      loadFiles();  // batch cards need id→filename before any tab is opened
+      loadFiles();
     }
   }, [token, loadProfile, loadFiles]);
 
@@ -1416,7 +1413,7 @@ export default function DashboardPage() {
               })}
               {batches.length === 0 && (
                 <div className="panel" style={{ gridColumn: 'span 2', textAlign: 'center', color: 'var(--dim)', padding: '3rem' }}>
-                  No batch jobs submitted. Click "New Batch" to queue a job.
+                  No batch jobs submitted. Click &quot;New Batch&quot; to queue a job.
                 </div>
               )}
             </div>
@@ -1596,7 +1593,7 @@ export default function DashboardPage() {
             {revealedKey && (
               <div id="keyRevealBox" style={{ marginTop: '1.2rem' }}>
                 <div className="key-reveal">{revealedKey}</div>
-                <div className="key-warning">This is shown once. Copy it now — you won't be able to see it again.</div>
+                <div className="key-warning">This is shown once. Copy it now — you will not be able to see it again.</div>
               </div>
             )}
           </div>
@@ -1608,7 +1605,7 @@ export default function DashboardPage() {
           <div className="modal">
             <h3>Regenerate organization key?</h3>
             <p className="modal-sub">
-              Every worker daemon currently using the existing key will stop being able to register until it's updated with the new one.
+              Every worker daemon currently using the existing key will stop being able to register until it is updated with the new one.
             </p>
             <div className="modal-actions">
               <button className="btn" onClick={() => setIsRegenModalOpen(false)}>Cancel</button>

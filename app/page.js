@@ -87,11 +87,10 @@ const MODELS = ['Llama 3', 'Mistral', 'Qwen', 'Gemma', 'Phi', 'DeepSeek'];
 
 export default function Home() {
   const router = useRouter();
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-
-  useEffect(() => {
-    setIsLoggedIn(!!localStorage.getItem('mk_token'));
-  }, []);
+  const [isLoggedIn] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return !!localStorage.getItem('mk_token');
+  });
 
   const go = (path) => () => router.push(path);
 

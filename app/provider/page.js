@@ -42,7 +42,7 @@ function statusPip(worker) {
 export default function ProviderPage() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState('overview');
-  const [token, setToken] = useState('');
+  const [token] = useState(() => (typeof window === 'undefined' ? '' : localStorage.getItem('mk_token') || ''));
   const [isOrgDropdownOpen, setIsOrgDropdownOpen] = useState(false);
 
   const [orgs, setOrgs] = useState([]);
@@ -78,13 +78,10 @@ export default function ProviderPage() {
   const canManage = role === 'owner' || role === 'admin';
 
   useEffect(() => {
-    const tk = localStorage.getItem('mk_token');
-    if (!tk) {
+    if (!token) {
       router.push('/login');
-      return;
     }
-    setToken(tk);
-  }, [router]);
+  }, [router, token]);
 
   const getHeaders = useCallback(() => {
     const h = {

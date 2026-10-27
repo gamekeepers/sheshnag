@@ -316,7 +316,7 @@ export default function AdminPage() {
 
   useEffect(() => {
     const token = localStorage.getItem('mk_token');
-    const user  = JSON.parse(localStorage.getItem('mk_user') || '{}');
+    const user = JSON.parse(localStorage.getItem('mk_user') || '{}');
     if (!token || !isSuperadmin(user)) { router.push('/login'); return; }
     loadAdminProfile();
     loadJobs();
