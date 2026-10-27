@@ -1,0 +1,2 @@
+# Shell scripts run on Linux (watchtower); CRLF breaks them.
+*.sh text eol=lf
