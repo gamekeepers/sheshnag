@@ -1,7 +1,8 @@
 # Finetuning job contract
 
 What a finetuning job **is** on Sheshnag, written down once so the API and the
-runner are built against the same thing. Code: `backend/finetune_contract.py`
+runner are built against the same thing. **Agreed by Manan and Ved on
+2026-10-26 (G4).** Changing it needs both of them; see [`team.md`](team.md). Code: `backend/finetune_contract.py`
 (constants and limits), `backend/models.py` (tables),
 `backend/routers/finetune.py` (user API), `backend/routers/workers.py`
 (`/workers/finetune-*`, the runner side), and
