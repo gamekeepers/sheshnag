@@ -22,6 +22,8 @@ from models import (
     BatchAssignment,
     FinetuneJob,
     FinetuneJobAssignment,
+    FinetuneEvent,
+    FinetuneArtifact,
     PasswordResetToken,
 )
 

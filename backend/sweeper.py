@@ -10,16 +10,17 @@ Two entry points:
         requeued, so a crashed daemon never strands a batch in "in_progress".
 
 Finetune jobs get the same reclaim treatment via requeue_or_fail_finetune_job(),
-mirroring the batch path exactly. Note this only guarantees a stuck job doesn't
+mirroring the batch path. Note this only guarantees a stuck job doesn't
 strand forever — it restarts training from step 0, same as batches restart
-from prompt 0. checkpoint_step is preserved on the job row across a requeue
-(not cleared here) so a future checkpoint-aware executor can resume from it;
-today's daemon doesn't use it, so training just starts over.
+from prompt 0. Resume will come from kind='checkpoint' rows in
+finetune_artifacts, not from anything on the job row.
 """
 import asyncio
+import json
 import logging
 
 from models import Batch, BatchAssignment, FinetuneJob, FinetuneJobAssignment, Worker, unix_now
+from services.finetune_events import transition
 
 logger = logging.getLogger(__name__)
 
@@ -61,25 +62,27 @@ def requeue_or_fail_batch(db, batch, error: str | None = None) -> str:
 
 
 def requeue_or_fail_finetune_job(db, job, error: str | None = None) -> str:
-    """Requeue an in-flight finetune job, or fail it after MAX_FINETUNE_ATTEMPTS.
+    """Requeue a running finetune job, or fail it after MAX_FINETUNE_ATTEMPTS.
 
-    Mirrors requeue_or_fail_batch — see module docstring for the
-    checkpoint_step caveat (preserved, but unused by today's daemon).
+    Mirrors requeue_or_fail_batch, but goes through
+    services.finetune_events.transition so the job's event log records
+    each requeue. Training restarts from step 0 (see module docstring).
     """
     job.attempts = (job.attempts or 0) + 1
     db.query(FinetuneJobAssignment).filter(
         FinetuneJobAssignment.job_id == job.id,
     ).delete()
-    if error:
-        job.error_details = error[:2000]
+    reason = (error or "unknown error")[:2000]
 
     if job.attempts >= MAX_FINETUNE_ATTEMPTS:
-        job.status = "failed"
-        job.completed_at = unix_now()
+        job.error = json.dumps({"code": "training_failed", "param": None, "message": reason})
+        transition(db, job, "failed",
+                   f"Attempt {job.attempts}/{MAX_FINETUNE_ATTEMPTS} failed: {reason}", level="error")
         return "failed"
 
-    job.status = "validated"
-    return "validated"
+    transition(db, job, "queued",
+               f"Attempt {job.attempts}/{MAX_FINETUNE_ATTEMPTS} failed, requeued: {reason}", level="warn")
+    return "queued"
 
 
 def sweep_stale_workers(db) -> tuple[int, int]:
@@ -126,7 +129,7 @@ def sweep_stale_workers(db) -> tuple[int, int]:
             job = db.query(FinetuneJob).filter(
                 FinetuneJob.id == assignment.job_id,
             ).first()
-            if job and job.status == "in_progress":
+            if job and job.status == "running":
                 outcome = requeue_or_fail_finetune_job(
                     db, job,
                     error=f"Worker {worker.id} went offline mid-job",
@@ -138,6 +141,7 @@ def sweep_stale_workers(db) -> tuple[int, int]:
                     job.id, worker.id, outcome,
                     job.attempts, MAX_FINETUNE_ATTEMPTS,
                 )
+
         logger.warning(
             "Worker %s (%s) marked offline — no heartbeat since %s",
             worker.id, worker.hostname, worker.last_heartbeat,

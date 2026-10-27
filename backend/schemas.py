@@ -1,5 +1,10 @@
-from pydantic import AfterValidator, Field, BaseModel
-from typing import Annotated, Literal, Optional, List
+from pydantic import AfterValidator, ConfigDict, Field, BaseModel
+from typing import Annotated, Literal, Optional, List, Union
+
+from finetune_contract import (
+    ALL_LINEAR, ALLOWED_LORA_RANKS, DEFAULT_HYPERPARAMETERS, DEFAULT_LORA,
+    DEFAULT_SEED, SERVABLE_TARGET_MODULES,
+)
 
 
 # bcrypt only hashes the first 72 bytes of a password. Storing the hash of a
@@ -265,89 +270,84 @@ class ApiKeyUpdate(BaseModel):
 
 
 # ─── Finetuning schemas ─────────────────────────────────────
+#
+# Request models forbid unknown keys. G2 found Axolotl silently dropping a
+# typo'd `lora_rnk` and training with the wrong rank — the API must not
+# repeat that one layer up. Limits come from finetune_contract.py.
+
+def _check_rank(v: int) -> int:
+    if v not in ALLOWED_LORA_RANKS:
+        raise ValueError(
+            f"rank must be one of {list(ALLOWED_LORA_RANKS)} — serving starts vLLM with "
+            f"--max-lora-rank {max(ALLOWED_LORA_RANKS)}, and a larger adapter stops the server from starting"
+        )
+    return v
+
+
+def _check_target_modules(v):
+    if v == ALL_LINEAR:
+        return v
+    if isinstance(v, list) and v:
+        unknown = sorted(set(v) - SERVABLE_TARGET_MODULES)
+        if unknown:
+            raise ValueError(
+                f"target_modules {unknown} are not servable; use \"{ALL_LINEAR}\" or a subset of "
+                f"{sorted(SERVABLE_TARGET_MODULES)}"
+            )
+        return sorted(set(v))
+    raise ValueError(f"target_modules must be \"{ALL_LINEAR}\" or a non-empty list of module names")
+
+
+class FinetuneHyperparameters(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    n_epochs: int = Field(DEFAULT_HYPERPARAMETERS["n_epochs"], ge=1, le=20)
+    batch_size: int = Field(DEFAULT_HYPERPARAMETERS["batch_size"], ge=1, le=256)
+    learning_rate: float = Field(DEFAULT_HYPERPARAMETERS["learning_rate"], gt=0, le=1e-2)
+    max_seq_length: int = Field(DEFAULT_HYPERPARAMETERS["max_seq_length"], ge=128, le=8192)
+
+
+class FinetuneLora(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rank: Annotated[int, AfterValidator(_check_rank)] = DEFAULT_LORA["rank"]
+    alpha: int = Field(DEFAULT_LORA["alpha"], ge=1, le=512)
+    dropout: float = Field(DEFAULT_LORA["dropout"], ge=0, lt=1)
+    target_modules: Annotated[Union[str, List[str]], AfterValidator(_check_target_modules)] = DEFAULT_LORA["target_modules"]
+
+
+class FinetuneMethod(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["supervised"] = "supervised"
+
 
 class FinetuneJobCreate(BaseModel):
-    dataset_file_id: str
-    base_model_id: str
-    lora_rank: int = 8
-    lora_alpha: int = 16
-    lora_dropout: float = 0.05
-    target_modules: Optional[str] = None  # comma-separated; None = executor default
-    epochs: int = 3
-    learning_rate: float = 2e-4
-    micro_batch_size: int = 1
-    max_seq_length: int = 512
+    """POST /v1/fine_tuning/jobs — OpenAI's request shape, plus `lora`."""
+    model_config = ConfigDict(extra="forbid")
 
-
-class FinetuneProgress(BaseModel):
-    current_step: Optional[int] = None
-    total_steps: Optional[int] = None
-    current_epoch: Optional[float] = None
-    latest_loss: Optional[float] = None
-    checkpoint_step: Optional[int] = None
-
-
-class FinetuneJobOut(BaseModel):
-    id: str
-    object: str = "finetune_job"
-    dataset_file_id: str
-    base_model_id: str
-    lora_rank: int
-    lora_alpha: int
-    lora_dropout: float
-    target_modules: Optional[str] = None
-    epochs: int
-    learning_rate: float
-    micro_batch_size: int
-    max_seq_length: int
-    status: str
-    error_details: Optional[str] = None
-    output_adapter_file_id: Optional[str] = None
-    progress: FinetuneProgress = FinetuneProgress()
-    created_at: int
-    requested_at: Optional[int] = None
-    started_at: Optional[int] = None
-    completed_at: Optional[int] = None
-
-    @classmethod
-    def from_job(cls, job):
-        return cls(
-            id=job.id,
-            dataset_file_id=job.dataset_file_id,
-            base_model_id=job.base_model_id,
-            lora_rank=job.lora_rank,
-            lora_alpha=job.lora_alpha,
-            lora_dropout=job.lora_dropout,
-            target_modules=job.target_modules,
-            epochs=job.epochs,
-            learning_rate=job.learning_rate,
-            micro_batch_size=job.micro_batch_size,
-            max_seq_length=job.max_seq_length,
-            status=job.status,
-            error_details=job.error_details,
-            output_adapter_file_id=job.output_adapter_file_id,
-            progress=FinetuneProgress(
-                current_step=job.current_step,
-                total_steps=job.total_steps,
-                current_epoch=job.current_epoch,
-                latest_loss=job.latest_loss,
-                checkpoint_step=job.checkpoint_step,
-            ),
-            created_at=job.created_at,
-            requested_at=job.requested_at,
-            started_at=job.started_at,
-            completed_at=job.completed_at,
-        )
+    model: str                              # catalogue id of an HF-sourced base model
+    training_file: str                      # File.id from POST /v1/files
+    validation_file: Optional[str] = None
+    suffix: Optional[str] = Field(None, pattern=r"^[a-z0-9][a-z0-9-]{0,39}$")
+    seed: int = DEFAULT_SEED
+    method: FinetuneMethod = FinetuneMethod()
+    hyperparameters: FinetuneHyperparameters = FinetuneHyperparameters()
+    lora: FinetuneLora = FinetuneLora()
 
 
 class FinetuneProgressReport(BaseModel):
-    """Live training progress from a worker (sent every N steps)."""
+    """Live training progress from a worker — one per trainer log step.
+    Becomes one `metrics` event. Field names follow LLaMA-Factory's
+    trainer_log.jsonl (current_steps/total_steps/loss/lr/epoch)."""
     job_id: str
     worker_id: str
     current_step: int
     total_steps: int
     current_epoch: float
-    loss: float
+    loss: Optional[float] = None
+    learning_rate: Optional[float] = None
+    eval_loss: Optional[float] = None
     checkpoint_step: Optional[int] = None
 
 
