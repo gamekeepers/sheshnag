@@ -438,6 +438,12 @@ class FinetuneFailureReport(BaseModel):
     job_id: str
     worker_id: str
     error: Optional[str] = None
+    # The runner classifies the engine's failure: `code` is machine-readable
+    # (e.g. gpu_out_of_memory), `error` is the message the user sees.
+    # retryable=False fails the job now — a bad config or dataset fails the
+    # same way on every attempt, so requeueing only wastes GPU time.
+    code: Optional[str] = None
+    retryable: bool = True
 
 
 def _get_assigned_finetune_job(db: Session, job_id: str, worker_id: str) -> FinetuneJob:
@@ -685,8 +691,9 @@ def report_finetune_failure(
     ctx=Depends(get_worker_context),
     db: Session = Depends(get_db),
 ):
-    """Worker reports a training failure — requeue until MAX_FINETUNE_ATTEMPTS,
-    the finetune-job analogue of /workers/report-failure."""
+    """Runner reports a training failure. Retryable failures requeue until
+    MAX_FINETUNE_ATTEMPTS (each retry restarts from step 0, and the event
+    log says so); non-retryable ones fail the job immediately."""
     _api_key, org = ctx
     _get_org_worker(db, org, req.worker_id)
     job = _get_assigned_finetune_job(db, req.job_id, req.worker_id)
@@ -696,7 +703,8 @@ def report_finetune_failure(
         db.commit()
         return {"status": job.status, "job_id": job.id, "attempts": job.attempts, "error": req.error}
 
-    outcome = requeue_or_fail_finetune_job(db, job, error=req.error)
+    outcome = requeue_or_fail_finetune_job(db, job, error=req.error, code=req.code,
+                                           retryable=req.retryable)
 
     db.commit()
     db.refresh(job)

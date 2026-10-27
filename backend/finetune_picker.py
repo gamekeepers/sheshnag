@@ -67,7 +67,9 @@ class FinetunePicker:
         if not worker or not available_jobs:
             return None
 
-        vram = worker.vram_total_gb  # None until first heartbeat
+        # None until the first heartbeat, 0.0 when the worker could not
+        # measure it (heartbeats default the field) — both mean unknown.
+        vram = worker.vram_total_gb or None
 
         for job in available_jobs:
             required = training_vram_required(db, job.base_model_id)

@@ -440,3 +440,69 @@ def test_failure_requeues_then_fails(auth_client, worker_client, good_file):
     assert done["status"] == "failed"
     assert done["error"]["code"] == "training_failed"
     assert "CUDA out of memory" in done["error"]["message"]
+
+
+def test_non_retryable_failure_fails_immediately(auth_client, worker_client, good_file):
+    job = _claim(auth_client, worker_client, good_file)
+    res = worker_client.post("/workers/finetune-report-failure", json={
+        "job_id": job["job_id"], "worker_id": worker_client.worker_id,
+        "error": "The engine rejected the generated config", "code": "runner_config_rejected",
+        "retryable": False})
+    assert res.json()["status"] == "failed" and res.json()["attempts"] == 1
+    done = auth_client.get(f"/v1/fine_tuning/jobs/{job['job_id']}").json()
+    assert done["error"]["code"] == "runner_config_rejected"
+
+
+# ─── Training is never restarted from step 0 behind the user's back ───
+
+def _age_worker(_engine, worker_id, seconds):
+    from models import Worker, unix_now
+    db = sessionmaker(bind=_engine)()
+    db.query(Worker).filter(Worker.id == worker_id).update(
+        {"last_heartbeat": unix_now() - seconds, "status": "online"})
+    db.commit()
+    db.close()
+
+
+def test_worker_sweep_leaves_running_finetune_job_alone(_engine, auth_client, worker_client, good_file):
+    from sweeper import sweep_stale_workers, HEARTBEAT_TIMEOUT_SECONDS
+    job = _claim(auth_client, worker_client, good_file)
+    _age_worker(_engine, worker_client.worker_id, HEARTBEAT_TIMEOUT_SECONDS + 60)
+
+    db = sessionmaker(bind=_engine)()
+    sweep_stale_workers(db)
+    db.close()
+
+    assert auth_client.get(f"/v1/fine_tuning/jobs/{job['job_id']}").json()["status"] == "running"
+
+
+def test_lost_runner_fails_job_instead_of_requeueing(_engine, auth_client, worker_client, good_file):
+    from sweeper import fail_lost_finetune_jobs, FINETUNE_RUNNER_LOST_SECONDS
+    job = _claim(auth_client, worker_client, good_file)
+
+    db = sessionmaker(bind=_engine)()
+    assert fail_lost_finetune_jobs(db) == 0          # runner still heartbeating
+    _age_worker(_engine, worker_client.worker_id, FINETUNE_RUNNER_LOST_SECONDS + 60)
+    assert fail_lost_finetune_jobs(db) == 1
+    db.close()
+
+    done = auth_client.get(f"/v1/fine_tuning/jobs/{job['job_id']}").json()
+    assert done["status"] == "failed"
+    assert done["error"]["code"] == "runner_lost"
+    assert "resubmit" in done["error"]["message"]
+
+
+@pytest.mark.parametrize("vram_total, claims", [
+    (4.0, False),    # 4 GB laptop card: 1.5 GB x 3.2 = 4.8 GB needed (G2)
+    (48.0, True),
+    (0.0, True),     # worker could not measure VRAM: unknown, not "zero"
+])
+def test_picker_vram_fit(_engine, auth_client, worker_client, good_file, vram_total, claims):
+    from models import Worker
+    db = sessionmaker(bind=_engine)()
+    db.query(Worker).filter(Worker.id == worker_client.worker_id).update({"vram_total_gb": vram_total})
+    db.commit()
+    db.close()
+    _create(auth_client, good_file)
+    job = worker_client.post("/workers/finetune-poll", json={"worker_id": worker_client.worker_id}).json()["job"]
+    assert (job is not None) == claims
