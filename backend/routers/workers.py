@@ -4,19 +4,26 @@ from database import get_db
 from models import (
     Batch, BatchAssignment, File as FileModel, Worker,
     WorkerGpu, WorkerRuntime, RuntimeModel, unix_now,
+    FinetuneJob, FinetuneJobAssignment, FinetuneArtifact,
 )
 from schemas import (
     ModelDownloadReport, ProgressReport,
     WorkerHeartbeatRequest, WorkerRegisterRequest,
+    FinetuneProgressReport,
 )
 from pydantic import BaseModel, Field
 from typing import Optional
 from auth import get_worker_context
 from scheduler import scheduler, fitted_context, get_catalog_entry, resolve_runtime_model_id
 from reconciliation import AVAILABLE, MISSING, apply_inventory, classify
-from sweeper import MAX_BATCH_ATTEMPTS, requeue_or_fail_batch
+from finetune_picker import finetune_picker
+from finetune_contract import ALL_LINEAR, ENGINE, ENGINE_IMAGE, adapter_unservable_reasons
+from services.finetune_events import InvalidTransition, emit_event, transition
+from sweeper import (
+    MAX_BATCH_ATTEMPTS, requeue_or_fail_batch, requeue_or_fail_finetune_job,
+)
 from services.usage_ingest import ingest_usage_records
-import shutil, os, logging
+import hashlib, json, shutil, os, logging, zipfile
 
 logger = logging.getLogger(__name__)
 
@@ -624,5 +631,304 @@ def report_failure(
         "status":   outcome,
         "batch_id": batch.id,
         "attempts": batch.attempts,
+        "error":    req.error,
+    }
+
+
+# ─── Finetune Job Polling & Results ────────────────────────
+#
+# Deliberately separate endpoints from the batch ones above rather than
+# branching /workers/poll — training jobs have a different queue, a
+# different fit function (finetune_picker: VRAM headroom for training,
+# not "already loaded"), and a different payload shape (hyperparameters,
+# not a runtime model id). Keeping them apart means the well-exercised
+# batch poll path is untouched by this vertical. Statuses and limits are
+# finetune_contract.py's.
+
+class FinetunePollRequest(BaseModel):
+    worker_id: str
+
+
+class FinetuneFailureReport(BaseModel):
+    job_id: str
+    worker_id: str
+    error: Optional[str] = None
+    # The runner classifies the engine's failure: `code` is machine-readable
+    # (e.g. gpu_out_of_memory), `error` is the message the user sees.
+    # retryable=False fails the job now — a bad config or dataset fails the
+    # same way on every attempt, so requeueing only wastes GPU time.
+    code: Optional[str] = None
+    retryable: bool = True
+
+
+def _get_assigned_finetune_job(db: Session, job_id: str, worker_id: str) -> FinetuneJob:
+    """Resolve a finetune job currently assigned to this worker, else 404/403."""
+    job = db.query(FinetuneJob).filter(FinetuneJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Finetune job not found")
+
+    assignment = db.query(FinetuneJobAssignment).filter(
+        FinetuneJobAssignment.job_id == job_id,
+    ).first()
+    if not assignment or assignment.worker_id != worker_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Finetune job is not assigned to this worker",
+        )
+    return job
+
+
+def _ft_transition(db: Session, job: FinetuneJob, target: str, message: str, **kw) -> None:
+    try:
+        transition(db, job, target, message, **kw)
+    except InvalidTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.post("/finetune-poll")
+def poll_finetune_job(
+    req: FinetunePollRequest,
+    ctx=Depends(get_worker_context),
+    db: Session = Depends(get_db),
+):
+    _api_key, org = ctx
+    worker = _get_org_worker(db, org, req.worker_id)
+
+    if worker.status == "draining":
+        return {"job": None}
+
+    available_jobs = (
+        db.query(FinetuneJob)
+        .filter(FinetuneJob.status == "queued")
+        .order_by(FinetuneJob.created_at)
+        .all()
+    )
+    if not available_jobs:
+        return {"job": None}
+
+    job = finetune_picker.find_best_job(db, worker, available_jobs)
+    if not job:
+        return {"job": None}
+
+    _ft_transition(db, job, "running", f"Training started on worker {worker.id}")
+    db.add(FinetuneJobAssignment(
+        job_id=job.id,
+        worker_id=req.worker_id,
+        assigned_at=unix_now(),
+    ))
+    db.commit()
+    db.refresh(job)
+
+    target_modules = job.target_modules
+    return {
+        "job": {
+            "job_id":                    job.id,
+            "method":                    job.method,
+            "dataset_file_id":           job.training_file_id,
+            "dataset_path":              f"/v1/files/{job.training_file_id}/content",
+            "validation_file_id":        job.validation_file_id,
+            "base_model_id":             job.base_model_id,
+            "source_ref":                job.base_source_ref,
+            "source_revision":           job.base_source_revision,
+            "lora_rank":                 job.lora_rank,
+            "lora_alpha":                job.lora_alpha,
+            "lora_dropout":              job.lora_dropout,
+            # Comma-separated for the daemon's existing str field; "all-linear" as-is.
+            "target_modules":            target_modules if target_modules == ALL_LINEAR
+                                         else ",".join(json.loads(target_modules)),
+            "epochs":                    job.n_epochs,
+            "batch_size":                job.batch_size,
+            "learning_rate":             job.learning_rate,
+            "max_seq_length":            job.max_seq_length,
+            "seed":                      job.seed,
+            "engine":                    ENGINE,
+            "engine_image":              ENGINE_IMAGE,
+            # Restarting from step 0 today; checkpoint artifacts are where
+            # resume will come from (see finetune_artifacts.kind).
+            "resume_from_checkpoint_step": None,
+        }
+    }
+
+
+@router.post("/finetune-progress")
+def report_finetune_progress(
+    req: FinetuneProgressReport,
+    ctx=Depends(get_worker_context),
+    db: Session = Depends(get_db),
+):
+    """One trainer log step from a worker -> one `metrics` event. Answers
+    {"stop": true} once the job is cancelled, so the runner can kill the
+    engine instead of training to completion."""
+    _api_key, org = ctx
+    _get_org_worker(db, org, req.worker_id)
+    job = _get_assigned_finetune_job(db, req.job_id, req.worker_id)
+
+    if job.status != "running":
+        return {"status": job.status, "job_id": job.id, "stop": True}
+
+    metrics = req.model_dump(exclude={"job_id", "worker_id"}, exclude_none=True)
+    loss = f", loss={req.loss:.4f}" if req.loss is not None else ""
+    if req.eval_loss is not None:
+        loss += f", eval_loss={req.eval_loss:.4f}"
+    emit_event(db, job.id, f"Step {req.current_step}/{req.total_steps}{loss}",
+               type="metrics", data=metrics)
+    db.commit()
+
+    return {"status": "ok", "job_id": job.id, "stop": False}
+
+
+def _read_adapter_zip(path: str) -> tuple[dict, str]:
+    """(adapter_config, sha256 of adapter_model.safetensors) from an adapter zip.
+    Files may sit at the zip root or under one directory."""
+    with zipfile.ZipFile(path) as zf:
+        names = {n.rsplit("/", 1)[-1]: n for n in zf.namelist()}
+        if "adapter_config.json" not in names or "adapter_model.safetensors" not in names:
+            raise ValueError("zip must contain adapter_config.json and adapter_model.safetensors")
+        config = json.loads(zf.read(names["adapter_config.json"]))
+        digest = hashlib.sha256()
+        with zf.open(names["adapter_model.safetensors"]) as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+    return config, digest.hexdigest()
+
+
+@router.post("/finetune-upload-adapter")
+def upload_finetune_adapter(
+    job_id: str = Form(...),
+    worker_id: str = Form(...),
+    file: UploadFile = File(...),
+    engine: Optional[str] = Form(None),
+    engine_version: Optional[str] = Form(None),
+    engine_image: Optional[str] = Form(None),
+    metrics: Optional[str] = Form(None),  # JSON object, e.g. {"train_loss": ..., "eval_loss": ...}
+    ctx=Depends(get_worker_context),
+    db: Session = Depends(get_db),
+):
+    """Upload the trained LoRA adapter (a zip of adapter_config.json +
+    adapter_model.safetensors). The backend reads the adapter's identity
+    from the zip itself and records a finetune_artifacts row; the job
+    succeeds only if the adapter is servable (finetune_contract)."""
+    _api_key, org = ctx
+    _get_org_worker(db, org, worker_id)
+    job = _get_assigned_finetune_job(db, job_id, worker_id)
+    if job.status != "running":
+        raise HTTPException(status_code=409, detail=f"Job is {job.status}, not running")
+
+    output_file = FileModel(
+        user_id=job.user_id,
+        filename=f"{job.id}_adapter.zip",
+        purpose="fine-tune-results",
+    )
+    db.add(output_file)
+    db.flush()
+
+    FILES_DIR = "files"
+    os.makedirs(FILES_DIR, exist_ok=True)
+    filepath = f"{FILES_DIR}/{output_file.id}.zip"
+    with open(filepath, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    output_file.filepath = filepath
+    output_file.bytes = os.path.getsize(filepath)
+
+    try:
+        adapter_config, sha256 = _read_adapter_zip(filepath)
+    except (zipfile.BadZipFile, ValueError, json.JSONDecodeError) as exc:
+        db.rollback()
+        os.remove(filepath)
+        raise HTTPException(status_code=400, detail=f"Not a usable adapter zip: {exc}")
+
+    targets = adapter_config.get("target_modules")
+    if isinstance(targets, str):
+        targets = [targets]
+    reasons = adapter_unservable_reasons(adapter_config, expected_base_ref=job.base_source_ref)
+    try:
+        metrics_obj = json.loads(metrics) if metrics else None
+    except json.JSONDecodeError:
+        metrics_obj = {"raw": metrics}
+
+    artifact = FinetuneArtifact(
+        job_id=job.id,
+        kind="adapter",
+        file_id=output_file.id,
+        sha256=sha256,
+        bytes=output_file.bytes,
+        base_model_id=job.base_model_id,
+        base_source_ref=job.base_source_ref,
+        base_source_revision=job.base_source_revision,
+        peft_type=adapter_config.get("peft_type"),
+        lora_rank=adapter_config.get("r") if isinstance(adapter_config.get("r"), int) else None,
+        lora_alpha=adapter_config.get("lora_alpha") if isinstance(adapter_config.get("lora_alpha"), int) else None,
+        target_modules=json.dumps(sorted(targets)) if targets else None,
+        modules_to_save=json.dumps(adapter_config["modules_to_save"]) if adapter_config.get("modules_to_save") else None,
+        engine=engine,
+        engine_version=engine_version,
+        engine_image=engine_image,
+        metrics=json.dumps(metrics_obj) if metrics_obj is not None else None,
+        servable=not reasons,
+        unservable_reasons=json.dumps(reasons) if reasons else None,
+    )
+    db.add(artifact)
+    db.flush()
+
+    if reasons:
+        job.error = json.dumps({
+            "code": "unservable_adapter",
+            "param": None,
+            "message": "The trained adapter cannot be served: " + "; ".join(reasons),
+        })
+        _ft_transition(db, job, "failed",
+                       f"Adapter {artifact.id} is not servable: {'; '.join(reasons)}", level="error")
+    else:
+        suffix = f"{job.suffix}:" if job.suffix else ""
+        job.fine_tuned_model = f"ft:{job.base_model_id}:{suffix}{job.id.removeprefix('ftjob-')[:12]}"
+        stats = json.loads(job.training_file_stats) if job.training_file_stats else {}
+        if stats.get("total_tokens"):
+            job.trained_tokens = stats["total_tokens"] * job.n_epochs
+        _ft_transition(db, job, "succeeded",
+                       f"Training succeeded; adapter {artifact.id} is servable as {job.fine_tuned_model}")
+
+    db.query(FinetuneJobAssignment).filter(FinetuneJobAssignment.job_id == job.id).delete()
+    db.commit()
+    db.refresh(job)
+
+    return {
+        "status":                 job.status,
+        "job_id":                 job.id,
+        "artifact_id":            artifact.id,
+        "output_adapter_file_id": output_file.id,
+        "servable":               not reasons,
+        "unservable_reasons":     reasons,
+        "fine_tuned_model":       job.fine_tuned_model,
+    }
+
+
+@router.post("/finetune-report-failure")
+def report_finetune_failure(
+    req: FinetuneFailureReport,
+    ctx=Depends(get_worker_context),
+    db: Session = Depends(get_db),
+):
+    """Runner reports a training failure. Retryable failures requeue until
+    MAX_FINETUNE_ATTEMPTS (each retry restarts from step 0, and the event
+    log says so); non-retryable ones fail the job immediately."""
+    _api_key, org = ctx
+    _get_org_worker(db, org, req.worker_id)
+    job = _get_assigned_finetune_job(db, req.job_id, req.worker_id)
+
+    if job.status != "running":
+        db.query(FinetuneJobAssignment).filter(FinetuneJobAssignment.job_id == job.id).delete()
+        db.commit()
+        return {"status": job.status, "job_id": job.id, "attempts": job.attempts, "error": req.error}
+
+    outcome = requeue_or_fail_finetune_job(db, job, error=req.error, code=req.code,
+                                           retryable=req.retryable)
+
+    db.commit()
+    db.refresh(job)
+
+    return {
+        "status":   outcome,
+        "job_id":   job.id,
+        "attempts": job.attempts,
         "error":    req.error,
     }

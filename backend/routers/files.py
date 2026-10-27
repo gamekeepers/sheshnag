@@ -2,7 +2,10 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from database import get_db
-from models import File as FileModel, Batch, BatchAssignment, Worker, OrganizationMembership
+from models import (
+    File as FileModel, Batch, BatchAssignment, Worker, OrganizationMembership,
+    FinetuneJob, FinetuneJobAssignment,
+)
 from schemas import FileOut
 from auth import get_human_context, get_file_read_context
 import shutil, os
@@ -42,13 +45,23 @@ def upload_file(
 
 def _file_assigned_worker_org(db, file_id):
     """org_id of the worker currently assigned the batch that uses this file
-    as input, or None."""
+    as input — or the finetune job that uses it as training/validation
+    data — or None."""
+    assignment = None
     batch = db.query(Batch).filter(Batch.input_file_id == file_id).first()
-    if not batch:
-        return None
-    assignment = db.query(BatchAssignment).filter(
-        BatchAssignment.batch_id == batch.id
-    ).first()
+    if batch:
+        assignment = db.query(BatchAssignment).filter(
+            BatchAssignment.batch_id == batch.id
+        ).first()
+    if not assignment:
+        job_ids = [j.id for j in db.query(FinetuneJob).filter(
+            (FinetuneJob.training_file_id == file_id)
+            | (FinetuneJob.validation_file_id == file_id)
+        )]
+        if job_ids:
+            assignment = db.query(FinetuneJobAssignment).filter(
+                FinetuneJobAssignment.job_id.in_(job_ids)
+            ).first()
     if not assignment:
         return None
     worker = db.query(Worker).filter(Worker.id == assignment.worker_id).first()

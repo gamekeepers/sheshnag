@@ -69,6 +69,14 @@ def generate_usage_id():
     return f"usage-{uuid.uuid4().hex[:24]}"
 
 
+def generate_finetune_job_id():
+    return f"ftjob-{uuid.uuid4().hex[:24]}"
+
+
+def generate_finetune_artifact_id():
+    return f"ftart-{uuid.uuid4().hex[:24]}"
+
+
 def unix_now():
     return int(datetime.now(timezone.utc).timestamp())
 
@@ -708,6 +716,154 @@ class BatchAssignment(Base):
     org_id          = Column(String, nullable=False)
     worker_hostname = Column(String, nullable=True)
     assigned_at     = Column(Integer, default=unix_now)
+
+
+# ─── Finetuning ─────────────────────────────────────────────
+#
+# Three new tables, never new columns on batches (create_all() can add a
+# table to everyone's dev DB for free; it can never add a column). The
+# contract they implement — statuses, limits, which fields serving needs —
+# lives in finetune_contract.py and docs/finetune_contract.md.
+
+class FinetuneJob(Base):
+    """A LoRA finetuning job — the platform's own `/v1/fine_tuning/jobs`
+    object, shaped after OpenAI's `fine_tuning.job`.
+
+    Sibling to Batch, not a variant of it: hyperparameters in, an adapter
+    artifact out, minutes-to-hours of runtime, and its own state machine
+    (finetune_contract.VALID_TRANSITIONS).
+
+    The base model is *pinned at creation*: the catalogue id plus the
+    source ref and revision it resolved to at that moment. G1 showed vLLM
+    never checks an adapter's base, so the job — not the catalogue's
+    current state — is the record of what the adapter must be served on.
+    """
+    __tablename__ = "finetune_jobs"
+
+    id                   = Column(String, primary_key=True, default=generate_finetune_job_id)
+    user_id              = Column(String, nullable=False, index=True)
+    api_key_id           = Column(String, nullable=True)  # attribution for personal key usage
+
+    # Base model, pinned (see docstring).
+    base_model_id        = Column(String, nullable=False)  # ModelCatalog.id (source_type='huggingface')
+    base_source_ref      = Column(String, nullable=False)  # e.g. Qwen/Qwen2.5-0.5B-Instruct
+    base_source_revision = Column(String, nullable=True)   # HF revision as catalogued (should be a commit sha)
+
+    training_file_id     = Column(String, nullable=False)  # File.id, purpose="fine-tune"
+    validation_file_id   = Column(String, nullable=True)
+
+    method               = Column(String, nullable=False, default="supervised")
+    suffix               = Column(String, nullable=True)   # user label folded into fine_tuned_model
+    seed                 = Column(Integer, nullable=False, default=42)
+
+    # Training hyperparameters.
+    n_epochs             = Column(Integer, nullable=False)
+    batch_size           = Column(Integer, nullable=False)  # effective batch
+    learning_rate        = Column(Float, nullable=False)
+    max_seq_length       = Column(Integer, nullable=False)
+
+    # LoRA — the fields serving needs (G1). rank <= MAX_LORA_RANK is
+    # enforced at the API; target_modules is "all-linear" or a JSON list.
+    lora_rank            = Column(Integer, nullable=False)
+    lora_alpha           = Column(Integer, nullable=False)
+    lora_dropout         = Column(Float, nullable=False)
+    target_modules       = Column(String, nullable=False)
+
+    status               = Column(String, nullable=False, default="validating_files")
+    error                = Column(Text, nullable=True)   # JSON {code, message, param, details?}
+    attempts             = Column(Integer, nullable=False, default=0)
+
+    # Validator output: example/token counts and the length histogram (JSON).
+    training_file_stats  = Column(Text, nullable=True)
+    trained_tokens       = Column(Integer, nullable=True)  # set on success
+
+    # The adapter's serving name once succeeded — what a client passes as
+    # `model` to /v1/chat/completions. Mirrors OpenAI's field of the same name.
+    fine_tuned_model     = Column(String, nullable=True, unique=True)
+
+    created_at           = Column(Integer, nullable=False, default=unix_now)
+    queued_at            = Column(Integer, nullable=True)
+    started_at           = Column(Integer, nullable=True)
+    finished_at          = Column(Integer, nullable=True)
+
+
+class FinetuneJobAssignment(Base):
+    __tablename__ = "finetune_job_assignments"
+
+    job_id      = Column(String, primary_key=True)
+    worker_id   = Column(String, ForeignKey("workers.id"), nullable=False)
+    assigned_at = Column(Integer, default=unix_now)
+
+
+class FinetuneEvent(Base):
+    """Append-only job log — status changes, validation results and training
+    metrics. Mirrors OpenAI's `fine_tuning.job.event`.
+
+    Progress lives here rather than in columns on the job: a loss curve is
+    a series, and the runner's progress source (LLaMA-Factory's
+    trainer_log.jsonl, one JSON object per log step) maps onto one
+    `metrics` event per line. The integer id doubles as the pagination
+    cursor (exposed as "ftevent-<id>").
+    """
+    __tablename__ = "finetune_events"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    job_id     = Column(String, ForeignKey("finetune_jobs.id"), nullable=False, index=True)
+    created_at = Column(Integer, nullable=False, default=unix_now)
+    level      = Column(String, nullable=False, default="info")     # info | warn | error
+    type       = Column(String, nullable=False, default="message")  # message | metrics
+    message    = Column(String, nullable=False)
+    data       = Column(Text, nullable=True)  # JSON; for metrics: step, total_steps, epoch, loss, ...
+
+
+class FinetuneArtifact(Base):
+    """A file a job produced — the trained adapter (kind='adapter') or an
+    intermediate checkpoint (kind='checkpoint', the future resume point).
+
+    The field list is what G1 proved serving needs. Everything about the
+    adapter is read by the backend from the uploaded zip's
+    adapter_config.json, not taken on the worker's word; only the engine
+    fields are self-reported.
+    """
+    __tablename__ = "finetune_artifacts"
+
+    id                   = Column(String, primary_key=True, default=generate_finetune_artifact_id)
+    job_id               = Column(String, ForeignKey("finetune_jobs.id"), nullable=False, index=True)
+    kind                 = Column(String, nullable=False, default="adapter")  # adapter | checkpoint
+    file_id              = Column(String, nullable=False)  # File.id of the zip
+    step                 = Column(Integer, nullable=True)  # training step it was taken at
+    sha256               = Column(String, nullable=False)  # of adapter_model.safetensors
+    bytes                = Column(Integer, nullable=False)
+
+    # Base identity — serving must load exactly this (vLLM won't check).
+    base_model_id        = Column(String, nullable=False)
+    base_source_ref      = Column(String, nullable=False)
+    base_source_revision = Column(String, nullable=True)
+
+    # From adapter_config.json.
+    peft_type            = Column(String, nullable=True)   # must be LORA
+    lora_rank            = Column(Integer, nullable=True)  # r; serving needs --max-lora-rank >= this
+    lora_alpha           = Column(Integer, nullable=True)
+    target_modules       = Column(String, nullable=True)   # JSON list, *resolved* (never "all-linear")
+    modules_to_save      = Column(String, nullable=True)   # JSON list; non-null = unservable today
+
+    # Engine that produced it (self-reported by the worker, pinned per G2).
+    engine               = Column(String, nullable=True)
+    engine_version       = Column(String, nullable=True)
+    engine_image         = Column(String, nullable=True)
+
+    metrics              = Column(Text, nullable=True)  # JSON, e.g. final train_loss / eval_loss
+
+    # Verdict from finetune_contract.adapter_unservable_reasons().
+    servable             = Column(Boolean, nullable=False, default=False)
+    unservable_reasons   = Column(Text, nullable=True)  # JSON list
+
+    # Set when the adapter is registered as a catalogue entry under its
+    # base model (AC's catalogue rework). Reserved now so that step is a
+    # write, not a migration.
+    catalog_entry_id     = Column(String, nullable=True)
+
+    created_at           = Column(Integer, nullable=False, default=unix_now)
 
 
 # ─── Password Reset ────────────────────────────────────────
