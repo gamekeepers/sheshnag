@@ -82,6 +82,9 @@ def test_to_progress_maps_llamafactory_fields():
     assert p == {"current_step": 5, "total_steps": 29, "current_epoch": 0.17,
                  "loss": 2.39, "learning_rate": 1.7e-4}
     assert to_progress({"eval_loss": 2.3}) is None
+    # The end-of-run summary repeats the last step with no loss: not progress.
+    assert to_progress({"current_steps": 29, "total_steps": 29, "epoch": 1.0, "percentage": 100.0}) is None
+    assert to_progress({"current_steps": 29, "total_steps": 29, "eval_loss": 2.29})["eval_loss"] == 2.29
 
 
 # ─── Failure classification ────────────────────────────────

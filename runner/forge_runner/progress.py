@@ -43,8 +43,11 @@ class TrainerLogTail:
 
 def to_progress(entry: dict) -> Optional[dict]:
     """trainer_log.jsonl entry -> /workers/finetune-progress fields, or None
-    for entries without a step position."""
+    for entries without a step position or without a loss (the end-of-run
+    summary line repeats the last step and carries neither loss)."""
     if "current_steps" not in entry or "total_steps" not in entry:
+        return None
+    if not any(isinstance(entry.get(k), (int, float)) for k in ("loss", "eval_loss")):
         return None
     progress = {
         "current_step": int(entry["current_steps"]),

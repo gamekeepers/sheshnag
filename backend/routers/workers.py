@@ -553,6 +553,8 @@ def report_finetune_progress(
 
     metrics = req.model_dump(exclude={"job_id", "worker_id"}, exclude_none=True)
     loss = f", loss={req.loss:.4f}" if req.loss is not None else ""
+    if req.eval_loss is not None:
+        loss += f", eval_loss={req.eval_loss:.4f}"
     emit_event(db, job.id, f"Step {req.current_step}/{req.total_steps}{loss}",
                type="metrics", data=metrics)
     db.commit()
