@@ -82,7 +82,7 @@ in a separate terminal first.
 
 | Area | Command |
 |---|---|
-| Backend | `cd backend && python -m pytest tests/ -q` — 42 tests, in-memory SQLite |
+| Backend | `cd backend && python -m pytest tests/ -q` — 100 tests, in-memory SQLite |
 | Daemon | `cd daemon && python -m pytest tests/ -q` — needs `pip install -e ".[dev]"` |
 | Frontend | `npm run lint` — no test framework yet |
 
@@ -136,3 +136,10 @@ runtime), matched to workers by digest. Identity is curated; availability is
 derived from worker registrations. There is deliberately **no path to run an
 uncatalogued model**. See [`docs/model_catalogue.md`](docs/model_catalogue.md)
 before changing anything in this area.
+
+## Finetuning
+
+A finetuning job is a contract between `/v1/fine_tuning/*` and the runner
+(`/workers/finetune-*`): statuses, LoRA limits that serving imposes, and the
+artifact fields serving needs. Read [`docs/finetune_contract.md`](docs/finetune_contract.md)
+before changing it; constants live in `backend/finetune_contract.py`.
