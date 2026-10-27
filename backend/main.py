@@ -7,7 +7,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
-from routers import files, batches, workers, auth, users, organizations, models as models_router
+from routers import files, batches, workers, auth, users, organizations, models as models_router, finetune
 from models import User, Organization, OrganizationMembership
 from auth import hash_password
 from migrations import run_startup_migrations
@@ -42,6 +42,7 @@ app.include_router(batches.router,   prefix="/v1",      tags=["Batches"])
 app.include_router(users.router,     prefix="/v1",      tags=["Users"])
 app.include_router(organizations.router, prefix="/v1",  tags=["Organizations"])
 app.include_router(models_router.router, prefix="/v1",  tags=["Models"])
+app.include_router(finetune.router,  prefix="/v1",      tags=["Finetuning"])
 app.include_router(workers.router,   prefix="/workers",  tags=["Workers"])
 
 

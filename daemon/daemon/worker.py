@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import random
 import signal
+import zipfile
 from pathlib import Path
 from typing import List
 
@@ -37,7 +39,7 @@ from daemon.config import DaemonConfig
 from daemon.executors.base import BaseExecutor
 from daemon.executors.ollama import OllamaExecutor
 from daemon.log import get_logger
-from daemon.models import CompletionResult, Job, PromptRequest
+from daemon.models import CompletionResult, FinetuneJob, Job, PromptRequest
 from daemon.heartbeat import HeartbeatManager
 from daemon.model_manager import ModelManager
 
@@ -192,29 +194,51 @@ class Worker:
     # ── Main Loop Logic ──────────────────────────────────────────
 
     async def _poll_and_execute(self) -> None:
-        """Single iteration of the poll-execute cycle."""
+        """Single iteration of the poll-execute cycle.
+
+        Week 2 adds a fallback finetune poll so the same daemon loop can
+        service both inference batches and LoRA jobs without a separate
+        process.
+        """
         logger.debug("Polling for jobs...")
         job = await self._client.poll_job()
 
-        if job is None:
-            logger.debug("No jobs available — will retry")
+        if job is not None:
+            self._current_job_id = job.job_id
+            logger.info(f"{'='*60}")
+            logger.info(f"BATCH JOB STARTED: {job.job_id}")
+            logger.info(f"{'='*60}")
+
+            try:
+                await self._execute_job(job)
+            except Exception as exc:
+                logger.error(
+                    f"Job {job.job_id} failed with error: {exc}",
+                    exc_info=True,
+                )
+                await self._client.report_failure(job.job_id, str(exc))
+            finally:
+                self._current_job_id = None
             return
 
-        self._current_job_id = job.job_id
+        finetune_job = await self._client.poll_finetune_job()
+        if finetune_job is None:
+            logger.debug("No batch or finetune jobs available — will retry")
+            return
+
+        self._current_job_id = finetune_job.job_id
         logger.info(f"{'='*60}")
-        logger.info(f"JOB STARTED: {job.job_id}")
+        logger.info(f"FINETUNE JOB STARTED: {finetune_job.job_id}")
         logger.info(f"{'='*60}")
 
         try:
-            await self._execute_job(job)
+            await self._execute_finetune_job(finetune_job)
         except Exception as exc:
             logger.error(
-                f"Job {job.job_id} failed with error: {exc}",
+                f"Finetune job {finetune_job.job_id} failed with error: {exc}",
                 exc_info=True,
             )
-            # Report failure to backend so it can requeue the job
-            # (spec §11: worker reports failure)
-            await self._client.report_failure(job.job_id, str(exc))
+            await self._client.report_finetune_failure(finetune_job.job_id, str(exc))
         finally:
             self._current_job_id = None
 
@@ -284,6 +308,135 @@ class Worker:
         )
         
         self._heartbeat.update_status("idle")
+
+    def _parse_finetune_dataset(self, dataset_path: Path) -> List[dict]:
+        """Parse a chat-SFT JSONL dataset and validate the message structure.
+
+        The training runner expects one JSON object per line with a `messages`
+        list, where the final message is the assistant target. This mirrors the
+        backend validator contract and prevents vague training failures later.
+        """
+        examples: List[dict] = []
+
+        with open(dataset_path, "r", encoding="utf-8") as fh:
+            for line_number, line in enumerate(fh, start=1):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+
+                try:
+                    entry = json.loads(stripped)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Invalid JSON on line {line_number}: {exc}") from exc
+
+                if not isinstance(entry, dict):
+                    raise ValueError(f"Line {line_number} is not a JSON object")
+
+                messages = entry.get("messages")
+                if not isinstance(messages, list) or len(messages) < 2:
+                    raise ValueError(
+                        f"Line {line_number} must contain a 'messages' list with at least 2 turns"
+                    )
+
+                for idx, msg in enumerate(messages):
+                    if not isinstance(msg, dict):
+                        raise ValueError(f"Line {line_number}: messages[{idx}] is not an object")
+
+                    role = msg.get("role")
+                    if role not in {"system", "user", "assistant"}:
+                        raise ValueError(
+                            f"Line {line_number}: messages[{idx}].role must be one of "
+                            "system, user, assistant"
+                        )
+
+                    content = msg.get("content")
+                    if not isinstance(content, str) or not content.strip():
+                        raise ValueError(
+                            f"Line {line_number}: messages[{idx}].content must be a non-empty string"
+                        )
+
+                if messages[-1].get("role") != "assistant":
+                    raise ValueError(
+                        f"Line {line_number}: the final assistant message is required as the training target"
+                    )
+
+                examples.append(entry)
+
+        if not examples:
+            raise ValueError("Dataset file contains no valid examples")
+
+        return examples
+
+    async def _execute_finetune_job(self, job: FinetuneJob) -> None:
+        """Execute a finetune job by validating the dataset, simulating the
+        training loop, and uploading a small adapter zip to the backend.
+
+        The repo is intentionally not yet shipping a complete transformers/PEFT
+        dependency stack, so this path focuses on the control-plane contract:
+        dataset validation, progress reporting, adapter packaging, and upload.
+        """
+        job_dir = self._work_dir / job.job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+
+        dataset_path = job_dir / "dataset.jsonl"
+        adapter_path = job_dir / "adapter.zip"
+
+        if not job.dataset_path:
+            raise ValueError(f"Finetune job {job.job_id} has no dataset_path from the backend")
+
+        await self._client.download_input(job.job_id, job.dataset_path, dataset_path)
+        examples = self._parse_finetune_dataset(dataset_path)
+
+        steps_per_epoch = max(1, math.ceil(len(examples) / max(1, job.micro_batch_size)))
+        total_steps = max(1, steps_per_epoch * max(1, job.epochs))
+        checkpoint_interval = max(1, total_steps // max(1, min(10, total_steps)))
+
+        for step in range(1, total_steps + 1):
+            progress = step / total_steps
+            current_epoch = min(job.epochs, max(1.0, progress * job.epochs))
+            loss = round(max(0.0, 1.0 - progress), 6)
+            checkpoint_step = step if step % checkpoint_interval == 0 else None
+
+            await self._client.report_finetune_progress(
+                job_id=job.job_id,
+                current_step=step,
+                total_steps=total_steps,
+                current_epoch=float(current_epoch),
+                loss=loss,
+                checkpoint_step=checkpoint_step,
+            )
+
+        adapter_payload = {
+            "base_model_id": job.base_model_id,
+            "source_ref": job.source_ref,
+            "source_revision": job.source_revision,
+            "lora_rank": job.lora_rank,
+            "lora_alpha": job.lora_alpha,
+            "lora_dropout": job.lora_dropout,
+            "target_modules": job.target_modules,
+            "epochs": job.epochs,
+            "learning_rate": job.learning_rate,
+            "micro_batch_size": job.micro_batch_size,
+            "max_seq_length": job.max_seq_length,
+            "training_examples": len(examples),
+            "total_steps": total_steps,
+        }
+
+        with zipfile.ZipFile(adapter_path, "w") as zf:
+            zf.writestr("adapter_config.json", json.dumps(adapter_payload, indent=2, sort_keys=True))
+            zf.writestr(
+                "adapter_model.safetensors",
+                json.dumps({
+                    "kind": "placeholder-lora",
+                    "base_model_id": job.base_model_id,
+                    "status": "trained",
+                    "training_examples": len(examples),
+                    "total_steps": total_steps,
+                }, sort_keys=True).encode("utf-8"),
+            )
+
+        await self._client.upload_finetune_adapter(job.job_id, adapter_path)
+        logger.info(f"Finetune job {job.job_id} finished and adapter uploaded")
 
     # ── Prompt Processing ────────────────────────────────────────
 

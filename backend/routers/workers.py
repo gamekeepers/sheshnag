@@ -4,16 +4,22 @@ from database import get_db
 from models import (
     Batch, BatchAssignment, File as FileModel, Worker,
     WorkerGpu, WorkerRuntime, RuntimeModel, unix_now,
+    FinetuneJob, FinetuneJobAssignment,
 )
 from schemas import (
     ModelDownloadReport, ProgressReport,
     WorkerHeartbeatRequest, WorkerRegisterRequest,
+    FinetuneProgressReport,
 )
 from pydantic import BaseModel
 from typing import Optional
 from auth import get_worker_context
 from provider_picker import picker, get_catalog_entry
-from sweeper import MAX_BATCH_ATTEMPTS, requeue_or_fail_batch
+from finetune_picker import finetune_picker, get_base_model_entry
+from sweeper import (
+    MAX_BATCH_ATTEMPTS, requeue_or_fail_batch,
+    MAX_FINETUNE_ATTEMPTS, requeue_or_fail_finetune_job,
+)
 import shutil, os, logging
 
 logger = logging.getLogger(__name__)
@@ -79,6 +85,44 @@ def _get_assigned_batch(db: Session, job_id: str, worker_id: str) -> Batch:
             detail="Batch is not assigned to this worker",
         )
     return batch
+
+
+# ─── Finetune job state machine (separate from batches — see models.FinetuneJob) ───
+
+VALID_FT_TRANSITIONS = {
+    "validating":  ["validated", "failed"],
+    "validated":   ["in_progress"],
+    "in_progress": ["completed", "failed", "validated"],  # "validated" = requeue
+    "completed":   [],
+    "failed":      [],
+}
+
+
+def validate_ft_transition(current: str, target: str):
+    allowed = VALID_FT_TRANSITIONS.get(current, [])
+    if target not in allowed:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot transition finetune job from '{current}' to '{target}'. "
+                   f"Allowed: {allowed or 'none (terminal state)'}",
+        )
+
+
+def _get_assigned_finetune_job(db: Session, job_id: str, worker_id: str) -> FinetuneJob:
+    """Resolve a finetune job currently assigned to this worker, else 404/403."""
+    job = db.query(FinetuneJob).filter(FinetuneJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Finetune job not found")
+
+    assignment = db.query(FinetuneJobAssignment).filter(
+        FinetuneJobAssignment.job_id == job_id,
+    ).first()
+    if not assignment or assignment.worker_id != worker_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Finetune job is not assigned to this worker",
+        )
+    return job
 
 
 # ─── Worker Registration & Heartbeat ───────────────────────
@@ -409,5 +453,191 @@ def report_failure(
         "status":   outcome,
         "batch_id": batch.id,
         "attempts": batch.attempts,
+        "error":    req.error,
+    }
+
+
+# ─── Finetune Job Polling & Results ────────────────────────
+#
+# Deliberately separate endpoints from the batch ones above rather than
+# branching /workers/poll — training jobs have a different queue, a
+# different fit function (finetune_picker: VRAM headroom for training,
+# not "already loaded"), and a different payload shape (hyperparameters,
+# not a runtime model id). Keeping them apart means the well-exercised
+# batch poll path is untouched by this vertical.
+
+class FinetunePollRequest(BaseModel):
+    worker_id: str
+
+
+class FinetuneFailureReport(BaseModel):
+    job_id: str
+    worker_id: str
+    error: Optional[str] = None
+
+
+@router.post("/finetune-poll")
+def poll_finetune_job(
+    req: FinetunePollRequest,
+    ctx=Depends(get_worker_context),
+    db: Session = Depends(get_db),
+):
+    _api_key, org = ctx
+    worker = _get_org_worker(db, org, req.worker_id)
+
+    if worker.status == "draining":
+        return {"job": None}
+
+    available_jobs = (
+        db.query(FinetuneJob)
+        .filter(FinetuneJob.status == "validated")
+        .order_by(FinetuneJob.created_at)
+        .all()
+    )
+    if not available_jobs:
+        return {"job": None}
+
+    job = finetune_picker.find_best_job(db, worker, available_jobs)
+    if not job:
+        return {"job": None}
+
+    validate_ft_transition(job.status, "in_progress")
+    job.status = "in_progress"
+    job.started_at = unix_now()
+
+    assignment = FinetuneJobAssignment(
+        job_id=job.id,
+        worker_id=req.worker_id,
+        assigned_at=unix_now(),
+    )
+    db.add(assignment)
+    db.commit()
+    db.refresh(job)
+
+    entry = get_base_model_entry(db, job.base_model_id)
+
+    return {
+        "job": {
+            "job_id":                    job.id,
+            "dataset_file_id":           job.dataset_file_id,
+            "dataset_path":              f"/v1/files/{job.dataset_file_id}/content",
+            "base_model_id":             job.base_model_id,
+            "source_ref":                entry.source_ref if entry else None,
+            "source_revision":           entry.source_revision if entry else None,
+            "lora_rank":                 job.lora_rank,
+            "lora_alpha":                job.lora_alpha,
+            "lora_dropout":              job.lora_dropout,
+            "target_modules":            job.target_modules,
+            "epochs":                    job.epochs,
+            "learning_rate":             job.learning_rate,
+            "micro_batch_size":          job.micro_batch_size,
+            "max_seq_length":            job.max_seq_length,
+            # Non-null only if a prior attempt checkpointed — today's
+            # daemon doesn't act on this yet (see sweeper.py docstring),
+            # the field exists so a checkpoint-aware executor doesn't
+            # need a schema change to start using it.
+            "resume_from_checkpoint_step": job.checkpoint_step,
+        }
+    }
+
+
+@router.post("/finetune-progress")
+def report_finetune_progress(
+    req: FinetuneProgressReport,
+    ctx=Depends(get_worker_context),
+    db: Session = Depends(get_db),
+):
+    """Live training progress from a worker (every N steps) — the
+    finetune-job analogue of /workers/progress."""
+    _api_key, org = ctx
+    _get_org_worker(db, org, req.worker_id)
+    job = _get_assigned_finetune_job(db, req.job_id, req.worker_id)
+
+    job.current_step = req.current_step
+    job.total_steps = req.total_steps
+    job.current_epoch = req.current_epoch
+    job.latest_loss = req.loss
+    if req.checkpoint_step is not None:
+        job.checkpoint_step = req.checkpoint_step
+    db.commit()
+
+    return {"status": "ok", "job_id": job.id}
+
+
+@router.post("/finetune-upload-adapter")
+def upload_finetune_adapter(
+    job_id: str = Form(...),
+    worker_id: str = Form(...),
+    file: UploadFile = File(...),
+    ctx=Depends(get_worker_context),
+    db: Session = Depends(get_db),
+):
+    """Upload the trained LoRA adapter — the finetune-job analogue of
+    /workers/upload-results. Adapter is a small zip (adapter_config.json +
+    adapter_model.safetensors), stored the same way batch outputs are."""
+    _api_key, org = ctx
+    _get_org_worker(db, org, worker_id)
+    job = _get_assigned_finetune_job(db, job_id, worker_id)
+
+    validate_ft_transition(job.status, "completed")
+
+    output_file = FileModel(
+        user_id=job.user_id,
+        filename=f"{job.id}_adapter.zip",
+        purpose="finetune_adapter",
+    )
+    db.add(output_file)
+    db.flush()
+
+    FILES_DIR = "files"
+    os.makedirs(FILES_DIR, exist_ok=True)
+    filepath = f"{FILES_DIR}/{output_file.id}.zip"
+    with open(filepath, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    output_file.filepath = filepath
+    output_file.bytes = os.path.getsize(filepath)
+
+    job.output_adapter_file_id = output_file.id
+    job.status = "completed"
+    job.completed_at = unix_now()
+
+    db.commit()
+    db.refresh(job)
+
+    return {
+        "status":                 "completed",
+        "job_id":                 job.id,
+        "output_adapter_file_id": output_file.id,
+    }
+
+
+@router.post("/finetune-report-failure")
+def report_finetune_failure(
+    req: FinetuneFailureReport,
+    ctx=Depends(get_worker_context),
+    db: Session = Depends(get_db),
+):
+    """Worker reports a training failure — requeue until MAX_FINETUNE_ATTEMPTS,
+    the finetune-job analogue of /workers/report-failure."""
+    _api_key, org = ctx
+    _get_org_worker(db, org, req.worker_id)
+    job = _get_assigned_finetune_job(db, req.job_id, req.worker_id)
+
+    target = (
+        "failed"
+        if (job.attempts or 0) + 1 >= MAX_FINETUNE_ATTEMPTS
+        else "validated"
+    )
+    validate_ft_transition(job.status, target)
+    outcome = requeue_or_fail_finetune_job(db, job, error=req.error)
+
+    db.commit()
+    db.refresh(job)
+
+    return {
+        "status":   outcome,
+        "job_id":   job.id,
+        "attempts": job.attempts,
         "error":    req.error,
     }

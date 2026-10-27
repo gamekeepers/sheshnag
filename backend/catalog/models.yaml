@@ -206,3 +206,42 @@
   source_revision: null
   homepage_url: https://ollama.com/library/nomic-embed-text
   enabled: true
+# ─── Finetune base models (HF-sourced, raw weights for a training loop —
+# not pre-quantized serving artifacts like the ollama-library entries
+# above). vram_gb here is the *inference* figure per the ModelCatalog
+# convention; finetune_picker.py applies its own training multiplier on
+# top rather than duplicating a second number here. Sized for a 4GB card
+# under QLoRA — see project memory on the GPU constraint this catalogue
+# was chosen against.
+- id: qwen2-5-0-5b-instruct-hf
+  display_name: Qwen2.5-0.5B-Instruct
+  runtime: transformers
+  runtime_model_id: Qwen/Qwen2.5-0.5B-Instruct
+  digest: null
+  quantization: null
+  parameter_size: 0.5B
+  context_length: 32768
+  vram_gb: 1.5
+  size_gb: 1.0
+  task_type: chat
+  source_type: huggingface
+  source_ref: Qwen/Qwen2.5-0.5B-Instruct
+  source_revision: main
+  homepage_url: https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct
+  enabled: true
+- id: tinyllama-1-1b-chat-hf
+  display_name: TinyLlama-1.1B-Chat
+  runtime: transformers
+  runtime_model_id: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+  digest: null
+  quantization: null
+  parameter_size: 1.1B
+  context_length: 2048
+  vram_gb: 2.2
+  size_gb: 2.2
+  task_type: chat
+  source_type: huggingface
+  source_ref: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+  source_revision: main
+  homepage_url: https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0
+  enabled: true

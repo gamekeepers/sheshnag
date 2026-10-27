@@ -264,6 +264,93 @@ class ApiKeyUpdate(BaseModel):
     status: Optional[Literal["active", "revoked"]] = None  # validated at schema level
 
 
+# ─── Finetuning schemas ─────────────────────────────────────
+
+class FinetuneJobCreate(BaseModel):
+    dataset_file_id: str
+    base_model_id: str
+    lora_rank: int = 8
+    lora_alpha: int = 16
+    lora_dropout: float = 0.05
+    target_modules: Optional[str] = None  # comma-separated; None = executor default
+    epochs: int = 3
+    learning_rate: float = 2e-4
+    micro_batch_size: int = 1
+    max_seq_length: int = 512
+
+
+class FinetuneProgress(BaseModel):
+    current_step: Optional[int] = None
+    total_steps: Optional[int] = None
+    current_epoch: Optional[float] = None
+    latest_loss: Optional[float] = None
+    checkpoint_step: Optional[int] = None
+
+
+class FinetuneJobOut(BaseModel):
+    id: str
+    object: str = "finetune_job"
+    dataset_file_id: str
+    base_model_id: str
+    lora_rank: int
+    lora_alpha: int
+    lora_dropout: float
+    target_modules: Optional[str] = None
+    epochs: int
+    learning_rate: float
+    micro_batch_size: int
+    max_seq_length: int
+    status: str
+    error_details: Optional[str] = None
+    output_adapter_file_id: Optional[str] = None
+    progress: FinetuneProgress = FinetuneProgress()
+    created_at: int
+    requested_at: Optional[int] = None
+    started_at: Optional[int] = None
+    completed_at: Optional[int] = None
+
+    @classmethod
+    def from_job(cls, job):
+        return cls(
+            id=job.id,
+            dataset_file_id=job.dataset_file_id,
+            base_model_id=job.base_model_id,
+            lora_rank=job.lora_rank,
+            lora_alpha=job.lora_alpha,
+            lora_dropout=job.lora_dropout,
+            target_modules=job.target_modules,
+            epochs=job.epochs,
+            learning_rate=job.learning_rate,
+            micro_batch_size=job.micro_batch_size,
+            max_seq_length=job.max_seq_length,
+            status=job.status,
+            error_details=job.error_details,
+            output_adapter_file_id=job.output_adapter_file_id,
+            progress=FinetuneProgress(
+                current_step=job.current_step,
+                total_steps=job.total_steps,
+                current_epoch=job.current_epoch,
+                latest_loss=job.latest_loss,
+                checkpoint_step=job.checkpoint_step,
+            ),
+            created_at=job.created_at,
+            requested_at=job.requested_at,
+            started_at=job.started_at,
+            completed_at=job.completed_at,
+        )
+
+
+class FinetuneProgressReport(BaseModel):
+    """Live training progress from a worker (sent every N steps)."""
+    job_id: str
+    worker_id: str
+    current_step: int
+    total_steps: int
+    current_epoch: float
+    loss: float
+    checkpoint_step: Optional[int] = None
+
+
 class ApiKeyOut(BaseModel):
     id: str
     name: Optional[str] = None

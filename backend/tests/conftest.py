@@ -20,6 +20,8 @@ from models import (
     File,
     Batch,
     BatchAssignment,
+    FinetuneJob,
+    FinetuneJobAssignment,
     PasswordResetToken,
 )
 

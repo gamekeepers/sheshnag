@@ -27,7 +27,7 @@ from typing import Optional
 import httpx
 
 from daemon.log import get_logger
-from daemon.models import Job, WorkerInfo
+from daemon.models import FinetuneJob, Job, WorkerInfo
 
 logger = get_logger(__name__)
 
@@ -171,7 +171,7 @@ class BackendClient:
 
     async def poll_job(self) -> Optional[Job]:
         """
-        Ask the backend for an available job.
+        Ask the backend for an available batch job.
 
         Uses a shorter timeout than other calls since polling is
         lightweight — if it hangs, we'd rather fail fast and retry
@@ -191,22 +191,45 @@ class BackendClient:
             timeout=httpx.Timeout(_POLL_TIMEOUT),
         )
 
-        # 204 No Content = no jobs available
         if response.status_code == 204:
             return None
 
         response.raise_for_status()
         data = response.json()
-
-        # Handle both {"job": {...}} and {"job": null} formats
         job_data = data.get("job")
         if job_data is None:
             return None
 
         job = Job(**job_data)
         logger.info(
-            f"Received job assignment: {job.job_id} "
+            f"Received batch assignment: {job.job_id} "
             f"(input_file_id: {job.input_file_id})"
+        )
+        return job
+
+    async def poll_finetune_job(self) -> Optional[FinetuneJob]:
+        """Poll for a finetune job from the backend worker queue."""
+        client = self._get_client()
+
+        response = await client.post(
+            "/workers/finetune-poll",
+            json={"worker_id": self._worker_id},
+            timeout=httpx.Timeout(_POLL_TIMEOUT),
+        )
+
+        if response.status_code == 204:
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+        job_data = data.get("job")
+        if job_data is None:
+            return None
+
+        job = FinetuneJob(**job_data)
+        logger.info(
+            f"Received finetune assignment: {job.job_id} "
+            f"(base_model_id: {job.base_model_id})"
         )
         return job
 
@@ -337,8 +360,78 @@ class BackendClient:
             response.raise_for_status()
             logger.info(f"Reported failure for job {job_id}")
         except Exception as exc:
-            # Best-effort — don't crash if failure reporting itself fails
             logger.warning(f"Failed to report failure for job {job_id}: {exc}")
+
+    async def report_finetune_progress(
+        self,
+        job_id: str,
+        current_step: int,
+        total_steps: int,
+        current_epoch: float,
+        loss: float | None = None,
+        checkpoint_step: int | None = None,
+    ) -> None:
+        """Report trainer progress for a finetune job."""
+        client = self._get_client()
+        payload = {
+            "job_id": job_id,
+            "worker_id": self._worker_id,
+            "current_step": current_step,
+            "total_steps": total_steps,
+            "current_epoch": current_epoch,
+            "loss": loss,
+            "checkpoint_step": checkpoint_step,
+        }
+        try:
+            response = await client.post(
+                "/workers/finetune-progress",
+                json=payload,
+                timeout=httpx.Timeout(10.0),
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            logger.debug(f"Finetune progress report failed (non-fatal): {exc}")
+
+    async def upload_finetune_adapter(
+        self,
+        job_id: str,
+        adapter_path: str | Path,
+    ) -> None:
+        """Upload a trained adapter zip for a finetune job."""
+        client = self._get_client()
+        adapter = Path(adapter_path)
+
+        with open(adapter, "rb") as fh:
+            response = await client.post(
+                "/workers/finetune-upload-adapter",
+                data={
+                    "job_id": job_id,
+                    "worker_id": self._worker_id,
+                },
+                files={"file": (adapter.name, fh, "application/zip")},
+                timeout=httpx.Timeout(120.0),
+            )
+
+        response.raise_for_status()
+        logger.info(f"Uploaded adapter for finetune job {job_id} ({adapter.stat().st_size:,} bytes)")
+
+    async def report_finetune_failure(self, job_id: str, error: str) -> None:
+        """Report a finetune job failure to the backend."""
+        client = self._get_client()
+        try:
+            response = await client.post(
+                "/workers/finetune-report-failure",
+                json={
+                    "job_id": job_id,
+                    "worker_id": self._worker_id,
+                    "error": error[:2000],
+                },
+                timeout=httpx.Timeout(_POLL_TIMEOUT),
+            )
+            response.raise_for_status()
+            logger.info(f"Reported finetune failure for job {job_id}")
+        except Exception as exc:
+            logger.warning(f"Failed to report finetune failure for job {job_id}: {exc}")
 
     # ── Heartbeat and Progress ───────────────────────────────────
     

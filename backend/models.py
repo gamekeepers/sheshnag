@@ -56,6 +56,10 @@ def generate_catalog_id():
     return f"mdl-{uuid.uuid4().hex[:24]}"
 
 
+def generate_finetune_job_id():
+    return f"ftjob-{uuid.uuid4().hex[:24]}"
+
+
 def unix_now():
     return int(datetime.now(timezone.utc).timestamp())
 
@@ -421,6 +425,79 @@ class BatchAssignment(Base):
     __tablename__ = "batch_assignments"
 
     batch_id    = Column(String, primary_key=True)
+    worker_id   = Column(String, ForeignKey("workers.id"), nullable=False)
+    assigned_at = Column(Integer, default=unix_now)
+
+
+# ─── Finetuning Jobs ────────────────────────────────────────
+
+class FinetuneJob(Base):
+    """A LoRA finetuning job — QLoRA training against a curated HF base
+    model, sibling to Batch rather than a variant of it. A training job
+    has a fundamentally different shape (hyperparameters in, an adapter
+    artifact out, a run that lasts minutes-to-hours instead of seconds)
+    and its own state machine, so it does not reuse Batch's columns or
+    VALID_TRANSITIONS.
+
+    Scheduling is global like batches (see provider_picker /
+    finetune_picker): any online worker that fits the base model's VRAM
+    requirement can claim any org's job — the platform does not scope
+    job assignment by org, only by hardware fit.
+    """
+    __tablename__ = "finetune_jobs"
+
+    id                 = Column(String, primary_key=True, default=generate_finetune_job_id)
+    user_id            = Column(String, nullable=False)
+    api_key_id         = Column(String, nullable=True)  # attribution for personal key usage
+
+    dataset_file_id    = Column(String, nullable=False)  # File.id, purpose="finetune_dataset"
+    base_model_id      = Column(String, nullable=False)  # ModelCatalog.id (source_type='huggingface')
+
+    # LoRA hyperparameters (QLoRA — 4-bit base, adapter trained in fp16/bf16).
+    lora_rank          = Column(Integer, default=8)
+    lora_alpha         = Column(Integer, default=16)
+    lora_dropout       = Column(Float, default=0.05)
+    target_modules     = Column(String, nullable=True)  # comma-separated; null = executor default for the arch
+
+    # Training hyperparameters.
+    epochs             = Column(Integer, default=3)
+    learning_rate      = Column(Float, default=2e-4)
+    micro_batch_size   = Column(Integer, default=1)  # per-step batch size; VRAM is the constraint, not throughput
+    max_seq_length     = Column(Integer, default=512)
+
+    # validating -> validated -> in_progress -> completed | failed
+    # (mirrors the Batch vocabulary so the dashboard can share status UI,
+    # but is a separate machine — see VALID_FT_TRANSITIONS in the router.)
+    status             = Column(String, default="validating")
+    error_details      = Column(String, nullable=True)
+    attempts           = Column(Integer, default=0)  # execution attempts, same requeue idea as Batch.attempts
+
+    # Live progress, updated by the worker during training (heartbeat-style
+    # push from the daemon, not polled) — this is what a loss-curve UI reads.
+    current_step       = Column(Integer, nullable=True)
+    total_steps        = Column(Integer, nullable=True)
+    current_epoch      = Column(Float, nullable=True)
+    latest_loss        = Column(Float, nullable=True)
+
+    # Last step successfully checkpointed to disk on the worker — the
+    # resume point if the job gets requeued after a disconnect. NULL means
+    # no checkpoint exists yet (a requeue restarts from step 0, same as
+    # batches today — checkpoint-aware resume is a later phase, this column
+    # just reserves the column so resume doesn't need a migration later).
+    checkpoint_step    = Column(Integer, nullable=True)
+
+    output_adapter_file_id = Column(String, nullable=True)  # File.id of the trained adapter
+
+    created_at         = Column(Integer, default=unix_now)
+    requested_at        = Column(Integer, nullable=True)  # set when validation passes (training becomes schedulable)
+    started_at          = Column(Integer, nullable=True)  # set when a worker claims the job
+    completed_at         = Column(Integer, nullable=True)
+
+
+class FinetuneJobAssignment(Base):
+    __tablename__ = "finetune_job_assignments"
+
+    job_id      = Column(String, primary_key=True)
     worker_id   = Column(String, ForeignKey("workers.id"), nullable=False)
     assigned_at = Column(Integer, default=unix_now)
 
