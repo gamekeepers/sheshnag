@@ -120,32 +120,6 @@ class Job(BaseModel):
     temperature: float = 0.7
 
 
-class FinetuneJob(BaseModel):
-    """Week 2 finetune job contract used by the daemon.
-
-    The backend sends the dataset file path, the base model id, and the
-    training hyperparameters. The daemon then downloads the dataset,
-    runs the actual training loop, and uploads the finished adapter zip.
-    """
-
-    job_id: str
-    dataset_file_id: Optional[str] = None
-    dataset_path: Optional[str] = None
-    base_model_id: str = ""
-    source_ref: Optional[str] = None
-    source_revision: Optional[str] = None
-    lora_rank: int = 8
-    lora_alpha: int = 16
-    lora_dropout: float = 0.05
-    target_modules: Optional[str] = None
-    epochs: int = 3
-    learning_rate: float = 2e-4
-    micro_batch_size: int = 1
-    max_seq_length: int = 512
-    resume_from_checkpoint_step: Optional[int] = None
-    status: str = "validated"
-
-
 # ── Poll Response ────────────────────────────────────────────────
 
 
