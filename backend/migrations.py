@@ -131,6 +131,16 @@ MIGRATIONS = [
     # Bounds the sweeper's retries of an ingestion that keeps raising.
     _Migration("batches.usage_ingestion_attempts",
                "batches", "usage_ingestion_attempts", Integer()),
+    # Context-aware VRAM fit (#164). NULL falls back to the scalar vram_gb,
+    # the default alpha, and the smallest context respectively.
+    _Migration("model_catalog.weights_gb",
+               "model_catalog", "weights_gb", Float()),
+    _Migration("model_catalog.kv_bytes_per_token",
+               "model_catalog", "kv_bytes_per_token", Integer()),
+    _Migration("worker_runtimes.kv_alpha",
+               "worker_runtimes", "kv_alpha", Float()),
+    _Migration("batches.context_tokens",
+               "batches", "context_tokens", Integer()),
 ]
 
 

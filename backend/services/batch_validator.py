@@ -62,6 +62,8 @@ class ValidationResult:
     model: Optional[str] = None
     # Runtime capabilities the rows ask for; persisted on the batch.
     required_capabilities: List[str] = field(default_factory=list)
+    # Context the batch is fitted and run at (#164); persisted on the batch.
+    context_tokens: Optional[int] = None
     total_lines: int = 0
     errors: List[ValidationError] = field(default_factory=list)
     total_error_count: int = 0       # counts ALL errors even beyond storage cap
@@ -282,6 +284,55 @@ def _validate_completions_body(body: dict, line_number: int) -> List[ValidationE
     return errors
 
 
+# ── Context estimate (#164) ────────────────────────────────────────────────
+#
+# The server has no tokenizer for most catalogue models, so prompt length is
+# estimated from text bytes. ponytail: a heuristic, not a tokenizer — 3 bytes
+# a token over-counts English (~4) and roughly matches CJK (3 bytes a char,
+# ~1 token), and over-counting is the safe direction: a larger context is
+# fitted and allocated, never a truncated prompt. A real tokenizer per model
+# would replace it if the over-estimate starts refusing cards.
+BYTES_PER_TOKEN = 3
+# Chat template tokens per message (role markers, separators).
+TOKENS_PER_MESSAGE = 8
+# An image part is a fixed number of tokens however large its base64 is —
+# counting the base64 bytes would size a vision row at hundreds of thousands
+# of tokens. 1024 is above what the catalogue's vision models use (256-768).
+TOKENS_PER_IMAGE = 1024
+# What the daemon sends when a row sets no max_tokens (Job.max_tokens).
+DEFAULT_MAX_TOKENS = 512
+
+
+def _text_tokens(value) -> int:
+    if isinstance(value, str):
+        return len(value.encode("utf-8")) // BYTES_PER_TOKEN + 1
+    if isinstance(value, list):
+        return sum(_text_tokens(part) for part in value)
+    if isinstance(value, dict):
+        if value.get("type") in ("image_url", "input_image", "image"):
+            return TOKENS_PER_IMAGE
+        return _text_tokens(value.get("text", ""))
+    return 0
+
+
+def estimate_row_tokens(url, body) -> int:
+    """Context one row needs: its prompt, estimated, plus what it may generate."""
+    if not isinstance(body, dict):
+        return 0
+    if url == "/v1/embeddings":
+        return _text_tokens(body.get("input", ""))
+    messages = body.get("messages")
+    if isinstance(messages, list):
+        prompt = sum(
+            TOKENS_PER_MESSAGE + _text_tokens(m.get("content", "")) if isinstance(m, dict) else 0
+            for m in messages
+        )
+    else:
+        prompt = _text_tokens(body.get("prompt", ""))
+    generate = body.get("max_tokens") or body.get("max_completion_tokens") or DEFAULT_MAX_TOKENS
+    return prompt + (generate if isinstance(generate, int) else DEFAULT_MAX_TOKENS)
+
+
 def wanted_capabilities(url: str, body: dict) -> List[str]:
     """Which runtime capabilities one row asks for, in CAPABILITY_FIELDS order."""
     wants = []
@@ -327,6 +378,8 @@ class _CrossFileContext:
         # capability -> line where a row first asked for it, for the
         # capability gate (phase 4c) and the message it writes.
         self.required_capabilities: dict = {}
+        # Estimated context each row needs, for the batch's context (#164).
+        self.row_tokens: list = []
 
     def note_capabilities(self, line_number: int, url, body) -> None:
         if not isinstance(url, str) or not isinstance(body, dict):
@@ -469,6 +522,7 @@ def _persist_result(batch_id: str, result: ValidationResult) -> bool:
             batch.status = "validated"
             batch.model = result.model or batch.model
             batch.required_capabilities = result.required_capabilities or None
+            batch.context_tokens = result.context_tokens
             batch.requested_at = unix_now()
             _set_expires_at(batch)
             logger.info("Batch %s validated — %d requests, model=%s", batch_id, result.total_lines, result.model)
@@ -556,6 +610,7 @@ def validate_batch_file(batch_id: str, filepath: str) -> bool:
                     if n_value is not None and n_value != 1:
                         context.n_gt1_rows.append((i, n_value))
                 context.note_capabilities(i, entry.get("url"), body)
+                context.row_tokens.append(estimate_row_tokens(entry.get("url"), body))
 
             # Track model from first valid line
             if result.model is None and model and isinstance(model, str):
@@ -568,7 +623,7 @@ def validate_batch_file(batch_id: str, filepath: str) -> bool:
     # 4. Model must be a selectable catalogue entry (reproducibility gate:
     #    users pick a pinned model, not a free-form id).
     if result.valid and result.model:
-        from scheduler import can_serve, get_catalog_entry
+        from scheduler import batch_context, can_serve, get_catalog_entry
         db = SessionLocal()
         try:
             entry = get_catalog_entry(db, result.model)
@@ -635,6 +690,7 @@ def validate_batch_file(batch_id: str, filepath: str) -> bool:
                 # that can run these rows caps below this file, none of them
                 # will ever be offered it — fail now and name the largest limit.
                 # When no host is online, queue: one with a higher limit may come.
+                capable = []
                 if result.valid:
                     capable = [w for w in _online_hosts(db, entry)
                                if can_serve(entry, w, needs, window=False)]
@@ -646,8 +702,22 @@ def validate_batch_file(batch_id: str, filepath: str) -> bool:
                             f"than {max(limits)} requests in one batch; this file has "
                             f"{result.total_lines}. Split it into smaller batches.",
                         )
+                # 4e. Context gate (#164), same rule again. `capable` fit the
+                # model at the smallest context; when none of them fits it at
+                # the context these rows need, none will be offered the batch.
+                ctx = batch_context(context.row_tokens, entry.context_length)
+                if result.valid and capable and not any(
+                    can_serve(entry, w, needs, window=False, context=ctx) for w in capable
+                ):
+                    _fail(
+                        result, "context_too_large", None, None,
+                        f"No online worker serving '{result.model}' has the memory for "
+                        f"the {ctx}-token context these rows need (p99 of prompt plus "
+                        f"max_tokens). Shorten the prompts or lower max_tokens.",
+                    )
                 if result.valid:
                     result.required_capabilities = needs
+                    result.context_tokens = ctx
         finally:
             db.close()
 

@@ -331,7 +331,7 @@ def _worker_hosting(models, vram_gb, engine="vllm"):
     return SimpleNamespace(
         gpus=[SimpleNamespace(vram_gb=vram_gb)],
         runtimes=[SimpleNamespace(
-            engine=engine, schedulable=True,
+            engine=engine, schedulable=True, kv_alpha=None,
             models=[SimpleNamespace(name=n, digest=d, schedulable=True)
                     for n, d in models],
         )],

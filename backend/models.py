@@ -342,6 +342,10 @@ class WorkerRuntime(Base):
     # rewrites every row with a position on the daemon's next start.
     position   = Column(Integer, nullable=False, default=0)
     max_concurrent_requests = Column(Integer, nullable=True)
+    # KV-cache multiplier this runtime actually allocates (parallel slots, KV
+    # cache type), calibrated from the loaded models it reports (#164).
+    # NULL = not yet observed; the scheduler then uses its default.
+    kv_alpha = Column(Float, nullable=True)
     request_timeout_seconds = Column(Integer, nullable=True)
     created_at = Column(Integer, default=unix_now)
     updated_at = Column(Integer, default=unix_now)
@@ -459,7 +463,15 @@ class ModelCatalog(Base):
     runtime_model_id = Column(String, nullable=False)   # exact runtime string, internal
     digest           = Column(String, nullable=True)    # reproducibility pin / join key (identity)
     quantization     = Column(String, nullable=True)
-    vram_gb          = Column(Float, nullable=True)     # scheduling requirement
+    # Legacy scheduling requirement: one number for a footprint that varies
+    # 12x with context (#164). Used only when the pair below is absent — an
+    # architecture `vram_profile` cannot model, or an adopted entry.
+    vram_gb          = Column(Float, nullable=True)
+    # vram(ctx) = weights_gb + alpha * kv_bytes_per_token * ctx — derived from
+    # the artifact's GGUF header by scripts/derive_vram.py, never typed in.
+    # `alpha` is the serving runtime's (WorkerRuntime.kv_alpha).
+    weights_gb         = Column(Float, nullable=True)
+    kv_bytes_per_token = Column(Integer, nullable=True)
     size_gb          = Column(Float, nullable=True)     # disk (feeds download size cap)
     # Descriptive metadata (curated, one place) — moved off the per-worker
     # runtime_models rows. For the Models tab / picker, not scheduling.
@@ -631,6 +643,12 @@ class Batch(Base):
     # "prompt_scoring"), set by the validator. The scheduler offers the batch
     # only to a runtime that advertises all of them.
     required_capabilities    = Column(JSON, nullable=True)
+    # Context the batch needs, in tokens, set by the validator (#164): p99 of
+    # each row's prompt estimate + max_tokens, rounded up to a power of two
+    # and capped at the model's own context. The scheduler fits VRAM at it
+    # and the daemon asks the runtime for it. NULL on batches validated
+    # before the column existed.
+    context_tokens           = Column(Integer, nullable=True)
     prompt_tokens            = Column(Integer, nullable=True)
     completion_tokens        = Column(Integer, nullable=True)
     total_tokens             = Column(Integer, nullable=True)

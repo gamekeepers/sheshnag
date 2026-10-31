@@ -35,7 +35,8 @@ JSONL is a **catalogue id** — a stable platform slug — not a raw runtime tag
 | `runtime_model_id` | **deprecated** — moving to `serving_profiles`; kept dual-written |
 | `digest` | reproducibility pin + availability join key (may be null → name-matched) |
 | `quantization`, `parameter_size`, `context_length` | descriptive (curated once) |
-| `vram_gb` | scheduling requirement (VRAM to run) — **not derivable from Ollama** |
+| `weights_gb`, `kv_bytes_per_token` | the footprint line the scheduler fits against: `vram(ctx) = weights_gb + alpha × kv_bytes_per_token × ctx` — derived from the artifact, see [VRAM](#3-vram-derived-from-the-artifact) |
+| `vram_gb` | **legacy** scalar requirement, used only for an entry with no footprint line |
 | `size_gb` | on-disk size (feeds download size cap) |
 | `task_type` | `chat` \| `text-generation` \| `embedding` \| `vision` |
 | `capabilities` | JSON — what the MODEL can do (`json_mode`, `vision`, `embeddings`, `logprobs`); runtime mechanism differences live in the executor's `capabilities()`, effective = model AND runtime |
@@ -89,7 +90,9 @@ historical rows keep the retired slug.
 At `POST /workers/poll`, for each `validated` batch the scheduler:
 
 1. resolves `batch.model` → catalogue entry (skips if not found);
-2. requires the worker to fit `vram_gb` (when the worker has heartbeated);
+2. requires the worker to fit the entry's footprint **at the batch's context**
+   (`batches.context_tokens`), with the hosting runtime's `kv_alpha` — the
+   scalar `vram_gb` for an entry with no footprint line;
 3. requires the worker to **host** `runtime_model_id` (advertised at
    registration / reported loaded), enforcing **digest equality when both the
    entry and the worker's model carry a digest** — *same tag + different digest
@@ -170,16 +173,53 @@ manifest API for models not pulled locally — no blob download needed.
 Leave it null and the scheduler **name-matches** (any digest under that tag);
 fill it to switch on the strict same-tag/different-digest guard.
 
-### 3. `vram_gb` — not derivable from Ollama
+### 3. VRAM — derived from the artifact
 
-`/api/tags` reports disk `size`, **not** the VRAM a model needs to run
-(≈ weights + KV-cache(context) + overhead — not a fixed number). Options:
+A model's footprint is not one number. Measured on one pinned artifact it
+ran from 2.6 GiB at a 4k context to 32 GiB at 256k (#164), so the catalogue
+stores a line instead:
 
-- default: `capture_catalog` fills an **estimate** from disk size (verify it);
-- `--measure-vram`: loads each model and reads the real footprint from
-  `/api/ps` `size_vram` (accurate, but loads each model — needs GPU headroom);
-- a null `vram_gb` **disables** the VRAM filter for that model (any worker
-  "fits") — set a real value before relying on capacity matching.
+```
+vram(ctx) = weights_gb + alpha × kv_bytes_per_token × ctx
+```
+
+- **`weights_gb`** — what does not grow with context: the artifact's own size,
+  any sliding-window KV cache, any recurrent state, and 0.25 GiB for compute
+  buffers.
+- **`kv_bytes_per_token`** — the f16 K+V cache of the layers that *do* grow:
+  `Σ head_count_kv × (key_length + value_length) × 2` over full-attention
+  layers. Sliding-window layers (gemma2/3/4, gpt-oss) and the recurrent layers
+  of hybrid models (qwen35) are excluded; an encoder (nomic-bert) has none.
+- **`alpha`** is not in the catalogue: it belongs to the runtime serving the
+  model (parallel slots, KV cache type), and is calibrated per runtime from
+  the models it reports loaded. See [Context and VRAM fit](api.md#context-and-vram-fit).
+
+Fill both from each pinned artifact's GGUF header — a ranged read from
+`registry.ollama.ai`, never the weights:
+
+```bash
+python scripts/derive_vram.py            # print what would change
+python scripts/derive_vram.py --write    # update models.yaml in place
+```
+
+The script skips, with a reason, what the formula would get wrong: no digest,
+not on the Ollama registry, or latent attention (MLA — GLM-4.7-flash). A
+skipped entry keeps scheduling on its scalar `vram_gb`; a null `vram_gb` there
+**disables** the VRAM filter for that model (any worker "fits").
+
+Measured on a model and machine the default alpha was not fitted on
+(Ollama 0.32.14, Apple Silicon, 24 GiB), predictions at the default alpha:
+
+| model | context | measured | predicted |
+|---|---|---|---|
+| `gemma4:12b` | 8,192 | 7.94 GiB | 7.89 GiB |
+| `gemma4:12b` | 32,768 | 8.37 GiB | 8.33 GiB |
+| `gemma4:12b` | 131,072 | 9.63 GiB | 10.05 GiB |
+| `nuextract:3.8b` | 1,024 | 2.41 GiB | 2.71 GiB |
+| `nuextract:3.8b` | 4,096 | 3.54 GiB | 4.01 GiB |
+
+`backend/tests/test_context_fit.py` holds these numbers, so a change to the
+derivation that breaks them fails the suite.
 
 ### 4. Load into the DB
 

@@ -8,6 +8,8 @@
   parameter_size: 12.2B
   context_length: 131072
   vram_gb: 9.6
+  weights_gb: 8.46
+  kv_bytes_per_token: 65536
   size_gb: 7.59
   task_type: chat
   capabilities:
@@ -29,6 +31,8 @@
   parameter_size: 27.4B
   context_length: 131072
   vram_gb: 19.9
+  weights_gb: 17.26
+  kv_bytes_per_token: 81920
   size_gb: 16.2
   task_type: chat
   capabilities:
@@ -50,6 +54,8 @@
   parameter_size: 11.9B
   context_length: 262144
   vram_gb: 8.9
+  weights_gb: 7.75
+  kv_bytes_per_token: 16384
   size_gb: 7.04
   task_type: chat
   capabilities:
@@ -71,6 +77,8 @@
   parameter_size: 25.8B
   context_length: 262144
   vram_gb: 20.6
+  weights_gb: 16.42
+  kv_bytes_per_token: 20480
   size_gb: 16.75
   task_type: chat
   capabilities:
@@ -100,6 +108,8 @@
   parameter_size: 8.0B
   context_length: 131072
   vram_gb: 11.2
+  weights_gb: 9.27
+  kv_bytes_per_token: 28672
   size_gb: 8.95
   task_type: chat
   capabilities:
@@ -121,6 +131,8 @@
   parameter_size: 20.9B
   context_length: 131072
   vram_gb: 15.9
+  weights_gb: 13.1
+  kv_bytes_per_token: 24576
   size_gb: 12.85
   task_type: chat
   capabilities:
@@ -150,6 +162,8 @@
   parameter_size: 3.8B
   context_length: 4096
   vram_gb: 2.9
+  weights_gb: 2.28
+  kv_bytes_per_token: 393216
   size_gb: 2.03
   task_type: chat
   capabilities:
@@ -171,6 +185,8 @@
   parameter_size: 32.8B
   context_length: 32768
   vram_gb: 22.7
+  weights_gb: 18.74
+  kv_bytes_per_token: 262144
   size_gb: 18.49
   task_type: chat
   capabilities:
@@ -192,6 +208,8 @@
   parameter_size: 30.5B
   context_length: 262144
   vram_gb: 21.2
+  weights_gb: 17.53
+  kv_bytes_per_token: 98304
   size_gb: 17.28
   task_type: chat
   capabilities:
@@ -213,6 +231,8 @@
   parameter_size: 32.8B
   context_length: 40960
   vram_gb: 23.1
+  weights_gb: 19.06
+  kv_bytes_per_token: 262144
   size_gb: 18.81
   task_type: chat
   capabilities:
@@ -263,6 +283,8 @@
   parameter_size: 27.8B
   context_length: 262144
   vram_gb: 25.23
+  weights_gb: 16.08
+  kv_bytes_per_token: 65536
   size_gb: 16.22
   task_type: chat
   capabilities:
@@ -284,6 +306,8 @@
   parameter_size: 137M
   context_length: 8192
   vram_gb: 1.0
+  weights_gb: 0.51
+  kv_bytes_per_token: 0
   size_gb: 0.27
   task_type: embedding
   capabilities:
@@ -356,6 +380,8 @@
   # Weights plus a 4K KV cache and overhead, not measured. Revisit against
   # peak RSS once a box has served it.
   vram_gb: 3.5
+  weights_gb: 2.13
+  kv_bytes_per_token: 114688
   size_gb: 2.02
   task_type: chat
   capabilities:

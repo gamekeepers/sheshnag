@@ -262,6 +262,11 @@ class InventoryItem(BaseModel):
     size_bytes: Optional[int] = None
     loaded: bool = False
     runtime: Optional[str] = None
+    # What the runtime reports for a loaded model (Ollama /api/ps): memory it
+    # occupies and the context it was loaded at. Calibrates the runtime's
+    # kv_alpha (#164). Null when not loaded, or from an older daemon.
+    size_vram_bytes: Optional[int] = None
+    loaded_context: Optional[int] = None
     # Descriptive facts the runtime knows about the artifact (quantization,
     # parameter_size, context_length, family) — what auto-adopt needs to
     # register a discovered model without a human. Null for vLLM.

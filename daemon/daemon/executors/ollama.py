@@ -201,6 +201,11 @@ class OllamaExecutor(BaseExecutor):
 
         try:
             ollama_body = self._translate_request(prompt.body)
+            if prompt.num_ctx:
+                # The context the scheduler fitted this card for (#164).
+                # Without it Ollama loads at its own default, and the fit
+                # describes an allocation that never happens.
+                ollama_body["options"]["num_ctx"] = prompt.num_ctx
             response = await client.post("/api/chat", json=ollama_body)
             response.raise_for_status()
             
@@ -458,6 +463,19 @@ class OllamaExecutor(BaseExecutor):
         except Exception as e:
             logger.debug(f"Could not list running Ollama models: {e}")
             return []
+
+    async def running_footprints(self) -> Dict[str, dict]:
+        """size_vram and context_length per loaded model, from /api/ps."""
+        try:
+            response = await self._get_client().get("/api/ps", timeout=5.0)
+            response.raise_for_status()
+            return {
+                m["name"]: {"size_vram": m.get("size_vram"), "context_length": m.get("context_length")}
+                for m in response.json().get("models", []) if m.get("name")
+            }
+        except Exception as e:
+            logger.debug(f"Could not read Ollama footprints: {e}")
+            return {}
 
     # ── On-disk inventory (registry identity) ─────────────────
 
