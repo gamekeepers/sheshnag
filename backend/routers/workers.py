@@ -424,6 +424,10 @@ def poll_job(
             "input_file_id": batch.input_file_id,
             "input_path":    f"/v1/files/{batch.input_file_id}/content",
             "model":         runtime_model_id,
+            # The context the scheduler fitted this worker's card for (#164).
+            # The daemon asks the runtime for exactly this, so what was fitted
+            # is what is allocated. Null for a batch validated before #164.
+            "num_ctx":       batch.context_tokens,
         }
     }
 

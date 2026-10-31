@@ -53,6 +53,7 @@ def _mock_catalog_entry(runtime: str) -> MagicMock:
     entry.runtime = runtime
     entry.enabled = True
     entry.status = "active"
+    entry.context_length = None  # a real int or None; a MagicMock breaks min() (#164)
     return entry
 
 

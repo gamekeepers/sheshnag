@@ -40,6 +40,13 @@ state exactly what is supported.
 | `chat_template_kwargs.enable_thinking` (or top-level `think`) | non-standard | **translated** → `think` (Ollama ≥ 0.9); the trace comes back as `message.thinking` and is mirrored to `message.reasoning_content` | **native** — `chat_template_kwargs` is a vLLM request field; honoured by templates that read `enable_thinking` (Qwen3 family), ignored by others |
 | `response_format` | top-level | **translated** → `format` (implemented in issue #41, structured outputs) | **native** — accepted top-level †|
 
+**Context.** On chat rows the daemon also sets Ollama's `options.num_ctx` to the
+batch's `context_tokens` — the context the scheduler fitted the card for (see
+[Context and VRAM fit](api.md#context-and-vram-fit)). It is not a row
+parameter: it is the same for every row of a batch, and nothing in the row
+body sets or overrides it. vLLM and llama.cpp fix their context at server
+launch, so nothing is sent to them.
+
 > **† UNVERIFIED** — The vLLM column was built from vLLM's OpenAI-compatible server documentation, not from a live server. No vLLM instance was available in this environment (no GPU, no vllm package). Entries marked native † are doc-derived and must be confirmed against a running server before being treated as ground truth.
 
 ---

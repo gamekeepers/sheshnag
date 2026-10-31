@@ -151,6 +151,9 @@ class Job(BaseModel):
     status: JobStatus = JobStatus.QUEUED
     max_tokens: int = 512
     temperature: float = 0.7
+    # Context, in tokens, the scheduler fitted this job's card for (#164).
+    # None from an older backend, or for a batch validated before it.
+    num_ctx: Optional[int] = None
 
 
 # ── Poll Response ────────────────────────────────────────────────
@@ -183,6 +186,9 @@ class PromptRequest(BaseModel):
     method: str = "POST"
     url: str = "/v1/chat/completions"
     body: Dict[str, Any] = Field(default_factory=dict)
+    # The job's context (Job.num_ctx). Kept off `body`, which reaches vLLM
+    # verbatim; only a runtime that sizes its cache per request reads it.
+    num_ctx: Optional[int] = None
 
 
 # ── Completion Result (Output) ───────────────────────────────────

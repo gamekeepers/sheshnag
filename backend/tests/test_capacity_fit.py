@@ -29,6 +29,8 @@ def _entry(vram_gb=8.0, runtime_model_id="m:latest", digest=None, runtime="ollam
     return SimpleNamespace(
         vram_gb=vram_gb, runtime_model_id=runtime_model_id, digest=digest,
         serving_targets=lambda: [(runtime, runtime_model_id)],
+        # No footprint line: these tests fit the scalar (#164 has its own).
+        weights_gb=None, kv_bytes_per_token=None, context_length=None,
     )
 
 
@@ -42,7 +44,7 @@ def _worker(*, gpus=(), engine="ollama", models=("m:latest",),
             # Eligibility defaults: these tests are about capacity fit, so the
             # runtime is up and the rows are not quarantined. The filters
             # themselves are covered in test_worker_inventory.
-            schedulable=True,
+            schedulable=True, kv_alpha=None,
             models=[SimpleNamespace(name=m, digest=None, schedulable=True)
                     for m in models],
         )],
@@ -126,7 +128,7 @@ def test_engine_is_taken_from_the_runtime_that_hosts_the_model():
     """
     worker = _worker(gpus=(4.0,), engine="vllm", models=("m:latest",))
     worker.runtimes.insert(0, SimpleNamespace(
-        engine="unknown-engine", schedulable=True,
+        engine="unknown-engine", schedulable=True, kv_alpha=None,
         models=[SimpleNamespace(name="other:latest", digest=None, schedulable=True)],
     ))
 
