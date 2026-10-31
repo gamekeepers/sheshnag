@@ -27,6 +27,7 @@ from typing import Optional, Tuple
 
 from identity_resolver import bare_digest
 from models import CatalogArtifactFile, ModelCatalog, RuntimeModel, ServingProfile, unix_now
+from scheduler import observed_kv_alpha
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +244,7 @@ def apply_inventory(db, worker, items) -> None:
             row.files = files
         status, entry = classify_entry(db, item.local_name, row.digest)
         _set_state(row, status, entry, worker.id)
+        _calibrate(rt, entry, item)
     for (rt_id, name), row in rows.items():
         if rt_id in reported_runtime_ids and (rt_id, name) not in seen and row.status != MISSING:
             logger.info("Worker %s: model %r no longer on disk — marked missing", worker.id, name)
@@ -250,6 +252,27 @@ def apply_inventory(db, worker, items) -> None:
             row.catalog_id = None
             row.loaded = False
             row.updated_at = unix_now()
+
+
+def _calibrate(runtime, entry, item) -> None:
+    """Update the runtime's kv_alpha from a model it reports loaded (#164).
+
+    `entry` is the row's hash-verified catalogue entry (None otherwise): the
+    artifact actually resident, so its footprint line is the one to measure
+    against. The latest usable reading wins — a provider who changes the
+    runtime's parallelism or KV cache type changes alpha with it.
+    """
+    if not item.loaded or entry is None:
+        return
+    alpha = observed_kv_alpha(
+        entry,
+        getattr(item, "size_vram_bytes", None),
+        getattr(item, "loaded_context", None),
+    )
+    if alpha is not None and runtime.kv_alpha != round(alpha, 3):
+        logger.info("Runtime %s (%s): kv_alpha %s -> %.3f from %r",
+                    runtime.id, runtime.engine, runtime.kv_alpha, alpha, item.local_name)
+        runtime.kv_alpha = round(alpha, 3)
 
 
 def reclassify_hash(db, sha256: str) -> int:

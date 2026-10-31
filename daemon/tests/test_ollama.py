@@ -959,3 +959,35 @@ def test_ollama_declines_to_coalesce_list_inputs():
     executor = OllamaExecutor()
     assert executor.can_coalesce_embedding(_embed_prompt("a", "text")) is True
     assert executor.can_coalesce_embedding(_embed_prompt("b", ["x", "y"])) is False
+
+
+# ─── Context the scheduler fitted (#164) ─────────────────────
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("num_ctx", [16384, None])
+async def test_execute_asks_ollama_for_the_fitted_context(num_ctx):
+    """The card was fitted at the job's context; Ollama must load at it, not its default."""
+    executor = OllamaExecutor()
+    executor.version = "0.5.0"
+    prompt = PromptRequest(
+        custom_id="req-1", num_ctx=num_ctx,
+        body={"model": "llama3:8b", "messages": [{"role": "user", "content": "hello"}]},
+    )
+    reply = create_mock_response(200, {"message": {"role": "assistant", "content": "hi"}, "done": True})
+    with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = reply
+        assert (await executor.execute(prompt)).is_success
+    options = mock_post.call_args.kwargs["json"]["options"]
+    assert options.get("num_ctx") == num_ctx
+
+
+@pytest.mark.asyncio
+async def test_running_footprints_reads_size_and_context_from_ps():
+    executor = OllamaExecutor()
+    ps = httpx.Response(200, request=httpx.Request("GET", "http://localhost:11434/api/ps"), json={
+        "models": [{"name": "gemma4:12b", "size_vram": 8_000_000_000, "context_length": 32768}],
+    })
+    with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, return_value=ps):
+        assert await executor.running_footprints() == {
+            "gemma4:12b": {"size_vram": 8_000_000_000, "context_length": 32768},
+        }

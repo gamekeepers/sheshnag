@@ -292,7 +292,8 @@ listed it. Limiting what a box offers is the provider-control work in #104.
     "job_id": "batch-abc123",
     "input_file_id": "file-abc123",
     "input_path": "/v1/files/file-abc123/content",
-    "model": "mistral-7b"
+    "model": "mistral-7b",
+    "num_ctx": 8192
   }
 }
 
@@ -360,12 +361,12 @@ Postgres with SQLAlchemy ORM. Tables (see `models.py`):
 | `organization_memberships` | `role`: `owner` / `admin` / `viewer` |
 | `api_keys` | Hashed keys; `key_type`: `worker` (org-scoped) or `personal`; prefix for UI |
 | `workers` | Static specs; `status` (liveness, server-managed) vs `activity` (daemon-reported); aggregate `vram_total_gb` / `vram_available_gb` / `ram_available_gb` from heartbeats (`null` = unknown, not zero). `ram_total_gb` is a registration snapshot. Per-card sizes live on `worker_gpus` — that is what the fit rule reads, not the aggregate. Provider policy: `window_start_min` / `window_end_min` / `window_tz`, `max_batch_prompts` (`null` = no constraint) |
-| `worker_runtimes` | Inference engines a worker exposes (spec §8.2): engine, base_url, status |
+| `worker_runtimes` | Inference engines a worker exposes (spec §8.2): engine, base_url, status, `kv_alpha` (calibrated KV multiplier) |
 | `runtime_models` | Per-worker availability rows (spec §8.3): `name`, `runtime_model_id`, `digest`, `status` (on-disk) + `loaded` (in VRAM, heartbeat-updated). Lean by design — descriptive metadata lives on `model_catalog`. |
 | `worker_gpus` | Physical GPUs per worker (spec §8.4): vendor, name, vram_gb, driver, cuda |
 | `model_catalog` | Curated, pinned models users select for a batch (identity). See [Model catalogue](#model-catalogue-v1models). |
 | `files` | Uploaded inputs and generated outputs |
-| `batches` | Lifecycle status, request counts, `attempts` (requeue counter) |
+| `batches` | Lifecycle status, request counts, `attempts` (requeue counter), `context_tokens` (the context it is fitted and run at) |
 | `batch_assignments` | Which worker holds which batch (FK → `workers.id`, `ON DELETE SET NULL` — history survives worker removal) |
 | `password_reset_tokens` | Forgot-password flow |
 
@@ -386,12 +387,14 @@ the full design, scheduling, and curation runbook.
 
 **`model_catalog` columns:** `id` (slug, = `body.model`), `display_name`,
 `runtime`, `runtime_model_id`, `digest` (reproducibility pin / match key),
-`quantization`, `parameter_size`, `context_length`, `vram_gb` (scheduling
-requirement), `size_gb`, `task_type`, `source_*`/`homepage_url` (provenance),
+`quantization`, `parameter_size`, `context_length`, `weights_gb` +
+`kv_bytes_per_token` (the footprint line), `vram_gb` (legacy scalar), `size_gb`,
+`task_type`, `source_*`/`homepage_url` (provenance),
 `org_id` (NULL = public), `status`, `enabled`.
 
 **Scheduling** (`scheduler.py`): `poll` resolves `batch.model` → entry,
-then matches a worker that fits `vram_gb` **and** hosts `runtime_model_id`,
+then matches a worker that fits the entry at the batch's context (see
+[Context and VRAM fit](#context-and-vram-fit)) **and** hosts `runtime_model_id`,
 enforcing digest equality when both sides carry a digest (same tag +
 different digest ⇒ not matched); prefers a worker already serving it.
 
@@ -505,6 +508,39 @@ Capacity is served from the 15-second cache above, so a window opening or
 closing, or a policy edit, reaches `models_servable` within 15 seconds. Dispatch
 reads the policy live and is never stale.
 
+### Context and VRAM fit
+
+A model's VRAM footprint grows with the context it is loaded at, so the
+scheduler fits a batch at the context *that batch* needs:
+
+```
+required = weights_gb + alpha × kv_bytes_per_token × context_tokens
+```
+
+- **`context_tokens`** is set once, at validation: the p99 over the file's rows
+  of (estimated prompt tokens + `max_tokens`, default 512), rounded up to a
+  power of two, at least 4096, and capped at the model's `context_length`.
+  Prompt tokens are estimated at 3 bytes a token of text — an over-count for
+  English, which errs towards a larger context — and an image part counts as
+  1024 tokens whatever its size. p99, not max, so one outlier row does not size
+  the whole batch; a row longer than the context is truncated by the runtime.
+- **`alpha`** is the serving runtime's `kv_alpha`: parallel slots and KV cache
+  type multiply the cache. Each heartbeat reports, per loaded model, the memory
+  the runtime says it occupies and the context it was loaded at (Ollama
+  `/api/ps`), and the backend solves for alpha against the catalogue's line.
+  Until a runtime has been observed it is 1.15. It never drops below 1.0, the
+  f16 cache of one slot: a lower reading means the runtime under-reports (Ollama
+  0.32 on Metal leaves the KV cache out of `size_vram`), and a provider running a
+  quantised KV cache is over-estimated — refused a card it might fit, never
+  given one it cannot.
+- The poll response carries the context as **`num_ctx`**, and the daemon asks
+  Ollama for exactly that, so what was fitted is what is allocated.
+
+`models_servable` is computed at 4096, the smallest context: a listed model is
+one a short batch would be dispatched for. When the online workers that host a
+file's model all fit it at 4096 but none fits it at the file's own context,
+validation fails with `context_too_large`; when none is online the batch queues.
+
 ### Validation errors
 
 Validation is asynchronous: `POST /v1/batches` returns immediately with
@@ -512,7 +548,8 @@ Validation is asynchronous: `POST /v1/batches` returns immediately with
 with `GET /v1/batches/{batch_id}/events` (SSE) rather than polling.
 
 Each error carries a `code` (`missing_field`, `invalid_json`,
-`duplicate_custom_id`, `unknown_fields`, `unsupported_model`, `batch_too_large`, …), the `line` it
+`duplicate_custom_id`, `unknown_fields`, `unsupported_model`, `batch_too_large`,
+`context_too_large`, …), the `line` it
 occurred on, and the `field` where applicable — `null` for whole-line JSON parse
 failures.
 

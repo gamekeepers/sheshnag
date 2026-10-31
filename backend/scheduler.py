@@ -264,6 +264,82 @@ def fit_vram_plus_ram(required_gb: float, cap: Capacity) -> bool:
     return largest + _usable_ram_gb(cap) >= required_gb
 
 
+# ─── Context-aware footprint (#164) ─────────────────────────
+#
+# A catalogue entry's footprint is a line, not a number:
+#     vram(ctx) = weights_gb + alpha * kv_bytes_per_token * ctx
+# Measured on one pinned artifact it ran from 2.6 GiB at 4k context to 32 GiB
+# at 256k; a scalar is wrong by up to an order of magnitude, in the direction
+# that OOMs a provider's card. The entry supplies the line (scripts/
+# derive_vram.py), the batch its context (validator), the runtime its alpha.
+
+GIB = 1024 ** 3
+
+# Smallest context a batch is fitted and run at: Ollama's own default, so a
+# short batch costs no more than it does today. Also what capacity is
+# advertised at — "servable" means a short batch would be dispatched.
+MIN_CONTEXT = 4096
+
+# alpha before a runtime has been observed: the one measurement in #164
+# (ministral-3:3b, Ollama, CUDA). ponytail: one prior for every runtime —
+# calibration replaces it per runtime as soon as a loaded model is reported.
+DEFAULT_KV_ALPHA = 1.15
+# f16 K+V for one slot is the physical floor. A reading below it means the
+# runtime under-reports (Ollama 0.32 on Metal leaves the KV cache out of
+# /api/ps), not that the cache is smaller, so it never lowers alpha further.
+# A provider running a quantised KV cache is over-estimated: safe, not OOM.
+KV_ALPHA_FLOOR = 1.0
+# Below this much KV at the observed context, error in weights_gb swamps the
+# KV term and the reading says nothing about alpha.
+MIN_KV_SIGNAL_GB = 0.25
+
+
+def batch_context(row_tokens, model_context=None) -> int:
+    """The context a batch is fitted and run at, from per-row token needs.
+
+    p99, not max: one outlier row must not size the whole batch's KV cache.
+    Rounded up to a power of two so consecutive batches for a model reuse the
+    runtime's loaded instance instead of reloading for every small change in
+    context, and capped at what the model supports.
+    """
+    need = MIN_CONTEXT
+    if row_tokens:
+        ordered = sorted(row_tokens)
+        need = max(need, ordered[max(0, -(-99 * len(ordered) // 100) - 1)])
+    ctx = 1 << (need - 1).bit_length()
+    return min(ctx, model_context) if model_context else ctx
+
+
+def required_vram_gb(entry, context=None, alpha=None) -> float:
+    """VRAM a batch for `entry` needs at `context` tokens on a runtime with `alpha`.
+
+    Falls back to the entry's scalar `vram_gb` when it has no footprint line —
+    an architecture the derivation cannot model, or an adopted entry.
+    """
+    if entry.weights_gb is None or entry.kv_bytes_per_token is None:
+        return entry.vram_gb or 0
+    ctx = context or MIN_CONTEXT
+    if entry.context_length:
+        ctx = min(ctx, entry.context_length)
+    a = DEFAULT_KV_ALPHA if alpha is None else alpha
+    return entry.weights_gb + a * entry.kv_bytes_per_token * ctx / GIB
+
+
+def observed_kv_alpha(entry, size_vram_bytes, context):
+    """alpha implied by one model the runtime reports loaded, or None.
+
+    None when the entry has no footprint line, the reading is incomplete, or
+    the KV term at that context is too small to measure against.
+    """
+    if (entry is None or entry.weights_gb is None or not entry.kv_bytes_per_token
+            or not size_vram_bytes or not context):
+        return None
+    kv_gb = entry.kv_bytes_per_token * context / GIB
+    if kv_gb < MIN_KV_SIGNAL_GB:
+        return None
+    return max((size_vram_bytes / GIB - entry.weights_gb) / kv_gb, KV_ALPHA_FLOOR)
+
+
 # Fit is a property of the runtime, not of the scheduler. A new engine
 # registers a rule here; the scheduler is never edited.
 FIT_RULES = {
@@ -366,7 +442,7 @@ def serving_runtimes(entry, workers, needs=None) -> list:
     return sorted(out)
 
 
-def can_serve(entry, worker, needs=None, prompts=None, window=True) -> bool:
+def can_serve(entry, worker, needs=None, prompts=None, window=True, context=None) -> bool:
     """Could this worker be given a batch for `entry` that needs `needs`?
 
     The single definition of "eligible", shared by the scheduler
@@ -384,6 +460,10 @@ def can_serve(entry, worker, needs=None, prompts=None, window=True) -> bool:
     passes none. `window=False` ignores the availability window, for the
     validator: a worker outside its hours is unavailable now, not unable, and
     the window always reopens.
+
+    `context` is the batch's context in tokens (#164); the fit is taken at
+    it, with the hosting runtime's alpha. None fits at MIN_CONTEXT, which is
+    what capacity asks: could a short batch run here.
     """
     if entry is None or worker is None:
         return False
@@ -397,7 +477,7 @@ def can_serve(entry, worker, needs=None, prompts=None, window=True) -> bool:
     if not runtime_has(runtime, needs):
         return False  # hosts it, but cannot honour what the rows ask for
     rule = FIT_RULES.get(runtime.engine, DEFAULT_FIT_RULE)
-    return rule(entry.vram_gb or 0, Capacity.of(worker))
+    return rule(required_vram_gb(entry, context, runtime.kv_alpha), Capacity.of(worker))
 
 
 class Scheduler:
@@ -425,7 +505,8 @@ class Scheduler:
                 continue  # unschedulable — should have failed validation
 
             if not can_serve(entry, worker, batch.required_capabilities or None,
-                             prompts=batch.request_counts_total):
+                             prompts=batch.request_counts_total,
+                             context=batch.context_tokens):
                 continue  # doesn't host or fit it, lacks a capability, or the provider's policy says no
 
             if _hosts(loaded, _target_ids(entry), entry.digest):
