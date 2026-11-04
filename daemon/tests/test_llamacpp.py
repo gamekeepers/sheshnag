@@ -460,3 +460,21 @@ def test_zero_vram_warning_is_said_once():
     hb._maybe_warn_zero_vram()
     assert hb._warned_zero_vram
     hb._maybe_warn_zero_vram()   # second call must be a no-op
+
+
+@pytest.mark.asyncio
+async def test_inventory_reports_the_context_the_server_was_launched_with():
+    """llama-server fixes its cache at launch (-c split over -np slots) and ignores
+    num_ctx, so the scheduler must be told what it allocated (#164)."""
+    props = dict(PROPS_BODY, default_generation_settings={"n_ctx": 8192})
+    ex = _client(LlamaCppExecutor("http://llamacpp.test"), _server(props=props))
+    item = (await ex.inventory())[0]
+    assert item["context_limit"] == 8192
+    assert item["context_allocated"] == 8192 * 4      # total_slots in PROPS_BODY
+
+
+@pytest.mark.asyncio
+async def test_inventory_without_a_launch_context_reports_none():
+    ex = _client(LlamaCppExecutor("http://llamacpp.test"), _server())
+    item = (await ex.inventory())[0]
+    assert item["context_limit"] is None and item["context_allocated"] is None

@@ -303,16 +303,52 @@ TOKENS_PER_IMAGE = 1024
 DEFAULT_MAX_TOKENS = 512
 
 
-def _text_tokens(value) -> int:
+def _bytes_tokens(text: str) -> int:
+    return len(text.encode("utf-8")) // BYTES_PER_TOKEN + 1
+
+
+def _json_tokens(value) -> int:
+    """Structured data the runtime renders into the prompt (tool schemas, calls)."""
+    if not value:
+        return 0
+    return _bytes_tokens(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False))
+
+
+def _content_tokens(value) -> int:
+    """One message's content: a string, or the parts of ONE multipart message,
+    which all land in the same context and so add up."""
     if isinstance(value, str):
-        return len(value.encode("utf-8")) // BYTES_PER_TOKEN + 1
+        return _bytes_tokens(value)
     if isinstance(value, list):
-        return sum(_text_tokens(part) for part in value)
+        return sum(_content_tokens(part) for part in value)
     if isinstance(value, dict):
         if value.get("type") in ("image_url", "input_image", "image"):
             return TOKENS_PER_IMAGE
-        return _text_tokens(value.get("text", ""))
+        return _content_tokens(value.get("text", ""))
     return 0
+
+
+def _prompt_tokens(value) -> int:
+    """A completions `prompt` or embeddings `input`. A list is either token
+    ids (one prompt) or several independent prompts — each its own request,
+    each its own context — so the row needs the largest, not the sum."""
+    if isinstance(value, str):
+        return _bytes_tokens(value)
+    if isinstance(value, list) and value:
+        if all(isinstance(t, int) for t in value):
+            return len(value)
+        return max(_prompt_tokens(v) for v in value)
+    return 0
+
+
+def _generation_limit(body) -> int:
+    """What the row may generate. 0 is a real limit (prompt scoring: echo with
+    max_tokens=0), so only an absent or null value takes the default."""
+    for key in ("max_tokens", "max_completion_tokens"):
+        value = body.get(key)
+        if value is not None:
+            return value if isinstance(value, int) and not isinstance(value, bool) else DEFAULT_MAX_TOKENS
+    return DEFAULT_MAX_TOKENS
 
 
 def estimate_row_tokens(url, body) -> int:
@@ -320,17 +356,21 @@ def estimate_row_tokens(url, body) -> int:
     if not isinstance(body, dict):
         return 0
     if url == "/v1/embeddings":
-        return _text_tokens(body.get("input", ""))
+        return _prompt_tokens(body.get("input", ""))
     messages = body.get("messages")
     if isinstance(messages, list):
         prompt = sum(
-            TOKENS_PER_MESSAGE + _text_tokens(m.get("content", "")) if isinstance(m, dict) else 0
-            for m in messages
+            TOKENS_PER_MESSAGE + _content_tokens(m.get("content", "")) + _json_tokens(m.get("tool_calls"))
+            for m in messages if isinstance(m, dict)
         )
+        # Tool schemas are rendered into the prompt. Counted even under
+        # tool_choice "none": the Ollama executor drops tool_choice and still
+        # forwards `tools`, and vLLM renders them unless launched to exclude
+        # them — over-counting is the safe direction.
+        prompt += _json_tokens(body.get("tools")) + _json_tokens(body.get("functions"))
     else:
-        prompt = _text_tokens(body.get("prompt", ""))
-    generate = body.get("max_tokens") or body.get("max_completion_tokens") or DEFAULT_MAX_TOKENS
-    return prompt + (generate if isinstance(generate, int) else DEFAULT_MAX_TOKENS)
+        prompt = _prompt_tokens(body.get("prompt", ""))
+    return prompt + _generation_limit(body)
 
 
 def wanted_capabilities(url: str, body: dict) -> List[str]:
@@ -623,7 +663,7 @@ def validate_batch_file(batch_id: str, filepath: str) -> bool:
     # 4. Model must be a selectable catalogue entry (reproducibility gate:
     #    users pick a pinned model, not a free-form id).
     if result.valid and result.model:
-        from scheduler import batch_context, can_serve, get_catalog_entry
+        from scheduler import accepts_size, batch_context, can_serve, get_catalog_entry
         db = SessionLocal()
         try:
             entry = get_catalog_entry(db, result.model)
@@ -705,16 +745,30 @@ def validate_batch_file(batch_id: str, filepath: str) -> bool:
                 # 4e. Context gate (#164), same rule again. `capable` fit the
                 # model at the smallest context; when none of them fits it at
                 # the context these rows need, none will be offered the batch.
-                ctx = batch_context(context.row_tokens, entry.context_length)
-                if result.valid and capable and not any(
-                    can_serve(entry, w, needs, window=False, context=ctx) for w in capable
-                ):
-                    _fail(
-                        result, "context_too_large", None, None,
-                        f"No online worker serving '{result.model}' has the memory for "
-                        f"the {ctx}-token context these rows need (p99 of prompt plus "
-                        f"max_tokens). Shorten the prompts or lower max_tokens.",
-                    )
+                # And the batch needs ONE worker that passes both this and the
+                # size gate: one that takes 100 rows but lacks the memory and
+                # another with the memory that caps at 10 dispatch nothing.
+                ctx = batch_context(context.row_tokens)
+                if result.valid and capable:
+                    fits = [w for w in capable if can_serve(entry, w, needs, window=False, context=ctx)]
+                    if not fits:
+                        _fail(
+                            result, "context_too_large", None, None,
+                            f"No online worker serving '{result.model}' can take rows "
+                            f"needing a {ctx}-token context (p99 of prompt plus "
+                            f"max_tokens): too little memory at that context, or a "
+                            f"server launched with a shorter one. Shorten the prompts "
+                            f"or lower max_tokens.",
+                        )
+                    elif not any(accepts_size(w, result.total_lines) for w in fits):
+                        limit = max(w.max_batch_prompts for w in fits)
+                        _fail(
+                            result, "batch_too_large", None, None,
+                            f"The online workers serving '{result.model}' that can hold "
+                            f"a {ctx}-token context accept at most {limit} requests in "
+                            f"one batch; this file has {result.total_lines}. Split it "
+                            f"into smaller batches.",
+                        )
                 if result.valid:
                     result.required_capabilities = needs
                     result.context_tokens = ctx

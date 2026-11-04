@@ -134,6 +134,10 @@ MIGRATIONS = [
                "worker_runtimes", "kv_alpha", Float()),
     _Migration("batches.context_tokens",
                "batches", "context_tokens", Integer()),
+    _Migration("runtime_models.context_limit",
+               "runtime_models", "context_limit", Integer()),
+    _Migration("runtime_models.context_allocated",
+               "runtime_models", "context_allocated", Integer()),
 ]
 
 

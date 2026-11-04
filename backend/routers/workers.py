@@ -12,7 +12,7 @@ from schemas import (
 from pydantic import BaseModel
 from typing import Optional
 from auth import get_worker_context
-from scheduler import scheduler, get_catalog_entry, resolve_runtime_model_id
+from scheduler import scheduler, fitted_context, get_catalog_entry, resolve_runtime_model_id
 from reconciliation import AVAILABLE, MISSING, apply_inventory, classify
 from sweeper import MAX_BATCH_ATTEMPTS, requeue_or_fail_batch
 from services.usage_ingest import ingest_usage_records
@@ -424,10 +424,11 @@ def poll_job(
             "input_file_id": batch.input_file_id,
             "input_path":    f"/v1/files/{batch.input_file_id}/content",
             "model":         runtime_model_id,
-            # The context the scheduler fitted this worker's card for (#164).
-            # The daemon asks the runtime for exactly this, so what was fitted
-            # is what is allocated. Null for a batch validated before #164.
-            "num_ctx":       batch.context_tokens,
+            # The context the fit was taken at (#164), from the same function
+            # the fit used, so the runtime is never asked for more than
+            # dispatch allowed for — a batch validated before #164 (NULL
+            # need) included. Only a runtime that sizes per request reads it.
+            "num_ctx":       fitted_context(entry, batch.context_tokens) if entry else None,
         }
     }
 

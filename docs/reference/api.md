@@ -362,11 +362,11 @@ Postgres with SQLAlchemy ORM. Tables (see `models.py`):
 | `api_keys` | Hashed keys; `key_type`: `worker` (org-scoped) or `personal`; prefix for UI |
 | `workers` | Static specs; `status` (liveness, server-managed) vs `activity` (daemon-reported); aggregate `vram_total_gb` / `vram_available_gb` / `ram_available_gb` from heartbeats (`null` = unknown, not zero). `ram_total_gb` is a registration snapshot. Per-card sizes live on `worker_gpus` — that is what the fit rule reads, not the aggregate. Provider policy: `window_start_min` / `window_end_min` / `window_tz`, `max_batch_prompts` (`null` = no constraint) |
 | `worker_runtimes` | Inference engines a worker exposes (spec §8.2): engine, base_url, status, `kv_alpha` (calibrated KV multiplier) |
-| `runtime_models` | Per-worker availability rows (spec §8.3): `name`, `runtime_model_id`, `digest`, `status` (on-disk) + `loaded` (in VRAM, heartbeat-updated). Lean by design — descriptive metadata lives on `model_catalog`. |
+| `runtime_models` | Per-worker availability rows (spec §8.3): `name`, `runtime_model_id`, `digest`, `status` (on-disk) + `loaded` (in VRAM, heartbeat-updated), and for a runtime that fixes its context at launch `context_limit` / `context_allocated`. Lean by design — descriptive metadata lives on `model_catalog`. |
 | `worker_gpus` | Physical GPUs per worker (spec §8.4): vendor, name, vram_gb, driver, cuda |
 | `model_catalog` | Curated, pinned models users select for a batch (identity). See [Model catalogue](#model-catalogue-v1models). |
 | `files` | Uploaded inputs and generated outputs |
-| `batches` | Lifecycle status, request counts, `attempts` (requeue counter), `context_tokens` (the context it is fitted and run at) |
+| `batches` | Lifecycle status, request counts, `attempts` (requeue counter), `context_tokens` (the context its rows need) |
 | `batch_assignments` | Which worker holds which batch (FK → `workers.id`, `ON DELETE SET NULL` — history survives worker removal) |
 | `password_reset_tokens` | Forgot-password flow |
 
@@ -514,16 +514,38 @@ A model's VRAM footprint grows with the context it is loaded at, so the
 scheduler fits a batch at the context *that batch* needs:
 
 ```
-required = weights_gb + alpha × kv_bytes_per_token × context_tokens
+required = weights_gb + alpha × kv_bytes_per_token × cells
 ```
 
-- **`context_tokens`** is set once, at validation: the p99 over the file's rows
-  of (estimated prompt tokens + `max_tokens`, default 512), rounded up to a
-  power of two, at least 4096, and capped at the model's `context_length`.
-  Prompt tokens are estimated at 3 bytes a token of text — an over-count for
-  English, which errs towards a larger context — and an image part counts as
-  1024 tokens whatever its size. p99, not max, so one outlier row does not size
-  the whole batch; a row longer than the context is truncated by the runtime.
+- **`context_tokens`** — the context the rows *need* — is set once, at
+  validation: the p99 over the file's rows of (estimated prompt tokens + the
+  row's generation limit). p99, not max, so one outlier row does not size the
+  whole batch; a row longer than the context it runs at is truncated by the
+  runtime. The estimate:
+    - text is 3 bytes a token — an over-count for English, which errs towards a
+      larger context — and an image part is 1024 tokens whatever its size;
+    - tool schemas (`tools`, `functions`) and assistant `tool_calls` count, as
+      the runtime renders them into the prompt — even under
+      `tool_choice: "none"`, which Ollama ignores;
+    - a `prompt` or `input` array is several independent requests, so the row
+      needs its largest element, not their sum; token-id arrays count one token
+      an id;
+    - the generation limit is `max_tokens` (else `max_completion_tokens`),
+      default 512 only when absent or null — `0`, as in prompt scoring, is kept.
+- **`cells`** — the KV cache the fit is taken at — depends on the runtime:
+    - **Ollama** sizes its cache per request. The need is rounded up to a power
+      of two (at least 4096, so consecutive batches reuse a loaded model) and
+      capped at the model's `context_length`. The poll response sends that same
+      number as **`num_ctx`**, and the daemon asks Ollama for exactly it — a
+      batch validated before this existed included, at 4096 — so what was
+      fitted is what is allocated. An entry with no footprint line is fitted on
+      its scalar `vram_gb` and run at 4096.
+    - **llama.cpp and vLLM** fix their cache at launch and ignore `num_ctx`.
+      Their inventory reports the context they were started with — llama.cpp's
+      per-slot `n_ctx` and its slots, vLLM's `max_model_len` — so they are
+      fitted at the cells actually allocated (`context_allocated`), and are not
+      offered rows that need more than one request may use (`context_limit`).
+      A daemon too old to report them is fitted as Ollama is.
 - **`alpha`** is the serving runtime's `kv_alpha`: parallel slots and KV cache
   type multiply the cache. Each heartbeat reports, per loaded model, the memory
   the runtime says it occupies and the context it was loaded at (Ollama
@@ -533,13 +555,14 @@ required = weights_gb + alpha × kv_bytes_per_token × context_tokens
   0.32 on Metal leaves the KV cache out of `size_vram`), and a provider running a
   quantised KV cache is over-estimated — refused a card it might fit, never
   given one it cannot.
-- The poll response carries the context as **`num_ctx`**, and the daemon asks
-  Ollama for exactly that, so what was fitted is what is allocated.
 
-`models_servable` is computed at 4096, the smallest context: a listed model is
-one a short batch would be dispatched for. When the online workers that host a
-file's model all fit it at 4096 but none fits it at the file's own context,
-validation fails with `context_too_large`; when none is online the batch queues.
+`models_servable` is computed with no batch: at 4096 on Ollama, at the
+launch allocation on llama.cpp and vLLM. A listed model is one a short batch
+would be dispatched for. When the online workers that host a file's model all
+fit it that way but none fits the file's own context, validation fails with
+`context_too_large`; when the ones that fit the context all cap batches below
+the file's size, it fails with `batch_too_large` — one worker has to satisfy
+both. When none is online the batch queues.
 
 ### Validation errors
 

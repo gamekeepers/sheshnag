@@ -5,12 +5,19 @@ batch at the context it needs, with the serving runtime's own KV multiplier,
 and a large-context batch is refused a card a small-context one is given.
 """
 
+import importlib.util
+import io
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
 import pytest
 
-from models import Batch, ModelCatalog, Worker, WorkerRuntime
+from models import Batch, ModelCatalog, RuntimeModel, Worker, WorkerRuntime
 from scheduler import (
-    DEFAULT_KV_ALPHA, KV_ALPHA_FLOOR, MIN_CONTEXT, batch_context, observed_kv_alpha,
-    required_vram_gb,
+    DEFAULT_KV_ALPHA, KV_ALPHA_FLOOR, MIN_CONTEXT, batch_context, can_serve, fitted_context,
+    observed_kv_alpha, required_vram_gb,
 )
 from services.batch_validator import TOKENS_PER_IMAGE, estimate_row_tokens
 from tests.test_capability_gate import _errors, _register, _settle
@@ -25,8 +32,8 @@ GIB = 1024 ** 3
 #
 # Metadata as /api/show (verbose) returns it for two models on disk, and the
 # footprint measured loading each at several contexts — Ollama 0.32.14,
-# Apple M-series, 24 GiB unified memory, 2026-10-27. Neither model nor
-# machine is the one DEFAULT_KV_ALPHA was fitted on (ministral-3:3b, CUDA).
+# Apple M-series, 24 GiB unified memory. Neither model nor machine is the one
+# DEFAULT_KV_ALPHA was fitted on (ministral-3:3b, CUDA).
 
 GEMMA4_12B = {
     "general.architecture": "gemma4",
@@ -42,10 +49,13 @@ GEMMA4_12B = {
     "gemma4.attention.sliding_window_pattern": [True] * 5 + [False],
 }
 GEMMA4_12B["gemma4.attention.sliding_window_pattern"] *= 8
-GEMMA4_BYTES = 7_381_382_048
-# Metal-resident model + KV + compute buffers, summed from llama.cpp's load
-# log: /api/ps on this build leaves the KV cache out of size_vram.
-GEMMA4_MEASURED_GIB = {8192: 7.944, 32768: 8.366, 131072: 9.632}
+# The pinned manifest's model layer + vision projector — both loaded
+# (llama-server --mmproj); its `draft` layer is not.
+GEMMA4_BYTES = 7_381_382_048 + 175_115_584
+# Metal-resident model + projector + KV + compute buffers, summed from
+# llama.cpp's load log in one session (2026-11-04): /api/ps on this build
+# leaves the KV cache out of size_vram.
+GEMMA4_MEASURED_GIB = {8192: 7.803, 32768: 8.530, 131072: 9.795}
 
 PHI3_NUEXTRACT = {
     "general.architecture": "phi3",
@@ -102,13 +112,30 @@ def test_shipped_manifest_carries_a_footprint_line():
 
 # ─── The batch's context ────────────────────────────────────
 
-def test_batch_context_is_the_p99_rounded_up_to_a_power_of_two():
-    assert batch_context([]) == MIN_CONTEXT
-    assert batch_context([100] * 10) == MIN_CONTEXT
+def test_batch_context_is_the_p99_need():
+    assert batch_context([]) == 0
+    assert batch_context([100] * 10) == 100
     rows = [5000] * 99 + [200_000]        # one outlier does not size the batch
-    assert batch_context(rows) == 8192
-    assert batch_context([200_000] * 100) == 262_144
-    assert batch_context([200_000] * 100, model_context=131_072) == 131_072
+    assert batch_context(rows) == 5000
+
+
+def test_fitted_context_rounds_up_to_a_power_of_two_within_the_model():
+    entry = _line(context_length=131_072)
+    assert fitted_context(entry, 100) == MIN_CONTEXT
+    assert fitted_context(entry, 5000) == 8192
+    assert fitted_context(entry, 200_000) == 131_072          # capped at the model's own
+    assert fitted_context(_line(context_length=2048), 100) == 2048
+
+
+def test_a_batch_without_a_need_runs_at_what_it_was_fitted_at():
+    """A batch validated before #164 has NULL context_tokens; it is fitted at
+    MIN_CONTEXT, so it must be RUN at MIN_CONTEXT, not the server's default."""
+    assert fitted_context(_line(), None) == MIN_CONTEXT
+
+
+def test_a_scalar_entry_runs_at_the_small_context_its_scalar_describes():
+    scalar = ModelCatalog(vram_gb=9.6, context_length=131_072)
+    assert fitted_context(scalar, 100_000) == MIN_CONTEXT
 
 
 def test_row_estimate_counts_text_not_image_bytes():
@@ -118,6 +145,34 @@ def test_row_estimate_counts_text_not_image_bytes():
     tokens = estimate_row_tokens("/v1/chat/completions", row)
     assert tokens < TOKENS_PER_IMAGE + 300
     assert estimate_row_tokens("/v1/chat/completions", {"messages": []}) == 512  # default max_tokens
+
+
+def test_row_estimate_counts_tool_schemas_and_calls():
+    """Both are rendered into the prompt; a short message with a big schema is a long prompt."""
+    schema = {"type": "function", "function": {"name": "f", "parameters": {"description": "x" * 30_000}}}
+    call = {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "y" * 30_000}}
+    bare = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}
+    tools = dict(bare, tools=[schema])
+    called = dict(bare, messages=bare["messages"] + [{"role": "assistant", "content": None, "tool_calls": [call]}])
+    base = estimate_row_tokens("/v1/chat/completions", bare)
+    assert estimate_row_tokens("/v1/chat/completions", tools) > base + 9_000
+    assert estimate_row_tokens("/v1/chat/completions", called) > base + 9_000
+
+
+def test_a_prompt_array_is_independent_prompts_not_one_long_one():
+    many = {"prompt": ["x" * 300] * 100, "max_tokens": 0}
+    assert estimate_row_tokens("/v1/completions", many) == estimate_row_tokens(
+        "/v1/completions", {"prompt": "x" * 300, "max_tokens": 0})
+    assert estimate_row_tokens("/v1/completions", {"prompt": list(range(700)), "max_tokens": 0}) == 700
+    assert estimate_row_tokens("/v1/completions", {"prompt": [[1] * 50, [1] * 900], "max_tokens": 0}) == 900
+
+
+def test_max_tokens_zero_is_kept():
+    """Prompt scoring (echo, max_tokens=0) generates nothing; it must not be sized as 512 more."""
+    scoring = {"prompt": "x" * 3000, "max_tokens": 0, "echo": True}
+    assert estimate_row_tokens("/v1/completions", scoring) == 1001
+    assert estimate_row_tokens("/v1/chat/completions", {"messages": [], "max_completion_tokens": 0}) == 0
+    assert estimate_row_tokens("/v1/chat/completions", {"messages": [], "max_tokens": None}) == 512
 
 
 # ─── The fit ────────────────────────────────────────────────
@@ -140,8 +195,39 @@ def test_an_entry_without_a_line_keeps_its_scalar():
     assert required_vram_gb(ModelCatalog(vram_gb=9.6, context_length=4096), 131_072) == 9.6
 
 
-def test_context_is_capped_at_the_models_own():
-    assert required_vram_gb(_line(context_length=8192), 131_072) == required_vram_gb(_line(context_length=8192), 8192)
+def _fixed_worker(card_gb, limit, allocated, engine="llamacpp"):
+    """One card, one runtime hosting m:latest, launched with a fixed context."""
+    return SimpleNamespace(
+        gpus=[SimpleNamespace(vram_gb=card_gb)], vram_total_gb=card_gb,
+        ram_total_gb=None, ram_available_gb=None,
+        window_start_min=None, window_end_min=None, window_tz=None, max_batch_prompts=None,
+        runtimes=[SimpleNamespace(
+            engine=engine, schedulable=True, kv_alpha=None, capabilities={},
+            models=[SimpleNamespace(name="m:latest", digest=None, schedulable=True,
+                                    context_limit=limit, context_allocated=allocated)],
+        )],
+    )
+
+
+def _m(**kw):
+    entry = _line(**kw)
+    entry.runtime, entry.runtime_model_id = "llamacpp", "m:latest"
+    return entry
+
+
+def test_a_fixed_context_runtime_is_fitted_at_what_it_allocated():
+    """llama.cpp started with -c 32768 -np 4 holds 32768 cells whatever the batch:
+    6 + 1.15 * 100 KB * 32768 = 9.5 GiB. A per-request fit at 4096 (6.4 GiB)
+    would put a short batch on an 8 GB card that cannot hold the server's cache."""
+    assert not can_serve(_m(), _fixed_worker(8, 8192, 32_768), context=100)
+    assert not can_serve(_m(), _fixed_worker(8, 8192, 32_768))            # capacity too
+    assert can_serve(_m(), _fixed_worker(12, 8192, 32_768), context=100)
+
+
+def test_a_fixed_context_runtime_refuses_rows_longer_than_one_request_may_be():
+    """Its memory fits, but each slot takes 8192: a 9000-token row cannot run."""
+    assert can_serve(_m(), _fixed_worker(24, 8192, 32_768), context=8192)
+    assert not can_serve(_m(), _fixed_worker(24, 8192, 32_768), context=9000)
 
 
 def test_calibration_only_ever_raises_alpha_from_the_floor():
@@ -194,6 +280,18 @@ def test_a_large_context_batch_is_refused_a_card_a_small_one_is_given(auth_clien
     _reset(db_session)
 
 
+def test_a_batch_from_before_164_is_run_at_the_context_it_was_fitted_at(auth_client, db_session):
+    """NULL need is fitted at MIN_CONTEXT, so the daemon is told MIN_CONTEXT —
+    not left to Ollama's server default, which may allocate more."""
+    _reset(db_session)
+    key = _worker_key(auth_client)
+    worker_id = _register(auth_client, key, hostname="24gb", capabilities={})
+    _line_entry(db_session)
+    _queued(db_session, "batch-legacy", None)
+    assert _poll(auth_client, key, worker_id).json()["job"]["num_ctx"] == MIN_CONTEXT
+    _reset(db_session)
+
+
 def test_validation_stores_the_context_and_rejects_one_no_host_can_hold(auth_client, db_session):
     _reset(db_session)
     key = _worker_key(auth_client)
@@ -203,7 +301,8 @@ def test_validation_stores_the_context_and_rejects_one_no_host_can_hold(auth_cli
     batch_id = _submit_rows(auth_client, 3)
     assert _settle(auth_client, batch_id)["status"] == "validated"
     db_session.expire_all()
-    assert db_session.get(Batch, batch_id).context_tokens == MIN_CONTEXT
+    # The need, not a rounded context: 8 template + 1 text + 512 to generate.
+    assert db_session.get(Batch, batch_id).context_tokens == 521
 
     # A model no online host fits even at the smallest context leaves nothing
     # to judge by — the same as no host online — so the batch queues.
@@ -232,6 +331,69 @@ def test_context_too_large_for_every_online_host_fails_at_validation(auth_client
     _reset(db_session)
 
 
+def _register_card(auth_client, key, hostname, vram_gb):
+    resp = auth_client.post("/workers/register", headers={"Authorization": f"Bearer {key}"}, json={
+        "hostname": hostname,
+        "gpus": [{"index": 0, "name": "card", "vram_gb": vram_gb}],
+        "runtimes": [{"type": "ollama", "endpoint": "localhost", "models": ["poll-model:latest"],
+                      "capabilities": {}, "version": "0.32.14"}],
+    })
+    assert resp.status_code == 200, resp.text
+    return resp.json()["worker_id"]
+
+
+def _submit_long_rows(auth_client, n, prompt_bytes):
+    line = lambda i: json.dumps({"custom_id": f"r{i}", "method": "POST", "url": "/v1/chat/completions",
+                                 "body": {"model": "poll-model",
+                                          "messages": [{"role": "user", "content": "x" * prompt_bytes}]}})
+    up = auth_client.post("/v1/files", files={"file": (
+        "in.jsonl", io.BytesIO(("\n".join(line(i) for i in range(n)) + "\n").encode()), "application/jsonl")})
+    cr = auth_client.post("/v1/batches", json={"input_file_id": up.json()["id"], "endpoint": "/v1/chat/completions"})
+    return cr.json()["id"]
+
+
+def test_size_and_context_must_be_satisfied_by_the_same_worker(auth_client, db_session):
+    """One worker takes any size but lacks the memory at this context; the
+    other has the memory but caps batches below this file. Neither can be
+    offered it, so it must not validate."""
+    _reset(db_session)
+    key = _worker_key(auth_client)
+    _line_entry(db_session)
+    _register_card(auth_client, key, "no-cap-16gb", 16.0)
+    capped = _register_card(auth_client, key, "capped-24gb", 24.0)
+    db_session.get(Worker, capped).max_batch_prompts = 2
+    db_session.commit()
+    # ~100k tokens a row, fitted at 131072: 6 + 1.15 * 100 KB * 131072 = 20 GiB.
+    body = _settle(auth_client, _submit_long_rows(auth_client, 3, 3 * 100_000))
+    assert body["status"] == "failed"
+    err = _errors(body)[0]
+    assert err["code"] == "batch_too_large"
+    assert "at most 2 requests" in err["message"]
+    _reset(db_session)
+
+
+def test_heartbeat_records_a_fixed_runtimes_launch_context(auth_client, db_session):
+    _reset(db_session)
+    key = _worker_key(auth_client)
+    _line_entry(db_session)
+    worker_id = _register(auth_client, key, hostname="llama-box", capabilities={})
+    resp = auth_client.post(f"/workers/{worker_id}/heartbeat", headers={"Authorization": f"Bearer {key}"}, json={
+        "inventory": [{"local_name": "poll-model:latest", "runtime": "ollama",
+                       "context_limit": 8192, "context_allocated": 32_768}],
+    })
+    assert resp.status_code == 200, resp.text
+    db_session.expire_all()
+    row = db_session.query(RuntimeModel).filter_by(name="poll-model:latest").one()
+    assert (row.context_limit, row.context_allocated) == (8192, 32_768)
+
+    # A batch whose rows need more than one request may hold is not offered.
+    _queued(db_session, "batch-too-long-for-a-slot", 9000)
+    assert _poll(auth_client, key, worker_id).json()["job"] is None
+    _queued(db_session, "batch-fits-a-slot", 8000)
+    assert _poll(auth_client, key, worker_id).json()["job"]["job_id"] == "batch-fits-a-slot"
+    _reset(db_session)
+
+
 def test_heartbeat_calibrates_the_runtimes_alpha(auth_client, db_session):
     _reset(db_session)
     key = _worker_key(auth_client)
@@ -254,3 +416,57 @@ def test_heartbeat_calibrates_the_runtimes_alpha(auth_client, db_session):
     assert beat(6.0 + 2 * kv_gb) == pytest.approx(2.0, abs=0.01)   # two parallel slots
     assert beat(6.1) == KV_ALPHA_FLOOR                             # under-reported: floor
     _reset(db_session)
+
+
+# ─── scripts/derive_vram.py: every file the runtime loads ────
+
+def _derive():
+    path = Path(__file__).resolve().parents[2] / "scripts" / "derive_vram.py"
+    spec = importlib.util.spec_from_file_location("derive_vram", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _registry(manifest):
+    return httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(200, json=manifest)))
+
+
+def _layer(kind, digest, size):
+    return {"mediaType": f"application/vnd.ollama.image.{kind}", "digest": f"sha256:{digest}", "size": size}
+
+
+@pytest.fixture
+def derive(monkeypatch):
+    module = _derive()
+    monkeypatch.setattr(module, "_local_manifests", lambda: iter(()))  # not this machine's models
+    return module
+
+
+def test_derive_counts_the_projector_with_the_weights(derive):
+    manifest = {"layers": [_layer("model", "a" * 64, 7_000), _layer("projector", "b" * 64, 800),
+                           _layer("draft", "c" * 64, 450), _layer("license", "d" * 64, 9)]}
+    name = derive.parse_local_name("gemma3:12b")
+    with _registry(manifest) as client:
+        assert derive.artifact_bytes({"digest": "a" * 64}, name, client) == 7_800   # no draft
+
+
+def test_derive_skips_a_multi_file_artifact_whose_pinned_manifest_is_gone(derive):
+    republished = {"layers": [_layer("model", "e" * 64, 7_000), _layer("projector", "b" * 64, 800)]}
+    name = derive.parse_local_name("gemma3:12b")
+    with _registry(republished) as client:
+        with pytest.raises(LookupError):
+            derive.artifact_bytes({"digest": "a" * 64}, name, client)
+
+
+def test_derive_sizes_a_single_file_artifact_by_its_blob(derive):
+    republished = {"layers": [_layer("model", "e" * 64, 7_000)]}
+    name = derive.parse_local_name("gpt-oss:20b")
+    with _registry(republished) as client:
+        assert derive.artifact_bytes({"digest": "a" * 64}, name, client) is None   # blob length
+
+
+def test_derive_removes_a_line_it_can_no_longer_vouch_for(derive):
+    text = "- id: m\n  vram_gb: 9.6\n  weights_gb: 8.4\n  kv_bytes_per_token: 65536\n  size_gb: 7\n"
+    out = derive.set_fields(text, "m", {"weights_gb": None, "kv_bytes_per_token": None})
+    assert out == "- id: m\n  vram_gb: 9.6\n  size_gb: 7\n"

@@ -45,7 +45,8 @@ batch's `context_tokens` — the context the scheduler fitted the card for (see
 [Context and VRAM fit](api.md#context-and-vram-fit)). It is not a row
 parameter: it is the same for every row of a batch, and nothing in the row
 body sets or overrides it. vLLM and llama.cpp fix their context at server
-launch, so nothing is sent to them.
+launch and ignore it; they report that context instead, and the scheduler fits
+them at it.
 
 > **† UNVERIFIED** — The vLLM column was built from vLLM's OpenAI-compatible server documentation, not from a live server. No vLLM instance was available in this environment (no GPU, no vllm package). Entries marked native † are doc-derived and must be confirmed against a running server before being treated as ground truth.
 

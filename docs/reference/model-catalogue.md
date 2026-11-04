@@ -183,9 +183,10 @@ stores a line instead:
 vram(ctx) = weights_gb + alpha × kv_bytes_per_token × ctx
 ```
 
-- **`weights_gb`** — what does not grow with context: the artifact's own size,
-  any sliding-window KV cache, any recurrent state, and 0.25 GiB for compute
-  buffers.
+- **`weights_gb`** — what does not grow with context: every file the runtime
+  loads (the weights and, for a vision model, its projector — llama-server
+  `--mmproj`; a `draft` layer is not loaded), any sliding-window KV cache, any
+  recurrent state, and 0.25 GiB for compute buffers.
 - **`kv_bytes_per_token`** — the f16 K+V cache of the layers that *do* grow:
   `Σ head_count_kv × (key_length + value_length) × 2` over full-attention
   layers. Sliding-window layers (gemma2/3/4, gpt-oss) and the recurrent layers
@@ -202,8 +203,13 @@ python scripts/derive_vram.py            # print what would change
 python scripts/derive_vram.py --write    # update models.yaml in place
 ```
 
-The script skips, with a reason, what the formula would get wrong: no digest,
-not on the Ollama registry, or latent attention (MLA — GLM-4.7-flash). A
+File sizes come from the manifest whose model layer *is* the pinned digest —
+the registry's, or this machine's when the registry's tag has since been
+republished. The script skips, with a reason, and removes any line it gave
+before, what it cannot vouch for: no digest, not on the Ollama registry, latent
+attention (MLA — GLM-4.7-flash), or a model with a projector whose pinned
+manifest is gone, so the projector's size is unknown (gemma3 12b/27b, gemma4
+26b/latest today — re-pin them, or pull them locally, to restore the line). A
 skipped entry keeps scheduling on its scalar `vram_gb`; a null `vram_gb` there
 **disables** the VRAM filter for that model (any worker "fits").
 
@@ -212,9 +218,9 @@ Measured on a model and machine the default alpha was not fitted on
 
 | model | context | measured | predicted |
 |---|---|---|---|
-| `gemma4:12b` | 8,192 | 7.94 GiB | 7.89 GiB |
-| `gemma4:12b` | 32,768 | 8.37 GiB | 8.33 GiB |
-| `gemma4:12b` | 131,072 | 9.63 GiB | 10.05 GiB |
+| `gemma4:12b` | 8,192 | 7.80 GiB | 8.06 GiB |
+| `gemma4:12b` | 32,768 | 8.53 GiB | 8.49 GiB |
+| `gemma4:12b` | 131,072 | 9.80 GiB | 10.21 GiB |
 | `nuextract:3.8b` | 1,024 | 2.41 GiB | 2.71 GiB |
 | `nuextract:3.8b` | 4,096 | 3.54 GiB | 4.01 GiB |
 
