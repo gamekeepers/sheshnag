@@ -45,7 +45,8 @@ def _worker(*, gpus=(), engine="ollama", models=("m:latest",),
             # runtime is up and the rows are not quarantined. The filters
             # themselves are covered in test_worker_inventory.
             schedulable=True, kv_alpha=None,
-            models=[SimpleNamespace(name=m, digest=None, schedulable=True)
+            models=[SimpleNamespace(name=m, digest=None, schedulable=True,
+                                    context_limit=None, context_allocated=None)
                     for m in models],
         )],
         vram_total_gb=vram_total_gb,

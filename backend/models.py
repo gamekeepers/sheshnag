@@ -396,6 +396,13 @@ class RuntimeModel(Base):
     details    = Column(JSON, nullable=True)
     size_bytes = Column(BigInteger, nullable=True)   # artifact size as reported; feeds vram estimates
     files      = Column(JSON, nullable=True)         # [{file, sha256, size_bytes}] for multi-shard artifacts
+    # A runtime that fixes its context at launch (llama.cpp, vLLM) reports it
+    # (#164): the most one request may use, and the KV cells allocated for
+    # all its slots together. The scheduler fits such a runtime at the cells
+    # and refuses rows longer than the limit. NULL = sized per request
+    # (Ollama, told num_ctx at dispatch) or not reported.
+    context_limit     = Column(Integer, nullable=True)
+    context_allocated = Column(Integer, nullable=True)
     last_used_at = Column(Integer, nullable=True)
     created_at = Column(Integer, default=unix_now)
     updated_at = Column(Integer, default=unix_now)

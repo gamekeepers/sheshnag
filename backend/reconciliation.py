@@ -242,6 +242,11 @@ def apply_inventory(db, worker, items) -> None:
         files = _files_payload(item)
         if files and row.files != files:
             row.files = files
+        # Overwritten every beat, None included: a server restarted with a
+        # different context, or replaced by one that sizes per request, must
+        # not keep being fitted at what it used to allocate.
+        row.context_limit = getattr(item, "context_limit", None)
+        row.context_allocated = getattr(item, "context_allocated", None)
         status, entry = classify_entry(db, item.local_name, row.digest)
         _set_state(row, status, entry, worker.id)
         _calibrate(rt, entry, item)

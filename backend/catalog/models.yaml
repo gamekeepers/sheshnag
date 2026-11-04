@@ -8,8 +8,6 @@
   parameter_size: 12.2B
   context_length: 131072
   vram_gb: 9.6
-  weights_gb: 8.46
-  kv_bytes_per_token: 65536
   size_gb: 7.59
   task_type: chat
   capabilities:
@@ -31,8 +29,6 @@
   parameter_size: 27.4B
   context_length: 131072
   vram_gb: 19.9
-  weights_gb: 17.26
-  kv_bytes_per_token: 81920
   size_gb: 16.2
   task_type: chat
   capabilities:
@@ -54,7 +50,7 @@
   parameter_size: 11.9B
   context_length: 262144
   vram_gb: 8.9
-  weights_gb: 7.75
+  weights_gb: 7.91
   kv_bytes_per_token: 16384
   size_gb: 7.04
   task_type: chat
@@ -77,8 +73,6 @@
   parameter_size: 25.8B
   context_length: 262144
   vram_gb: 20.6
-  weights_gb: 16.42
-  kv_bytes_per_token: 20480
   size_gb: 16.75
   task_type: chat
   capabilities:
@@ -108,8 +102,6 @@
   parameter_size: 8.0B
   context_length: 131072
   vram_gb: 11.2
-  weights_gb: 9.27
-  kv_bytes_per_token: 28672
   size_gb: 8.95
   task_type: chat
   capabilities:
@@ -283,7 +275,7 @@
   parameter_size: 27.8B
   context_length: 262144
   vram_gb: 25.23
-  weights_gb: 16.08
+  weights_gb: 16.95
   kv_bytes_per_token: 65536
   size_gb: 16.22
   task_type: chat

@@ -294,35 +294,55 @@ KV_ALPHA_FLOOR = 1.0
 MIN_KV_SIGNAL_GB = 0.25
 
 
-def batch_context(row_tokens, model_context=None) -> int:
-    """The context a batch is fitted and run at, from per-row token needs.
+def batch_context(row_tokens) -> int:
+    """The context a batch's rows need, in tokens: the p99 of per-row needs.
 
     p99, not max: one outlier row must not size the whole batch's KV cache.
-    Rounded up to a power of two so consecutive batches for a model reuse the
-    runtime's loaded instance instead of reloading for every small change in
-    context, and capped at what the model supports.
+    This is the *need*, stored on the batch. What a runtime is asked for is
+    `fitted_context` — rounded and capped — and a runtime whose context is
+    fixed at launch is checked against the need itself, not the rounding.
     """
-    need = MIN_CONTEXT
-    if row_tokens:
-        ordered = sorted(row_tokens)
-        need = max(need, ordered[max(0, -(-99 * len(ordered) // 100) - 1)])
-    ctx = 1 << (need - 1).bit_length()
-    return min(ctx, model_context) if model_context else ctx
+    if not row_tokens:
+        return 0
+    ordered = sorted(row_tokens)
+    return ordered[max(0, -(-99 * len(ordered) // 100) - 1)]
 
 
-def required_vram_gb(entry, context=None, alpha=None) -> float:
-    """VRAM a batch for `entry` needs at `context` tokens on a runtime with `alpha`.
+def has_footprint_line(entry) -> bool:
+    return entry.weights_gb is not None and entry.kv_bytes_per_token is not None
+
+
+def fitted_context(entry, need=None) -> int:
+    """The context a batch for `entry` is fitted at AND run at on a runtime
+    that takes its context per request (Ollama's num_ctx).
+
+    One function for both, so dispatch can never ask the runtime for more than
+    the fit allowed for — including a batch validated before #164, whose need
+    is NULL. The need is rounded up to a power of two, at least MIN_CONTEXT,
+    so consecutive batches reuse the loaded instance instead of reloading for
+    every small change in context, and capped at what the model supports.
+
+    An entry with no footprint line is fitted on its scalar `vram_gb`, which
+    accounts for no particular context; it runs at MIN_CONTEXT, the small
+    context such scalars were measured at, rather than an allocation the fit
+    never saw.
+    """
+    ctx = MIN_CONTEXT
+    if need and has_footprint_line(entry):
+        ctx = 1 << (max(need, MIN_CONTEXT) - 1).bit_length()
+    return min(ctx, entry.context_length) if entry.context_length else ctx
+
+
+def required_vram_gb(entry, cells, alpha=None) -> float:
+    """VRAM `entry` needs with a KV cache of `cells` tokens on a runtime with `alpha`.
 
     Falls back to the entry's scalar `vram_gb` when it has no footprint line —
     an architecture the derivation cannot model, or an adopted entry.
     """
-    if entry.weights_gb is None or entry.kv_bytes_per_token is None:
+    if not has_footprint_line(entry):
         return entry.vram_gb or 0
-    ctx = context or MIN_CONTEXT
-    if entry.context_length:
-        ctx = min(ctx, entry.context_length)
     a = DEFAULT_KV_ALPHA if alpha is None else alpha
-    return entry.weights_gb + a * entry.kv_bytes_per_token * ctx / GIB
+    return entry.weights_gb + a * entry.kv_bytes_per_token * cells / GIB
 
 
 def observed_kv_alpha(entry, size_vram_bytes, context):
@@ -355,6 +375,14 @@ FIT_RULES = {
 # An engine we do not recognise gets the conservative rule, so an unknown
 # runtime can never be over-committed on the strength of its name alone.
 DEFAULT_FIT_RULE = fit_vram_only
+
+
+def _hosting_row(runtime, runtime_model_ids, catalog_digest):
+    """The runtime's model row for this artifact, by the same match as _hosts."""
+    for m in runtime.models:
+        if m.schedulable and _hosts([(m.name, m.digest)], runtime_model_ids, catalog_digest):
+            return m
+    return None
 
 
 def _hosting_runtime(worker, runtime_model_ids, catalog_digest):
@@ -461,9 +489,15 @@ def can_serve(entry, worker, needs=None, prompts=None, window=True, context=None
     validator: a worker outside its hours is unavailable now, not unable, and
     the window always reopens.
 
-    `context` is the batch's context in tokens (#164); the fit is taken at
-    it, with the hosting runtime's alpha. None fits at MIN_CONTEXT, which is
-    what capacity asks: could a short batch run here.
+    `context` is the context the batch's rows need, in tokens (#164). None
+    asks what capacity asks: could a short batch run here. How it is fitted
+    depends on how the hosting runtime sizes its cache:
+
+    - **per request** (Ollama): at `fitted_context`, which dispatch then sends
+      as num_ctx, so the fit and the allocation are the same number;
+    - **fixed at launch** (llama.cpp, vLLM — they report the context they
+      were started with): at the cells they actually allocate, and only when
+      the rows fit the context one request may use.
     """
     if entry is None or worker is None:
         return False
@@ -476,8 +510,17 @@ def can_serve(entry, worker, needs=None, prompts=None, window=True, context=None
         return False  # does not host the artifact on any schedulable runtime
     if not runtime_has(runtime, needs):
         return False  # hosts it, but cannot honour what the rows ask for
+    row = _hosting_row(runtime, _target_ids(entry), entry.digest)
+    allocated = row.context_allocated if row is not None else None
+    if allocated:
+        limit = row.context_limit
+        if context and limit and context > limit:
+            return False  # the server was launched with a shorter context than the rows need
+        cells = allocated
+    else:
+        cells = fitted_context(entry, context)
     rule = FIT_RULES.get(runtime.engine, DEFAULT_FIT_RULE)
-    return rule(required_vram_gb(entry, context, runtime.kv_alpha), Capacity.of(worker))
+    return rule(required_vram_gb(entry, cells, runtime.kv_alpha), Capacity.of(worker))
 
 
 class Scheduler:
