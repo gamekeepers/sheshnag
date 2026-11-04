@@ -46,7 +46,8 @@ _MANIFEST = os.path.join(os.path.dirname(__file__), "catalog", "models.yaml")
 # stay inactive until promoted).
 _MANAGED_FIELDS = (
     "display_name", "runtime", "runtime_model_id", "digest", "quantization",
-    "parameter_size", "context_length", "vram_gb", "size_gb", "task_type",
+    "parameter_size", "context_length", "vram_gb", "weights_gb", "kv_bytes_per_token",
+    "size_gb", "task_type",
     "capabilities", "lineage",
     "source_type", "source_ref", "source_revision", "homepage_url",
 )

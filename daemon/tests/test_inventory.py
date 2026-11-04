@@ -281,6 +281,23 @@ async def test_vllm_inventory_reports_served_name_and_root():
     assert all(i["sha256"] is None for i in items)
 
 
+@pytest.mark.asyncio
+async def test_vllm_inventory_reports_max_model_len():
+    """vLLM fixes its context at launch (--max-model-len); the scheduler fits it there (#164)."""
+    def handler(request):
+        return httpx.Response(200, json={"data": [
+            {"id": "served", "root": "Qwen/Qwen3-8B", "max_model_len": 32768},
+            {"id": "unbounded"},
+        ]})
+
+    ex = VLLMExecutor(base_url="http://vllm.test")
+    ex._client = httpx.AsyncClient(base_url="http://vllm.test", transport=httpx.MockTransport(handler))
+    by_name = {i["local_name"]: i for i in await ex.inventory()}
+    assert (by_name["served"]["context_limit"], by_name["served"]["context_allocated"]) == (32768, 32768)
+    assert by_name["Qwen/Qwen3-8B"]["context_limit"] == 32768
+    assert by_name["unbounded"]["context_limit"] is None
+
+
 # ─── Heartbeat payload ───────────────────────────────────────
 
 @pytest.mark.asyncio

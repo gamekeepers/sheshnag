@@ -166,6 +166,7 @@ class Worker:
         items: List[dict] = []
         for executor in self._executors.values():
             resident: Optional[set] = None
+            footprints: Optional[Dict[str, dict]] = None
             for item in await executor.inventory():
                 stamped = dict(item)
                 if "loaded" not in stamped:
@@ -175,6 +176,14 @@ class Worker:
                         except Exception:
                             resident = set()
                     stamped["loaded"] = stamped.get("local_name") in resident
+                if stamped["loaded"]:
+                    # What the runtime says the loaded model occupies, so the
+                    # backend can calibrate this runtime's KV multiplier (#164).
+                    if footprints is None:
+                        footprints = await executor.running_footprints()
+                    seen = footprints.get(stamped.get("local_name")) or {}
+                    stamped["size_vram_bytes"] = seen.get("size_vram")
+                    stamped["loaded_context"] = seen.get("context_length")
                 items.append(stamped)
         return items
 
@@ -494,6 +503,7 @@ class Worker:
                     if prompt.url != "/v1/embeddings":
                         prompt.body.setdefault("max_tokens", job.max_tokens)
                         prompt.body.setdefault("temperature", job.temperature)
+                        prompt.num_ctx = job.num_ctx
 
                     # body.model is the platform catalogue id the user
                     # submitted; run the runtime id the backend resolved
