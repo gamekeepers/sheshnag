@@ -24,6 +24,10 @@ HEARTBEAT_TIMEOUT_SECONDS = 120
 
 SWEEP_INTERVAL_SECONDS = 60
 
+# Usage-ingestion retries handled per sweep — each one parses a whole output
+# file, so a backlog drains over several sweeps instead of in one.
+MAX_INGESTIONS_PER_SWEEP = 5
+
 
 def requeue_or_fail_batch(db, batch, error: str | None = None) -> str:
     """Requeue an in-flight batch, or fail it after MAX_BATCH_ATTEMPTS.
@@ -103,25 +107,51 @@ def sweep_stale_workers(db) -> tuple[int, int]:
     return len(stale_workers), requeued
 
 
-def sweep_pending_ingestions(db) -> int:
-    """Pick up completed batches whose token ingestion failed or was dropped."""
-    from services.usage_ingest import ingest_usage_records
+def sweep_pending_ingestions(db, limit: int = MAX_INGESTIONS_PER_SWEEP) -> int:
+    """Retry usage ingestion for completed batches whose ingest never finished.
+
+    Covers a background task that died mid-flight. At most ``limit`` batches
+    per call, oldest first, so a backlog drains over several sweeps. Batches
+    whose ingestion has raised MAX_USAGE_INGESTION_ATTEMPTS times are left
+    alone. Blocking (each retry parses a whole JSONL file), so run_sweeper calls
+    this off the event loop.
+    """
+    from sqlalchemy import func
+    from services import usage_ingest
     from models import File as FileModel
 
     pending_batches = db.query(Batch).filter(
         Batch.status == "completed",
         Batch.usage_ingestion_pending.is_(True),
-    ).all()
+        func.coalesce(Batch.usage_ingestion_attempts, 0)
+        < usage_ingest.MAX_USAGE_INGESTION_ATTEMPTS,
+    ).order_by(Batch.completed_at).limit(limit).all()
 
-    requeued = 0
+    retried = 0
     for batch in pending_batches:
         output_file = db.query(FileModel).filter(FileModel.id == batch.output_file_id).first()
-        if output_file:
-            logger.info("Sweeper retrying usage ingestion for batch %s", batch.id)
-            ingest_usage_records(batch.id, output_file.filepath)
-            requeued += 1
+        if output_file is None:
+            # Nothing to read, ever. Clear the flag so this row is not
+            # re-queried every sweep.
+            batch.usage_ingestion_pending = False
+            db.commit()
+            continue
+        logger.info("Sweeper retrying usage ingestion for batch %s", batch.id)
+        usage_ingest.ingest_usage_records(batch.id, output_file.filepath)
+        retried += 1
 
-    return requeued
+    return retried
+
+
+def _sweep_pending_ingestions_once() -> int:
+    """Run one ingestion sweep in its own session (for asyncio.to_thread)."""
+    from database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        return sweep_pending_ingestions(db)
+    finally:
+        db.close()
 
 
 async def run_sweeper() -> None:
@@ -133,11 +163,17 @@ async def run_sweeper() -> None:
         db = SessionLocal()
         try:
             sweep_stale_workers(db)
-            sweep_pending_ingestions(db)
         except Exception:
             logger.exception("Worker sweep failed — retrying next interval")
         finally:
             db.close()
+
+        # Usage-ingestion retries read and parse whole output files — kept off
+        # the event loop for the same reason as auto-adopt below.
+        try:
+            await asyncio.to_thread(_sweep_pending_ingestions_once)
+        except Exception:
+            logger.exception("Usage-ingestion sweep failed — retrying next interval")
 
         # Auto-adopt (#116): quarantined worker hashes the identity resolver
         # confirms against their public registry become catalogue entries.

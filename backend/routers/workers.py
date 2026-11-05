@@ -504,14 +504,19 @@ def upload_results(
     batch = _get_assigned_batch(db, job_id, worker_id)
 
     if batch.status == "completed":
-        # Idempotent replay: batch is already completed by this worker.
-        # Ensure the pending flag is set so ingestion definitely happens.
-        batch.usage_ingestion_pending = True
-        db.commit()
-
-        output_file = db.query(FileModel).filter(FileModel.id == batch.output_file_id).first()
-        if output_file:
-            background_tasks.add_task(ingest_usage_records, batch.id, output_file.filepath)
+        # Idempotent replay: this worker's earlier upload committed but the
+        # response never reached it (dropped connection, timeout). The first
+        # upload wins: the retried file is not stored, and the retry's
+        # completed/failed counts are ignored. For a retry of the same upload
+        # they are identical anyway.
+        #
+        # Re-schedule ingestion only if it has not finished yet. A cleared flag
+        # means the original ingest already reached a terminal outcome, so
+        # there is nothing to redo. The sweeper is the backstop either way.
+        if batch.usage_ingestion_pending:
+            output_file = db.query(FileModel).filter(FileModel.id == batch.output_file_id).first()
+            if output_file:
+                background_tasks.add_task(ingest_usage_records, batch.id, output_file.filepath)
 
         return {
             "status": "completed",

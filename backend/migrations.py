@@ -128,6 +128,9 @@ MIGRATIONS = [
     # as pending ingestion so the sweeper can pick it up.
     _Migration("batches.usage_ingestion_pending",
                "batches", "usage_ingestion_pending", Boolean()),
+    # Bounds the sweeper's retries of an ingestion that keeps raising.
+    _Migration("batches.usage_ingestion_attempts",
+               "batches", "usage_ingestion_attempts", Integer()),
 ]
 
 

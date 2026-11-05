@@ -3,7 +3,7 @@ import json
 import os
 import tempfile
 import pytest
-from models import Batch, File, UsageRecord, Organization, OrganizationMembership, User
+from models import Batch, File, UsageRecord, Organization, OrganizationMembership, User, unix_now
 from services.usage_ingest import ingest_usage_records
 
 
@@ -531,7 +531,7 @@ def test_upload_results_endpoint_is_idempotent(db_session, test_user, _engine):
     try:
         with TestClient(app) as client:
             client.headers.update({"Authorization": f"Bearer {key_val}"})
-            
+
             # First upload
             res1 = client.post(
                 "/workers/upload-results",
@@ -540,7 +540,7 @@ def test_upload_results_endpoint_is_idempotent(db_session, test_user, _engine):
             )
             assert res1.status_code == 200
             file_id_1 = res1.json()["output_file_id"]
-            
+
             # Second upload (replay)
             res2 = client.post(
                 "/workers/upload-results",
@@ -549,17 +549,17 @@ def test_upload_results_endpoint_is_idempotent(db_session, test_user, _engine):
             )
             assert res2.status_code == 200
             file_id_2 = res2.json()["output_file_id"]
-            
+
             # Must reuse the same file ID
             assert file_id_1 == file_id_2
 
         db_session.expire_all()
         db_session.refresh(batch)
 
-        # Ensure we didn't duplicate the File row (only file_id_1 should exist)
-        # The exact number of files in the DB depends on prior tests, so just check
-        # that the newly returned file IDs map to ONE unique existing row.
-        assert len(set([file_id_1, file_id_2])) == 1
+        # The replay must not have created a second File row for this batch.
+        assert db_session.query(File).filter(
+            File.filename == f"{batch.id}_output.jsonl"
+        ).count() == 1
 
         # Tokens must equal the first upload (no doubling)
         assert batch.prompt_tokens == 10
@@ -658,3 +658,159 @@ def test_duplicate_custom_id_in_one_chunk_does_not_discard_the_file(db_session, 
 
     db_session.refresh(batch)
     assert batch.total_tokens == 110
+
+
+# --- usage_ingestion_pending lifecycle --------------------------------------
+#
+# The flag is an outbox: set when a batch completes, cleared when ingestion
+# reaches an outcome that a re-run would only repeat. Anything left set is
+# re-parsed by the sweeper every SWEEP_INTERVAL_SECONDS, so each terminal path
+# must clear it.
+
+
+def _spy_on_sweeper_ingest(monkeypatch):
+    """Record which batch ids the sweeper retries, still running the real ingest.
+
+    Tables persist across tests in a session, so a raw sweep count would
+    depend on what earlier tests left behind; assert on a test's own batch.
+    """
+    from services import usage_ingest
+
+    real = usage_ingest.ingest_usage_records
+    seen = []
+
+    def spy(batch_id, filepath):
+        seen.append(batch_id)
+        real(batch_id, filepath)
+    monkeypatch.setattr(usage_ingest, "ingest_usage_records", spy)
+    return seen
+
+
+def _completed_batch_with_output(db, user, objects=None, filepath=None):
+    """A completed, ingestion-pending batch whose output File points at a JSONL."""
+    if filepath is None:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".jsonl", delete=False, encoding="utf-8"
+        ) as tmp:
+            for o in objects or []:
+                tmp.write(json.dumps(o) + "\n")
+            filepath = tmp.name
+
+    output = File(user_id=user.id, filename="out.jsonl",
+                  purpose="batch_output", filepath=filepath)
+    db.add(output)
+    db.flush()
+
+    batch = _create_test_batch(db, user)
+    batch.status = "completed"
+    batch.completed_at = unix_now()
+    batch.output_file_id = output.id
+    batch.usage_ingestion_pending = True
+    db.commit()
+    db.refresh(batch)
+    return batch
+
+
+def test_upload_where_every_prompt_errored_clears_pending_flag(db_session, test_user, _engine,
+                                                                monkeypatch):
+    """No usable usage rows is a finished ingest, not one to retry every sweep."""
+    from fastapi.testclient import TestClient
+    from main import app
+    from database import get_db
+    from tests.conftest import _make_override
+    from sweeper import sweep_pending_ingestions
+
+    key_val = "gk-test-upload-key-allerrored"
+    org, worker, batch = _worker_fixture(
+        db_session, test_user, key_val, "Worker All Errored Org", "worker-all-errored-1"
+    )
+    payload = "\n".join(json.dumps(o) for o in [
+        {"custom_id": "req-1", "error": "JSON_PARSE_ERROR", "response": None},
+        {"custom_id": "req-2", "error": "SCHEMA_VIOLATION", "response": None},
+    ])
+
+    app.dependency_overrides[get_db] = _make_override(_engine)
+    try:
+        with TestClient(app) as client:
+            client.headers.update({"Authorization": f"Bearer {key_val}"})
+            res = client.post(
+                "/workers/upload-results",
+                data={"job_id": batch.id, "worker_id": worker.id, "completed": 0, "failed": 2},
+                files={"file": ("out.jsonl", io.BytesIO(payload.encode()), "application/jsonl")},
+            )
+            assert res.status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+    db_session.expire_all()
+    db_session.refresh(batch)
+    assert batch.usage_ingestion_pending is False
+
+    seen = _spy_on_sweeper_ingest(monkeypatch)
+    sweep_pending_ingestions(db_session)
+    sweep_pending_ingestions(db_session)
+    assert batch.id not in seen
+
+
+def test_missing_output_file_clears_pending_flag(db_session, test_user, monkeypatch):
+    from sweeper import sweep_pending_ingestions
+
+    batch = _completed_batch_with_output(
+        db_session, test_user, filepath=os.path.join(tempfile.gettempdir(), "does-not-exist.jsonl")
+    )
+    seen = _spy_on_sweeper_ingest(monkeypatch)
+
+    sweep_pending_ingestions(db_session)
+    assert seen.count(batch.id) == 1
+    db_session.expire_all()
+    db_session.refresh(batch)
+    assert batch.usage_ingestion_pending is False
+
+    sweep_pending_ingestions(db_session)
+    assert seen.count(batch.id) == 1
+
+
+def test_ingestion_that_keeps_raising_stops_being_swept(db_session, test_user, monkeypatch):
+    """An unexpected error is retried, but only MAX_USAGE_INGESTION_ATTEMPTS times."""
+    from services import usage_ingest
+    from sweeper import sweep_pending_ingestions
+
+    batch = _completed_batch_with_output(db_session, test_user, [_GOOD])
+
+    def boom(db, chunk):
+        raise RuntimeError("simulated ingest bug")
+    monkeypatch.setattr(usage_ingest, "_upsert_chunk", boom)
+
+    seen = _spy_on_sweeper_ingest(monkeypatch)
+
+    for _ in range(usage_ingest.MAX_USAGE_INGESTION_ATTEMPTS + 2):
+        sweep_pending_ingestions(db_session)
+
+    assert seen.count(batch.id) == usage_ingest.MAX_USAGE_INGESTION_ATTEMPTS
+    db_session.expire_all()
+    db_session.refresh(batch)
+    assert batch.usage_ingestion_attempts == usage_ingest.MAX_USAGE_INGESTION_ATTEMPTS
+    # Still flagged: it was never ingested, and that should stay visible.
+    assert batch.usage_ingestion_pending is True
+    os.remove(db_session.query(File).filter(File.id == batch.output_file_id).one().filepath)
+
+
+def test_sweep_handles_a_bounded_number_of_batches(db_session, test_user, monkeypatch):
+    """A backlog drains over several sweeps rather than in one."""
+    from services import usage_ingest
+    from sweeper import sweep_pending_ingestions
+
+    batches = [_completed_batch_with_output(db_session, test_user, [_GOOD]) for _ in range(3)]
+
+    calls = []
+    monkeypatch.setattr(usage_ingest, "ingest_usage_records",
+                        lambda batch_id, filepath: calls.append(batch_id))
+
+    assert sweep_pending_ingestions(db_session, limit=2) == 2
+    assert len(calls) == 2
+
+    # Leave nothing pending for later tests to trip over.
+    for b in batches:
+        b.usage_ingestion_pending = False
+        os.remove(db_session.query(File).filter(File.id == b.output_file_id).one().filepath)
+    db_session.commit()

@@ -325,6 +325,15 @@ Fields:
   - file:      (binary) output .jsonl
 ```
 
+Idempotent: a retry from the assigned worker after the batch is already
+`completed` (say the first response was lost) returns `200` with the
+original `output_file_id` instead of `409`. The first upload wins. The retried
+file is not stored, and its `completed` / `failed` counts are ignored.
+
+Per-prompt token usage is parsed from the output file after the response is
+sent. The batch is flagged `usage_ingestion_pending` until that parse finishes,
+so ingestion lost to a crash is retried by the sweeper (below).
+
 #### POST /workers/report-failure
 ```json
 // Request
@@ -344,6 +353,12 @@ Fields:
 - A background **sweeper** (started at app startup, 60s interval) marks
   workers `offline` after **120s** without a heartbeat and requeues their
   in-flight batches — a crashed daemon never strands a batch.
+- The same sweeper retries usage ingestion for completed batches still
+  flagged `usage_ingestion_pending`, at most `MAX_INGESTIONS_PER_SWEEP = 5`
+  per pass and off the event loop. A missing output file or one with no usable
+  usage rows counts as finished. An ingest that raises is retried until
+  `MAX_USAGE_INGESTION_ATTEMPTS = 5` (`batches.usage_ingestion_attempts`), then
+  left flagged and not swept again.
 
 See `sweeper.py` for the thresholds.
 

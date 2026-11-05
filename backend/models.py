@@ -635,6 +635,7 @@ class Batch(Base):
     completion_tokens        = Column(Integer, nullable=True)
     total_tokens             = Column(Integer, nullable=True)
     usage_ingestion_pending  = Column(Boolean, default=False)
+    usage_ingestion_attempts = Column(Integer, default=0)  # raised ingests; sweeper gives up at a cap
 
     usage_records = relationship(
         "UsageRecord", back_populates="batch",
