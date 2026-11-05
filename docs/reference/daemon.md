@@ -65,6 +65,7 @@ daemon/
 │   ├── log.py               # Logging setup
 │   ├── client.py            # BackendClient — all control-plane HTTP
 │   ├── worker.py            # Poll → download → execute → upload loop
+│   ├── journal.py           # Per-job result journal — resume after a crash
 │   ├── heartbeat.py         # HeartbeatManager (activity, capabilities, runtime liveness)
 │   ├── hardware.py          # GPU/CPU/RAM inspection (nvidia-smi etc.)
 │   ├── registration.py      # Registration + credential persistence
@@ -159,6 +160,34 @@ which is what the pre-pool sequential loop did. Prompts left unrun when a
 shutdown signal arrives produce synthetic failure rows with error
 `worker_shutdown:prompt not executed before daemon stopped`, preserving the
 1:1 input-to-output contract and honest counts for the backend and dashboard.
+
+### Resuming after a crash
+
+Each result is appended to `<work_dir>/<job_id>/journal.jsonl` as soon as it
+completes, not held in memory until the end. If the daemon dies mid-batch
+(`kill -9`, OOM, crash) and the same batch later runs on this worker again, the
+rows already in the journal are restored instead of executed. The log says how
+many: `Resuming from journal: 900/1000 prompts already done`.
+
+- **Keyed by `custom_id`.** One JSON object per line, in the same shape as an
+  output row. No offsets or counters: the pool finishes prompts out of order,
+  so the completed set is sparse. Skipping on `custom_id` is safe because the
+  backend rejects duplicate ids at upload. A duplicate that bypassed it still
+  fails with `DUPLICATE_CUSTOM_ID` and never inherits its twin's result.
+- **Failed rows count as done.** A row the runtime answered with an error was
+  executed. Re-running it would retry a deterministic failure on every resume.
+  Rejections decided before execution, and `worker_shutdown:` placeholders, are
+  not journalled.
+- **Progress includes restored rows**, so a resumed batch does not appear to
+  start over near zero.
+- **Durability.** Each row is flushed to the OS, and the file is fsynced on
+  close. That survives the process dying. A machine losing power before
+  writeback can lose the last few rows, which are simply run again.
+- **A torn last line** from a kill mid-write is discarded with a warning and
+  cut off before appending resumes.
+
+Resume works only on the same machine (the journal is local), and the output
+file is still written once at the end from the restored and new rows together.
 
 ## Configuration
 
