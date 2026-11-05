@@ -38,6 +38,7 @@ from daemon.config import DaemonConfig
 from daemon.executors.base import BaseExecutor
 from daemon.executor_factory import VLLM_ROCM_HINT
 from daemon.hardware import gpu_vendors_present
+from daemon.journal import JOURNAL_FILENAME, ResultJournal
 from daemon.log import get_logger
 from daemon.models import CompletionResult, Job, PromptRequest
 from daemon.heartbeat import HeartbeatManager
@@ -434,7 +435,11 @@ class Worker:
             return
 
         # ── Step 3: Execute each prompt ──────────────────────────
-        results = await self._run_prompts(prompts, job, executor)
+        # Each result is journalled as it completes; a rerun of this job on
+        # this worker (after a crash or requeue) resumes from the journal.
+        results = await self._run_prompts(
+            prompts, job, executor, journal_path=job_dir / JOURNAL_FILENAME,
+        )
 
         # ── Step 4: Write output JSONL ───────────────────────────
         self._write_output(output_path, results)
@@ -513,6 +518,7 @@ class Worker:
     async def _run_prompts(
         self, prompts: List[PromptRequest], job: Job,
         executor: Optional[BaseExecutor] = None,
+        journal_path: Optional[Path] = None,
     ) -> List[CompletionResult]:
         """
         Execute all prompts through a bounded pool of concurrent workers.
@@ -529,6 +535,13 @@ class Worker:
         `executor` is the runtime the job routed to; callers that don't
         resolve it themselves (tests, legacy paths) fall back to routing
         by job.model here.
+
+        With `journal_path`, every result the executor produces is appended
+        there as it lands, and rows an earlier run already journalled are
+        restored instead of executed (see daemon/journal.py). Restored rows
+        count toward progress, so a resumed job does not appear to restart
+        near zero. Skipping on custom_id is safe because the backend rejects
+        duplicate custom_ids at upload (batch_validator.check_custom_id).
         """
         if executor is None:
             executor = await self._executor_for(job.model)
@@ -557,6 +570,14 @@ class Worker:
         failed = 0
         last_progress_report = 0.0
 
+        journal: Optional[ResultJournal] = None
+        restored: Dict[str, CompletionResult] = {}
+        if journal_path is not None:
+            journal = ResultJournal.open(journal_path)
+            restored = journal.restored
+        resumed = 0
+        resumed_tokens = 0
+
         # ── Partition ────────────────────────────────────────────
         # Every rejection is decided here, before any path forks, so one input
         # cannot get different treatment depending on the runtime it lands on.
@@ -582,6 +603,21 @@ class Worker:
                 failed += 1
                 continue
             seen_ids.add(p.custom_id)
+
+            # Already executed by an earlier run of this job. Errors included:
+            # a failed row was still executed, and re-running it would retry a
+            # deterministic failure forever. Placed after the duplicate check
+            # so a duplicate row never inherits its twin's journalled result.
+            prior = restored.get(p.custom_id)
+            if prior is not None:
+                results_by_index[idx] = prior
+                resumed += 1
+                if prior.is_success:
+                    completed += 1
+                    resumed_tokens += int(prior.usage.get("total_tokens", 0) or 0)
+                else:
+                    failed += 1
+                continue
 
             if p.body.get("stream"):
                 # Applies to every endpoint — batch execution cannot honor
@@ -637,6 +673,24 @@ class Worker:
         ] + [[row] for row in solo]
 
         units = chat_units + embedding_units
+
+        if resumed:
+            logger.info(
+                f"[{job.job_id}] Resuming from journal: {resumed}/{total} "
+                f"prompts already done ({completed} succeeded, {failed} failed, "
+                f"{resumed_tokens:,} tokens) — skipping them, "
+                f"{sum(len(u) for u in units)} left to run"
+            )
+            self._heartbeat.update_status(
+                status="busy",
+                job_id=job.job_id,
+                progress={
+                    "total_prompts": total,
+                    "completed_prompts": completed,
+                    "failed_prompts": failed,
+                },
+            )
+
         queue: asyncio.Queue = asyncio.Queue()
         for unit in units:
             queue.put_nowait(unit)
@@ -721,6 +775,8 @@ class Worker:
                 async with lock:
                     for i, result in paired:
                         results_by_index[i] = result
+                        if journal is not None:
+                            journal.append(result)
                         if result.is_success:
                             completed += 1
                             tokens = result.usage.get("total_tokens", "?")
@@ -762,26 +818,32 @@ class Worker:
                     )
 
         # ── Run the pool ─────────────────────────────────────────
-        if units:
-            pool_size = max(1, min(self._config.max_concurrent_prompts, len(units)))
-            logger.info(
-                f"[{job.job_id}] Running {len(units)} unit(s) "
-                f"({len(chat_units)} chat, {len(embedding_rows)} embedding rows) "
-                f"at concurrency {pool_size}"
-            )
-            workers = [
-                asyncio.create_task(pool_worker()) for _ in range(pool_size)
-            ]
-            outcomes = await asyncio.gather(*workers, return_exceptions=True)
-            for outcome in outcomes:
-                if isinstance(outcome, BaseException):
-                    # _run_unit already converts per-unit failures into rows, so
-                    # reaching here means the pool loop itself broke. Log it and
-                    # still return everything that finished.
-                    logger.error(
-                        f"[{job.job_id}] Pool worker crashed: {outcome!r}",
-                        exc_info=outcome,
-                    )
+        try:
+            if units:
+                pool_size = max(1, min(self._config.max_concurrent_prompts, len(units)))
+                logger.info(
+                    f"[{job.job_id}] Running {len(units)} unit(s) "
+                    f"({len(chat_units)} chat, {len(embedding_rows)} embedding rows) "
+                    f"at concurrency {pool_size}"
+                )
+                workers = [
+                    asyncio.create_task(pool_worker()) for _ in range(pool_size)
+                ]
+                outcomes = await asyncio.gather(*workers, return_exceptions=True)
+                for outcome in outcomes:
+                    if isinstance(outcome, BaseException):
+                        # _run_unit already converts per-unit failures into rows, so
+                        # reaching here means the pool loop itself broke. Log it and
+                        # still return everything that finished.
+                        logger.error(
+                            f"[{job.job_id}] Pool worker crashed: {outcome!r}",
+                            exc_info=outcome,
+                        )
+        finally:
+            # The unrun-row placeholders below are never journalled: they were
+            # not executed, and a resume must run them.
+            if journal is not None:
+                journal.close()
 
         if not self._running:
             logger.warning(
