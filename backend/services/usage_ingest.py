@@ -11,6 +11,9 @@ logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 500
 
+# The sweeper stops retrying a batch whose ingestion has raised this many times.
+MAX_USAGE_INGESTION_ATTEMPTS = 5
+
 
 def _coerce_usage(usage: Dict[str, Any]) -> Optional[Dict[str, int]]:
     """Read the three token counts, or None if any of them is not a number.
@@ -133,6 +136,46 @@ def _upsert_chunk(db, chunk: List[Dict[str, Any]]) -> None:
     db.execute(stmt)
 
 
+def _mark_ingestion_done(db, batch) -> None:
+    """Clear the outbox flag: this batch's output has been fully considered.
+
+    Called on every terminal outcome, not only the one that wrote tokens. A
+    batch whose every prompt errored, or whose output file is gone, will reach
+    the same place on every re-run, so leaving the flag set would only make the
+    sweeper re-read the file forever.
+    """
+    batch.usage_ingestion_pending = False
+    db.commit()
+
+
+def _record_failed_attempt(batch_id: str) -> None:
+    """Count an ingestion that raised, in a fresh session.
+
+    The sweeper stops retrying a batch once this reaches
+    MAX_USAGE_INGESTION_ATTEMPTS, so a bug in this module costs a bounded
+    number of full-file parses rather than one every sweep, forever. The flag
+    stays set so the batch is still visible as never-ingested.
+    """
+    db = SessionLocal()
+    try:
+        batch = db.query(Batch).filter(Batch.id == batch_id).first()
+        if batch is None:
+            return
+        batch.usage_ingestion_attempts = (batch.usage_ingestion_attempts or 0) + 1
+        db.commit()
+        if batch.usage_ingestion_attempts >= MAX_USAGE_INGESTION_ATTEMPTS:
+            logger.error(
+                "Usage ingestion for batch %s failed %d times; the sweeper will "
+                "not retry it again",
+                batch_id, batch.usage_ingestion_attempts,
+            )
+    except Exception:
+        logger.exception("Could not record failed usage ingestion for batch %s", batch_id)
+        db.rollback()
+    finally:
+        db.close()
+
+
 def ingest_usage_records(batch_id: str, filepath: str) -> None:
     """Parse output JSONL file and populate usage_records with per-prompt token usage.
 
@@ -142,8 +185,14 @@ def ingest_usage_records(batch_id: str, filepath: str) -> None:
 
     Records are parsed and written a chunk at a time, so peak memory is bounded
     by CHUNK_SIZE rather than by the number of prompts in the batch.
+
+    Every outcome that would repeat on a re-run (file missing, no usable usage
+    rows, rollups written) clears ``usage_ingestion_pending``. Only an
+    unexpected exception leaves it set, and that increments
+    ``usage_ingestion_attempts`` so the sweeper's retries are bounded.
     """
     db = SessionLocal()
+    failed = False
     try:
         batch = db.query(Batch).filter(Batch.id == batch_id).first()
         if not batch:
@@ -165,10 +214,14 @@ def ingest_usage_records(batch_id: str, filepath: str) -> None:
                 db.commit()
                 wrote_any = True
         except FileNotFoundError:
+            # Terminal: the file will not reappear by retrying.
             logger.warning("Output file not found for batch %s at %s", batch_id, filepath)
+            _mark_ingestion_done(db, batch)
             return
 
         if not wrote_any:
+            # Terminal: e.g. every prompt errored. Re-reading yields the same.
+            _mark_ingestion_done(db, batch)
             return
 
         # Recompute rollups from usage_records table
@@ -182,14 +235,18 @@ def ingest_usage_records(batch_id: str, filepath: str) -> None:
             batch.prompt_tokens = int(totals.prompt_sum or 0)
             batch.completion_tokens = int(totals.completion_sum or 0)
             batch.total_tokens = int(totals.total_sum or 0)
-            db.commit()
             logger.info(
                 "Ingested usage for batch %s: %d prompt, %d completion, %d total tokens",
                 batch_id, batch.prompt_tokens, batch.completion_tokens, batch.total_tokens,
             )
+        _mark_ingestion_done(db, batch)
 
     except Exception as exc:
         logger.exception("Error ingesting usage records for batch %s: %s", batch_id, exc)
         db.rollback()
+        failed = True
     finally:
         db.close()
+
+    if failed:
+        _record_failed_attempt(batch_id)
