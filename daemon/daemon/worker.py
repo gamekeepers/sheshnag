@@ -38,10 +38,15 @@ from daemon.config import DaemonConfig
 from daemon.executors.base import BaseExecutor
 from daemon.executor_factory import VLLM_ROCM_HINT
 from daemon.hardware import gpu_vendors_present
+from daemon.journal import JOURNAL_FILENAME, ResultJournal, is_final
+from daemon.journal import load as load_journal
 from daemon.log import get_logger
 from daemon.models import CompletionResult, Job, PromptRequest
 from daemon.heartbeat import HeartbeatManager
 from daemon.model_manager import ModelManager
+
+# Present in a job's directory while this daemon is running that job.
+IN_FLIGHT_MARKER = "in_flight"
 
 logger = get_logger(__name__)
 
@@ -116,6 +121,8 @@ class Worker:
         # Ensure work directory exists
         self._work_dir = Path(config.work_dir)
         self._work_dir.mkdir(parents=True, exist_ok=True)
+        # Job ids a previous process died running; found on the first poll.
+        self._interrupted_jobs: Optional[List[str]] = None
 
     async def _get_loaded_models(self) -> List[str]:
         """Models resident in VRAM, union across runtimes, for the heartbeat.
@@ -333,6 +340,8 @@ class Worker:
 
     async def _poll_and_execute(self) -> None:
         """Single iteration of the poll-execute cycle."""
+        await self._reclaim_interrupted_jobs()
+
         logger.debug("Polling for jobs...")
         job = await self._client.poll_job()
 
@@ -344,6 +353,13 @@ class Worker:
         logger.info(f"{'='*60}")
         logger.info(f"JOB STARTED: {job.job_id}")
         logger.info(f"{'='*60}")
+
+        marker = self._work_dir / job.job_id / IN_FLIGHT_MARKER
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+        except OSError as exc:
+            logger.warning(f"[{job.job_id}] Could not write in-flight marker: {exc}")
 
         try:
             await self._execute_job(job)
@@ -357,6 +373,44 @@ class Worker:
             await self._client.report_failure(job.job_id, str(exc))
         finally:
             self._current_job_id = None
+            # Reached on every outcome this process saw through. Only a process
+            # that died mid-job leaves the marker behind.
+            marker.unlink(missing_ok=True)
+
+    async def _reclaim_interrupted_jobs(self) -> None:
+        """Hand back batches a previous run of this daemon died holding.
+
+        A daemon restarted after a crash keeps its worker_id and heartbeats
+        again within seconds, so the backend never sees it go stale and never
+        requeues the batch it was running — and /workers/poll only hands out
+        unassigned work. Without this the batch sits in_progress forever and
+        its journal is never read.
+
+        Reporting the failure requeues it (one of MAX_BATCH_ATTEMPTS). If it
+        comes back to this worker, the journal resumes it. Runs before each
+        poll until every leftover marker has been delivered, so a backend that
+        is down at startup is retried rather than skipped.
+        """
+        if self._interrupted_jobs is None:
+            self._interrupted_jobs = sorted(
+                m.parent.name for m in self._work_dir.glob(f"*/{IN_FLIGHT_MARKER}")
+            )
+        while self._interrupted_jobs:
+            job_id = self._interrupted_jobs[0]
+            journalled = len(load_journal(self._work_dir / job_id / JOURNAL_FILENAME))
+            logger.warning(
+                f"[{job_id}] Previous daemon run stopped mid-job "
+                f"({journalled} prompts journalled) — handing the batch back"
+            )
+            delivered = await self._client.report_failure(
+                job_id,
+                f"worker restarted mid-job; {journalled} completed prompts "
+                f"journalled on this worker",
+            )
+            if delivered is False:
+                return  # backend unreachable — try again before the next poll
+            (self._work_dir / job_id / IN_FLIGHT_MARKER).unlink(missing_ok=True)
+            self._interrupted_jobs.pop(0)
 
     async def _execute_job(self, job: Job) -> None:
         """
@@ -434,7 +488,11 @@ class Worker:
             return
 
         # ── Step 3: Execute each prompt ──────────────────────────
-        results = await self._run_prompts(prompts, job, executor)
+        # Each result is journalled as it completes; a rerun of this job on
+        # this worker (after a crash or requeue) resumes from the journal.
+        results = await self._run_prompts(
+            prompts, job, executor, journal_path=job_dir / JOURNAL_FILENAME,
+        )
 
         # ── Step 4: Write output JSONL ───────────────────────────
         self._write_output(output_path, results)
@@ -447,6 +505,9 @@ class Worker:
         await self._client.upload_results(
             job.job_id, output_path, completed=successes, failed=failures
         )
+        # The backend has the results; a journal kept past this point is only
+        # a second copy of output.jsonl, and a stale one to resume from.
+        (job_dir / JOURNAL_FILENAME).unlink(missing_ok=True)
 
         # ── Summary ──────────────────────────────────────────────
         total_tokens = sum(
@@ -513,6 +574,7 @@ class Worker:
     async def _run_prompts(
         self, prompts: List[PromptRequest], job: Job,
         executor: Optional[BaseExecutor] = None,
+        journal_path: Optional[Path] = None,
     ) -> List[CompletionResult]:
         """
         Execute all prompts through a bounded pool of concurrent workers.
@@ -529,6 +591,13 @@ class Worker:
         `executor` is the runtime the job routed to; callers that don't
         resolve it themselves (tests, legacy paths) fall back to routing
         by job.model here.
+
+        With `journal_path`, every result the executor produces is appended
+        there as it lands, and rows an earlier run already journalled are
+        restored instead of executed (see daemon/journal.py). Restored rows
+        count toward progress, so a resumed job does not appear to restart
+        near zero. Skipping on custom_id is safe because the backend rejects
+        duplicate custom_ids at upload (batch_validator.check_custom_id).
         """
         if executor is None:
             executor = await self._executor_for(job.model)
@@ -548,6 +617,19 @@ class Worker:
                 for p in prompts
             ]
 
+        # The journal is closed (and fsynced) however the run ends.
+        journal = ResultJournal.open(journal_path) if journal_path is not None else None
+        try:
+            return await self._run_pool(prompts, job, executor, journal)
+        finally:
+            if journal is not None:
+                journal.close()
+
+    async def _run_pool(
+        self, prompts: List[PromptRequest], job: Job,
+        executor: BaseExecutor, journal: Optional[ResultJournal],
+    ) -> List[CompletionResult]:
+        """The body of _run_prompts once the runtime and journal are settled."""
         total = len(prompts)
         # Keyed by input index, not custom_id — duplicate ids still get their
         # own row, and out-of-order completion still writes in input order.
@@ -556,6 +638,11 @@ class Worker:
         completed = 0
         failed = 0
         last_progress_report = 0.0
+
+        restored: Dict[str, CompletionResult] = journal.restored if journal else {}
+        resumed_ok = 0
+        resumed_failed = 0
+        resumed_tokens = 0
 
         # ── Partition ────────────────────────────────────────────
         # Every rejection is decided here, before any path forks, so one input
@@ -582,6 +669,22 @@ class Worker:
                 failed += 1
                 continue
             seen_ids.add(p.custom_id)
+
+            # Already executed by an earlier run of this job. Errors included:
+            # a failed row was still executed, and re-running it would retry a
+            # deterministic failure forever. Placed after the duplicate check
+            # so a duplicate row never inherits its twin's journalled result.
+            prior = restored.get(p.custom_id)
+            if prior is not None:
+                results_by_index[idx] = prior
+                if prior.is_success:
+                    completed += 1
+                    resumed_ok += 1
+                    resumed_tokens += int(prior.usage.get("total_tokens", 0) or 0)
+                else:
+                    failed += 1
+                    resumed_failed += 1
+                continue
 
             if p.body.get("stream"):
                 # Applies to every endpoint — batch execution cannot honor
@@ -637,6 +740,25 @@ class Worker:
         ] + [[row] for row in solo]
 
         units = chat_units + embedding_units
+
+        if resumed_ok or resumed_failed:
+            logger.info(
+                f"[{job.job_id}] Resuming from journal: "
+                f"{resumed_ok + resumed_failed}/{total} prompts already done "
+                f"({resumed_ok} succeeded, {resumed_failed} failed, "
+                f"{resumed_tokens:,} tokens) — skipping them, "
+                f"{sum(len(u) for u in units)} left to run"
+            )
+            self._heartbeat.update_status(
+                status="busy",
+                job_id=job.job_id,
+                progress={
+                    "total_prompts": total,
+                    "completed_prompts": completed,
+                    "failed_prompts": failed,
+                },
+            )
+
         queue: asyncio.Queue = asyncio.Queue()
         for unit in units:
             queue.put_nowait(unit)
@@ -719,6 +841,16 @@ class Worker:
 
                 # Async-safe state updates — several workers land here at once.
                 async with lock:
+                    if journal is not None:
+                        # Keyed on the input row's id, never the executor's
+                        # echo of it, so a restored row lands where it ran.
+                        # Transient failures stay out so a resume retries them.
+                        journal.append(
+                            r if r.custom_id == prompts[i].custom_id
+                            else r.model_copy(update={"custom_id": prompts[i].custom_id})
+                            for i, r in paired
+                            if is_final(r)
+                        )
                     for i, result in paired:
                         results_by_index[i] = result
                         if result.is_success:
@@ -789,6 +921,9 @@ class Worker:
                 f"({completed + failed}/{total} prompts done)"
             )
 
+        # The unrun-row placeholders below are never journalled: they were not
+        # executed, and a resume must run them.
+        #
         # Any prompt still in the queue when _running went False has no
         # result at all. Synthesize an explicit failure per row index so:
         #   - the output file has exactly one line per input prompt (no gaps)

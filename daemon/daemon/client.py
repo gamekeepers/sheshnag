@@ -382,18 +382,27 @@ class BackendClient:
 
     # ── Failure Reporting ────────────────────────────────────────
 
-    async def report_failure(self, job_id: str, error: str) -> None:
+    async def report_failure(self, job_id: str, error: str) -> bool:
         """
         Report a job failure to the backend so it can requeue the job.
 
         This is a best-effort call — if it fails, we log a warning
         but don't crash. The backend requeues the batch (up to a max
-        attempt count, spec §12), and its heartbeat sweeper will
-        eventually reclaim the job even if this report never arrives.
+        attempt count, spec §12). If this report never arrives, its
+        heartbeat sweeper reclaims the job only once this worker stops
+        heartbeating — a daemon that restarts quickly is never swept, which
+        is why Worker reclaims its own interrupted jobs on startup.
 
         Args:
             job_id: The failed job's identifier.
             error:  Error description (truncated to 2000 chars).
+
+        Returns:
+            True when the backend gave a definitive answer — a 2xx, or a
+            4xx saying the batch is no longer this worker's to report
+            (already requeued, reassigned or finished). False when it could
+            not be reached or answered 5xx, so a caller that needs the
+            report delivered can retry.
         """
         client = self._get_client()
 
@@ -409,9 +418,14 @@ class BackendClient:
             )
             response.raise_for_status()
             logger.info(f"Reported failure for job {job_id}")
+            return True
+        except httpx.HTTPStatusError as exc:
+            logger.warning(f"Failed to report failure for job {job_id}: {exc}")
+            return exc.response.status_code < 500
         except Exception as exc:
             # Best-effort — don't crash if failure reporting itself fails
             logger.warning(f"Failed to report failure for job {job_id}: {exc}")
+            return False
 
     # ── Heartbeat and Progress ───────────────────────────────────
     

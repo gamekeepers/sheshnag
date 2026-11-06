@@ -65,6 +65,7 @@ daemon/
 │   ├── log.py               # Logging setup
 │   ├── client.py            # BackendClient — all control-plane HTTP
 │   ├── worker.py            # Poll → download → execute → upload loop
+│   ├── journal.py           # Per-job result journal — resume after a crash
 │   ├── heartbeat.py         # HeartbeatManager (activity, capabilities, runtime liveness)
 │   ├── hardware.py          # GPU/CPU/RAM inspection (nvidia-smi etc.)
 │   ├── registration.py      # Registration + credential persistence
@@ -159,6 +160,60 @@ which is what the pre-pool sequential loop did. Prompts left unrun when a
 shutdown signal arrives produce synthetic failure rows with error
 `worker_shutdown:prompt not executed before daemon stopped`, preserving the
 1:1 input-to-output contract and honest counts for the backend and dashboard.
+
+### Resuming after a crash
+
+Each result is appended to `<work_dir>/<job_id>/journal.jsonl` as soon as it
+completes, not held in memory until the end. If the daemon dies mid-batch
+(`kill -9`, OOM, crash) and the same batch later runs on this worker again, the
+rows already in the journal are restored instead of executed. The log says how
+many: `Resuming from journal: 900/1000 prompts already done`.
+
+**Getting the batch back.** A daemon restarted by systemd keeps its `worker_id`
+and heartbeats again within seconds, so the backend never sees it go stale and
+never requeues the batch it was holding. `/workers/poll` only hands out
+unassigned work, so that batch would otherwise sit `in_progress` forever. To
+prevent that, the daemon writes an `in_flight` marker into a job's directory
+while it runs the job and removes it on every outcome it lives to see. On
+startup, before its first poll, it reports each leftover marker's batch through
+`report-failure`. The backend requeues the batch, spending one of its three
+attempts. It keeps retrying before each poll until the backend answers, so an
+outage at startup does not strand the batch. Whichever worker the batch lands
+on next runs it, and if that is this one, the journal resumes it.
+
+- **Keyed by `custom_id`.** One JSON object per line, in the same shape as an
+  output row, written under the input row's id. No offsets or counters: the
+  pool finishes prompts out of order, so the completed set is sparse. Skipping
+  on `custom_id` is safe because the backend rejects duplicate ids at upload.
+  A duplicate that bypassed it still fails with `DUPLICATE_CUSTOM_ID` and never
+  inherits its twin's result.
+- **Deterministic failures count as done, transient ones do not.** A row that
+  failed on its own merits (`SCHEMA_VIOLATION`, `JSON_PARSE_ERROR`,
+  `UNSUPPORTED_*`, a 4xx from the runtime) is journalled and skipped, since
+  re-running it would fail the same way every time. Timeouts, 5xx and 429
+  responses, refused connections and executor exceptions are not journalled,
+  so a resume retries them. That retry is bounded by the backend's attempt
+  cap. Rejections decided before execution, and `worker_shutdown:`
+  placeholders, are never journalled.
+- **Progress includes restored rows**, so a resumed batch does not appear to
+  start over near zero.
+- **Durability.** Each unit of work's rows are flushed to the OS together, and
+  the file is fsynced on close. That survives the process dying. A machine
+  losing power before writeback can lose the last few rows, which are simply
+  run again.
+- **Best effort.** If the journal cannot be written (disk full, I/O error), the
+  daemon logs it once and carries on without it. It never fails work that
+  already ran.
+- **A torn last line** from a kill mid-write is discarded with a warning and
+  cut off before appending resumes.
+- **Cleanup.** The journal is deleted once the results upload succeeds. A
+  failed upload keeps it, because the batch is requeued and may come back.
+
+Resume works only on the same machine (the journal is local), and the output
+file is still written once at the end from the restored and new rows together.
+A graceful shutdown currently uploads the batch with `worker_shutdown:` rows,
+which completes it, so there is nothing left to resume. Making a graceful
+shutdown leave the batch resumable is a separate change.
 
 ## Configuration
 
