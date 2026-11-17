@@ -428,6 +428,7 @@ class LlamaCppExecutor(BaseExecutor):
         """
         budget = [self.HASHES_PER_BEAT]
         items: List[dict] = []
+        limit, allocated = await self._launch_context()
         for entry in await self._models_payload():
             name = entry.get("id")
             if not name:
@@ -450,8 +451,35 @@ class LlamaCppExecutor(BaseExecutor):
                 "sha256": identity.get("sha256"),
                 "size_bytes": identity.get("size") or meta.get("size"),
                 "details": details,
+                "context_limit": limit,
+                "context_allocated": allocated,
             })
         return self.tag_inventory(items)
+
+    async def _launch_context(self) -> tuple:
+        """(per-request context, KV cells allocated) as llama-server was started.
+
+        llama-server fixes both at launch (`-c` split across `-np` slots) and
+        ignores a per-request num_ctx, so the scheduler must fit it at what it
+        allocated, not at a batch's context (#164). Read every beat: a server
+        restarted with another `-c` changes the answer without the daemon
+        restarting. (None, None) when /props does not say.
+
+        ponytail: assumes per-slot caches; under --kv-unified the slots share
+        one cache and a request may use all of it, which this under-reports
+        as the limit — a refused batch, never an over-committed card.
+        """
+        try:
+            resp = await self._get_client().get("/props", timeout=10.0)
+            resp.raise_for_status()
+            props = resp.json()
+        except Exception as exc:
+            logger.debug("Could not read llama-server /props: %s", exc)
+            return None, None
+        per_slot = (props.get("default_generation_settings") or {}).get("n_ctx")
+        if not isinstance(per_slot, int) or per_slot <= 0:
+            return None, None
+        return per_slot, per_slot * (props.get("total_slots") or 1)
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

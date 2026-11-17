@@ -170,6 +170,15 @@ class BaseExecutor(ABC):
         """
         return []
 
+    async def running_footprints(self) -> Dict[str, dict]:
+        """name -> {"size_vram": bytes, "context_length": tokens} for resident models.
+
+        What the runtime itself says a loaded model occupies, and at what
+        context. The backend measures the runtime's KV-cache multiplier
+        against it (#164). A runtime that cannot say returns {}. Must never raise.
+        """
+        return {}
+
     async def pull_model(
         self,
         model_name: str,

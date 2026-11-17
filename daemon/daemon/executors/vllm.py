@@ -317,12 +317,18 @@ class VLLMExecutor(BaseExecutor):
             items, seen = [], set()
             for m in models:
                 identity = identities[m.get("root") or m.get("id")]
+                # vLLM fixes its context at launch (--max-model-len) and ignores
+                # a per-request num_ctx: report it so the scheduler fits this
+                # server at it and refuses rows longer than it (#164).
+                max_len = m.get("max_model_len")
+                max_len = max_len if isinstance(max_len, int) and max_len > 0 else None
                 for name in (m.get("id"), m.get("root")):
                     if name and name not in seen:
                         seen.add(name)
                         items.append({
                             "local_name": name, "sha256": None, "size_bytes": None,
                             **identity,
+                            "context_limit": max_len, "context_allocated": max_len,
                         })
             return self.tag_inventory(items)
         except Exception as exc:
