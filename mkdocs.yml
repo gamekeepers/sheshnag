@@ -90,6 +90,8 @@ nav:
       - Data model: reference/data-model.md
       - Google OAuth: reference/google-oauth.md
       - Machine inspection: reference/machine-inspection.md
+  - Design:
+      - Provider controls: design/provider-controls.md
 
 
 validation:
