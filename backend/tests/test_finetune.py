@@ -14,7 +14,8 @@ import pytest
 from sqlalchemy.orm import sessionmaker
 
 from models import (
-    ApiKey, File as FileModel, FinetuneJob, Worker, OrganizationMembership,
+    ApiKey, File as FileModel, FinetuneJob, FinetuneJobAssignment, Worker,
+    OrganizationMembership,
 )
 from services import finetune_validator
 from services.finetune_validator import validate_dataset
@@ -43,6 +44,19 @@ def seed_test_catalog(_engine):
             fields = {k: entry.get(k) for k in _MANAGED_FIELDS}
             fields["enabled"] = bool(entry.get("enabled", True))
             db.add(ModelCatalog(id=entry["id"], **fields))
+        db.commit()
+    finally:
+        db.close()
+
+
+@pytest.fixture(autouse=True)
+def release_finetune_assignments(_engine):
+    """Other suites delete workers between tests; an assignment left behind
+    here holds a foreign key to its worker and blocks that delete."""
+    yield
+    db = sessionmaker(bind=_engine)()
+    try:
+        db.query(FinetuneJobAssignment).delete()
         db.commit()
     finally:
         db.close()
