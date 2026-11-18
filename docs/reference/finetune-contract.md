@@ -143,8 +143,51 @@ write `adapter_model.safetensors` as `0600`.
 
 The format is chat JSONL, one object per line, UTF-8 (a BOM is tolerated):
 `{"messages": [{"role": "system"|"user"|"assistant", "content": "…"}, …]}`.
-A system turn may only come first. The last turn must be `assistant`. A file
-needs at least 10 examples and at most 50,000, and 100 MB.
+A system turn may only come first. Turns must alternate user, assistant,
+user, … (the engine silently drops an example that doesn't, so the validator
+refuses it). The last turn must be `assistant`. A file needs at least 10
+examples and at most 50,000, and 100 MB.
+
+### Tool calling
+
+Lines may use OpenAI's tool-calling chat format, the shape
+`/v1/chat/completions` uses:
+
+```json
+{"tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {...}}}],
+ "messages": [
+   {"role": "user", "content": "Weather in Paris?"},
+   {"role": "assistant", "content": null,
+    "tool_calls": [{"id": "call_1", "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"}}]},
+   {"role": "tool", "tool_call_id": "call_1", "content": "{\"temp_c\": 18}"},
+   {"role": "assistant", "content": "It's 18 °C in Paris."}]}
+```
+
+Rules, each refused with the line and a fix:
+
+- every called function is declared in that line's `tools`;
+- `arguments` is a string that parses to a JSON object (`"{}"` for none);
+- every call has an `id`, and each is answered exactly once by a `tool` turn
+  whose `tool_call_id` matches, right after the calling turn and before the
+  next user or assistant turn;
+- a turn that calls tools has `content: null`. The engine cannot train text
+  and a call in the same turn; put the text in the reply after the results.
+- an example may end on a tool call (teaching *when* to call).
+
+Several results for one turn (parallel calls) count as one user-side turn.
+Only bases whose chat template has a tool-call format accept these datasets
+(`TOOL_CALLING_TEMPLATES`, today `qwen`); anything else fails validation with
+`tools_unsupported_base`, naming the bases that work. Token counts include
+the tool schemas (plus about 80 tokens of tool prompt), each call as rendered,
+and the results; `n_tool_examples` counts the lines that use tools.
+
+forge-runner converts each line to LLaMA-Factory's `sharegpt` layout
+(`function_call` / `tool` turns and a `tools` column) rather than using its
+`openai` formatting, which appends "detailed thinking off" to system prompts
+and double-encodes `arguments`. On `qwen` the result is Qwen2.5's native
+`<tool_call>{"name": …, "arguments": {…}}</tool_call>` text, the format
+vLLM's `hermes` tool parser reads.
 
 **Output**, stored in `training_file_stats` and in a validation event:
 
@@ -169,6 +212,7 @@ by name, each with a conversion hint:
 - Alpaca instruction/output
 - ShareGPT conversations with from/value
 - a JSON array instead of JSONL
+- tool results as role `function` or `observation`
 - a pretty-printed multi-line record
 - role typos such as `human` or `gpt`
 

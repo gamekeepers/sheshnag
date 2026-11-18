@@ -39,7 +39,10 @@ engine instead of the docker image.
 
 ## What it does with a job
 
-1. Downloads the training (and validation) file into `<work-dir>/<job_id>/data/`.
+1. Downloads the training (and validation) file into `<work-dir>/<job_id>/data/`
+   and converts it to LLaMA-Factory's sharegpt layout (`forge_runner/dataset.py`):
+   OpenAI tool calls become `function_call` turns with parsed arguments, and
+   parallel tool results are merged into one `tool` turn.
 2. Writes `train.yaml` and `dataset_info.json`. The keys are listed in
    `forge_runner/config.py`. The chat template comes from the poll payload
    (the base's catalogue entry); a job without one is refused rather than
@@ -60,6 +63,7 @@ engine instead of the docker image.
 |---|---|---|
 | `gpu_out_of_memory` | yes | shared GPU had too little free VRAM |
 | `runner_config_rejected` | no | the engine rejected a generated key (a runner bug) |
+| `invalid_dataset` | no | a line could not be converted (only possible with `run-local`, which skips the backend's validator) |
 | `no_trainable_examples` | no | nothing survived the chat template / cutoff |
 | `base_revision_missing`, `base_model_unavailable` | no | catalogue pin or HF access |
 | `network_error`, `worker_disk_full`, `engine_not_started`, `engine_killed` | yes | the worker, not the job |

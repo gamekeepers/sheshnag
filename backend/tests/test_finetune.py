@@ -420,6 +420,121 @@ def test_malformed_file_fails_job_with_actionable_error(auth_client, make_file):
     assert job["error"]["details"][0]["hint"]
 
 
+# ─── Tool-calling datasets (#194) ───────────────────────────
+
+_TOOLS = [{"type": "function", "function": {
+    "name": "get_weather",
+    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}]
+
+
+def _tool_example(**patch):
+    """The OpenAI tool-calling shape from the issue; `patch` mutates a copy."""
+    ex = {"tools": json.loads(json.dumps(_TOOLS)), "messages": [
+        {"role": "user", "content": "Weather in Paris?"},
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "{\"temp_c\": 18}"},
+        {"role": "assistant", "content": "It's 18 °C in Paris."}]}
+    for fn in patch.values():
+        fn(ex)
+    return ex
+
+
+def _call(ex):
+    return ex["messages"][1]["tool_calls"][0]
+
+
+def test_validator_accepts_tool_calling(tmp_path):
+    path = tmp_path / "d.jsonl"
+    path.write_text(_jsonl([_tool_example()] * 6 + [_example()] * 6), encoding="utf-8")
+    result = validate_dataset(str(path), _ws_count)
+    assert result.valid, result.errors
+    stats = result.stats(1024, "test")
+    assert stats["n_examples"] == 12 and stats["n_tool_examples"] == 6
+
+
+def test_tool_tokens_include_schemas_and_arguments(tmp_path):
+    from services.finetune_validator import TOOL_PROMPT_TOKENS
+    with_tools = tmp_path / "t.jsonl"
+    with_tools.write_text(_jsonl([_tool_example()]), encoding="utf-8")
+    calls = []
+    validate_dataset(str(with_tools), lambda s: calls.append(s) or len(s.split()), min_examples=1)
+    seen = " ".join(calls)
+    assert '"parameters"' in seen                 # the tool schema was counted
+    assert '"arguments": {"city": "Paris"}' in seen   # the call as the model sees it
+    assert '{"temp_c": 18}' in seen               # the tool result
+    total = validate_dataset(str(with_tools), lambda s: 1, min_examples=1).token_lengths[0]
+    assert total > TOOL_PROMPT_TOKENS
+
+
+@pytest.mark.parametrize("patch, code, hint_needle", [
+    (lambda e: e["messages"][2].update(tool_call_id="call_9"), "unknown_tool_call_id", "id of the call"),
+    (lambda e: _call(e)["function"].update(arguments="{city: Paris}"), "invalid_arguments", "JSON object encoded as a string"),
+    (lambda e: _call(e)["function"].update(arguments={"city": "Paris"}), "invalid_arguments", "json.dumps(args)"),
+    (lambda e: _call(e)["function"].update(arguments="[1, 2]"), "invalid_arguments", '"{}"'),
+    (lambda e: _call(e)["function"].update(name="get_time"), "undeclared_function", 'add its schema to this line\'s "tools"'),
+    (lambda e: e.pop("tools"), "undeclared_function", 'this line has no "tools"'),
+    (lambda e: e["messages"].pop(2), "unanswered_tool_call", "one tool turn per call"),
+    (lambda e: e["messages"].insert(1, {"role": "tool", "tool_call_id": "call_1", "content": "x"}),
+     "misplaced_tool", "right after the assistant turn"),
+    (lambda e: e["messages"][1].update(content="Let me check."), "text_with_tool_calls", "content to null"),
+    (lambda e: _call(e).pop("id"), "missing_tool_call_id", "give every call an id"),
+    (lambda e: e.update(tools=[]), "invalid_tools", "remove it if this example calls none"),
+    (lambda e: e["tools"].append(e["tools"][0]), "duplicate_tool", "declare each function once"),
+    (lambda e: e["messages"][0].update(tool_calls=[]), "unknown_fields", "only assistant turns"),
+    (lambda e: e["messages"][2].update(role="function"), "invalid_role", 'change "function" to "tool"'),
+])
+def test_tool_calling_errors_name_line_and_fix(tmp_path, patch, code, hint_needle):
+    path = tmp_path / "d.jsonl"
+    path.write_text(_jsonl([_example()] * 11 + [_tool_example(p=patch)]), encoding="utf-8")
+    result = validate_dataset(str(path), _ws_count)
+    assert not result.valid
+    err = result.errors[0]
+    assert (err.code, err.line) == (code, 12), result.errors
+    assert hint_needle in err.message + " " + err.hint
+
+
+def test_turns_must_alternate(tmp_path):
+    """The engine silently drops an example whose turns don't alternate."""
+    two_users = {"messages": [{"role": "user", "content": "a"}, {"role": "user", "content": "b"},
+                              {"role": "assistant", "content": "c"}]}
+    path = tmp_path / "d.jsonl"
+    path.write_text(_jsonl([two_users] * 12), encoding="utf-8")
+    err = validate_dataset(str(path), _ws_count).errors[0]
+    assert err.code == "roles_not_alternating" and "merge consecutive user turns" in err.hint
+
+
+def test_parallel_tool_results_count_as_one_turn(tmp_path):
+    ex = _tool_example()
+    ex["messages"][1]["tool_calls"].append({"id": "call_2", "type": "function", "function": {
+        "name": "get_weather", "arguments": "{\"city\": \"Rome\"}"}})
+    ex["messages"].insert(3, {"role": "tool", "tool_call_id": "call_2", "content": "{\"temp_c\": 24}"})
+    path = tmp_path / "d.jsonl"
+    path.write_text(_jsonl([ex] * 12), encoding="utf-8")
+    result = validate_dataset(str(path), _ws_count)
+    assert result.valid, result.errors
+
+
+def test_job_refuses_tools_on_a_base_without_a_tool_format(auth_client, make_file):
+    """TinyLlama's zephyr template has no tool-call format: refuse, naming the bases that do."""
+    file_id = make_file(_jsonl([_example()] * 11 + [_tool_example()]))
+    job_id = auth_client.post("/v1/fine_tuning/jobs", json={
+        "model": "tinyllama-1-1b-chat-hf", "training_file": file_id}).json()["id"]
+    job = auth_client.get(f"/v1/fine_tuning/jobs/{job_id}").json()
+    assert job["status"] == "failed"
+    detail = job["error"]["details"][0]
+    assert detail["code"] == "tools_unsupported_base" and detail["line"] == 12
+    assert BASE in detail["hint"] and "zephyr" in detail["hint"]
+
+
+def test_job_with_tools_on_qwen_queues(auth_client, make_file):
+    file_id = make_file(_jsonl([_tool_example()] * 12))
+    job = auth_client.get(f"/v1/fine_tuning/jobs/{_create(auth_client, file_id).json()['id']}").json()
+    assert job["status"] == "queued", job.get("error")
+    assert job["training_file_stats"]["n_tool_examples"] == 12
+
+
 # ─── Worker side: poll -> progress -> adapter ──────────────
 
 @pytest.fixture

@@ -24,15 +24,19 @@ class UnsupportedJob(ValueError):
 MICRO_BATCH = 1
 LOGGING_STEPS = 5
 
+# Role names in the converted files (forge_runner.dataset). Tool calls and
+# tool results get LLaMA-Factory's function/observation roles, and the
+# tools column feeds the template's tool prompt.
 _SHAREGPT_TAGS = {
     "role_tag": "role", "content_tag": "content", "user_tag": "user",
     "assistant_tag": "assistant", "system_tag": "system",
+    "observation_tag": "tool", "function_tag": "function_call",
 }
 
 
 def _dataset_entry(file_name: str) -> dict:
     return {"file_name": file_name, "formatting": "sharegpt",
-            "columns": {"messages": "messages"}, "tags": _SHAREGPT_TAGS}
+            "columns": {"messages": "messages", "tools": "tools"}, "tags": _SHAREGPT_TAGS}
 
 
 def build(job: Job, workdir: Path, *, has_validation: bool) -> tuple[dict, dict]:

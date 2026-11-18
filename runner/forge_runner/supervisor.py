@@ -1,6 +1,6 @@
 """Run one job end to end: data in, engine supervised, adapter or failure out.
 
-    download dataset(s) -> write config -> start engine
+    download dataset(s) -> convert to the engine's layout -> write config -> start engine
       -> every few seconds: forward new trainer_log.jsonl lines as progress,
          heartbeat, stop the engine if the backend says the job was cancelled
       -> exit 0: zip the adapter and upload it
@@ -17,7 +17,7 @@ from typing import Callable, Optional
 
 import httpx
 
-from forge_runner import artifact, config
+from forge_runner import artifact, config, dataset
 from forge_runner.errors import classify
 from forge_runner.job import Job
 from forge_runner.progress import TrainerLogTail, to_progress
@@ -37,17 +37,27 @@ def run_job(job: Job, client, engine, work_root: Path, worker_id: str, *,
     workdir = (work_root / job.job_id).resolve()
     (workdir / "data").mkdir(parents=True, exist_ok=True)
 
+    data = workdir / "data"
     try:
-        client.download(job.dataset_path, workdir / "data" / "train.jsonl")
+        # Download as-is, then convert to the engine's layout (dataset.py).
+        client.download(job.dataset_path, data / "train.source.jsonl")
         has_validation = bool(job.validation_file_id)
         if has_validation:
             client.download(f"/v1/files/{job.validation_file_id}/content",
-                            workdir / "data" / "validation.jsonl")
+                            data / "validation.source.jsonl")
+        dataset.convert_file(data / "train.source.jsonl", data / "train.jsonl")
+        if has_validation:
+            dataset.convert_file(data / "validation.source.jsonl", data / "validation.jsonl")
         config_path = config.write(job, workdir, has_validation=has_validation)
     except config.UnsupportedJob as exc:
         client.report_failure(job.job_id, worker_id, error=str(exc),
                               code="unsupported_job", retryable=False)
         return RunResult("failed", str(exc))
+    except dataset.InvalidDataset as exc:
+        message = f"The dataset cannot be trained on: {exc}"
+        client.report_failure(job.job_id, worker_id, error=message,
+                              code="invalid_dataset", retryable=False)
+        return RunResult("failed", message)
     except Exception as exc:  # download failed: network, auth, missing file
         message = f"forge-runner could not fetch the job's data: {exc}"
         client.report_failure(job.job_id, worker_id, error=message,

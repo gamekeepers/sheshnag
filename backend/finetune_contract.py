@@ -53,6 +53,13 @@ ENGINE_IMAGE = (
     "c5e769e047a19f9322800c9881a6270557ef0e6682f0145b50b322f8724de6b6"
 )
 
+# Chat templates whose LLaMA-Factory 0.9.5 definition has a tool-call format
+# (format_function / format_observation / format_tools). `qwen` renders calls
+# as Qwen2.5's native <tool_call>{...}</tool_call>, which vLLM's hermes parser
+# reads. `zephyr` has none, so a tool-calling dataset on it would train on a
+# made-up format; the validator refuses it instead (#194).
+TOOL_CALLING_TEMPLATES = frozenset({"qwen"})
+
 # ─── LoRA limits that serving imposes ──────────────────────────────────────
 
 # Serving workers start vLLM with `--max-lora-rank MAX_LORA_RANK`. Every rank
