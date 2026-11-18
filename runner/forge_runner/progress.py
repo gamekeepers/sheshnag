@@ -1,6 +1,6 @@
 """Read LLaMA-Factory's trainer_log.jsonl as it grows.
 
-G2 picked LLaMA-Factory partly for this file: one JSON object per log step
+LLaMA-Factory writes one JSON object per log step
 (current_steps, total_steps, loss, lr, epoch, ...), so a supervisor can
 follow training without scraping human log lines.
 """

@@ -87,6 +87,7 @@ nav:
       - OpenAI compatibility: reference/openai-compatibility.md
       - Structured outputs: reference/structured-outputs.md
       - Model catalogue: reference/model-catalogue.md
+      - Finetuning contract: reference/finetune-contract.md
       - Data model: reference/data-model.md
       - Google OAuth: reference/google-oauth.md
       - Machine inspection: reference/machine-inspection.md

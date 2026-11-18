@@ -400,7 +400,7 @@
 # top rather than duplicating a second number here.
 # source_revision is a commit SHA, never a branch: a finetune job pins the
 # base it trained on from this field, and vLLM never checks that an
-# adapter is served on the same base (docs/finetune_contract.md).
+# adapter is served on the same base (docs/reference/finetune-contract.md).
 - id: qwen2-5-0-5b-instruct-hf
   display_name: Qwen2.5-0.5B-Instruct
   runtime: transformers

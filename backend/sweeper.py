@@ -9,14 +9,13 @@ Two entry points:
         heartbeats stopped are marked offline and their in-flight batches
         requeued, so a crashed daemon never strands a batch in "in_progress".
 
-Finetune jobs are deliberately NOT reclaimed by the worker sweep. A
-six-hour training run is not a batch of prompts: requeueing it on a missed
-heartbeat would silently restart it from step 0. Instead
+The worker sweep leaves finetune jobs alone: requeueing a six-hour training
+run on a missed heartbeat restarts it from step 0 without the user knowing.
 fail_lost_finetune_jobs() fails a running job whose runner has been silent
 for FINETUNE_RUNNER_LOST_SECONDS, with a reason the user can see, and the
 user resubmits. A failure the runner itself reports goes through
 requeue_or_fail_finetune_job(), and only when the runner marks it retryable.
-Resume will come from kind='checkpoint' rows in finetune_artifacts.
+A resume point is a kind='checkpoint' row in finetune_artifacts.
 """
 import asyncio
 import json
@@ -36,8 +35,8 @@ MAX_BATCH_ATTEMPTS = 3
 MAX_FINETUNE_ATTEMPTS = 3
 
 # forge-runner heartbeats every 30s, including while it supervises a run.
-# Ten minutes of silence = the runner is gone; generous on purpose, because
-# the cost of a false positive is a lost training run.
+# Ten minutes of silence = the runner is gone. A false positive costs a whole
+# training run, so the window is long.
 FINETUNE_RUNNER_LOST_SECONDS = 600
 
 # Daemon heartbeats every 30s — 4 missed beats ⇒ presumed dead.

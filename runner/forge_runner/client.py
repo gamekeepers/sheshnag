@@ -2,7 +2,7 @@
 
 BackendClient is the real one. OfflineClient implements the same calls
 against local files, so `forge-runner run-local` can drive a real engine run
-on watchtower with no backend in the loop.
+with no backend in the loop.
 """
 import json
 import logging

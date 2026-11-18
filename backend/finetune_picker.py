@@ -1,7 +1,7 @@
 """
 Finetune Picker — job-to-worker matching for LoRA training jobs.
 
-Mirrors provider_picker.py's role for batches, but the fit function is
+Plays scheduler.py's role for batches, but the fit function is
 different: training doesn't care whether a worker already has the base
 model loaded in a serving runtime (the engine loads its own copy of the
 weights) — it only cares whether the worker has enough VRAM headroom for
@@ -9,15 +9,13 @@ training, which runs well above pure inference (base weights + adapter
 gradients + optimizer state + activations + fp32 logits).
 
 `_TRAINING_VRAM_MULTIPLIER` is a safety margin over the catalogue's
-inference `vram_gb`, calibrated against the week-2 G2 bake-off
-(docs/forge/week2-g1-g2-findings.md): bf16 LoRA on Qwen2.5-0.5B-Instruct
+inference `vram_gb`, calibrated on a measured run: bf16 LoRA on Qwen2.5-0.5B-Instruct
 with the contract defaults (r16 all-linear, seq 1024, micro-batch 1,
 gradient checkpointing) peaked at 4.70 GB under LLaMA-Factory (3.87 GB
 under Axolotl) against a 1.5 GB inference figure — 3.13x. Most of that
 is fp32 logits over Qwen's 152k vocabulary, which does not grow with
 parameter count, so 3.2x overestimates for larger bases; that errs on
-the side of not scheduling a job that would OOM. (The earlier 1.3x came
-from QLoRA at seq 256 on a 4 GB card — a different method and length.)
+the side of not scheduling a job that would OOM.
 """
 from models import ModelCatalog
 

@@ -34,9 +34,9 @@ def _job(**overrides) -> Job:
 
 # ─── Config generation ─────────────────────────────────────
 
-def test_config_matches_the_g2_run(tmp_path):
+def test_config_matches_the_verified_settings(tmp_path):
     cfg, info = config.build(_job(), tmp_path, has_validation=False)
-    # The settings G2 proved on watchtower.
+    # The settings verified to train and serve on Qwen2.5-0.5B-Instruct.
     assert cfg["template"] == "qwen" and cfg["lora_target"] == "all"
     assert cfg["per_device_train_batch_size"] == 1 and cfg["gradient_accumulation_steps"] == 16
     assert cfg["model_revision"] == QWEN_SHA

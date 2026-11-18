@@ -2,23 +2,22 @@
 The finetuning job contract — what a finetuning job *is*, written down once
 so the API (routers/finetune.py) and the runner (the worker endpoints in
 routers/workers.py, and forge-runner behind them) are built against the same
-thing. The prose version, with the reasoning, is docs/finetune_contract.md.
+thing. The prose version, with the reasoning, is docs/reference/finetune-contract.md.
 
-Two inputs shaped every constant here:
+Serving on vLLM 0.31.0 sets the limits below. An adapter that cannot be
+routed to is not a deliverable, so the job carries exactly the fields serving
+needs, and the platform enforces the limits vLLM itself does not:
 
-- **G1 (week 2): serving the week-1 adapter on vLLM 0.31.0.** An adapter you
-  cannot route to is not a deliverable, so the job carries exactly the fields
-  serving needs, and the platform enforces the limits vLLM itself does not:
-    * `r` above the server's `--max-lora-rank` stops the *whole server* from
-      starting, not just that adapter -> ranks are capped at MAX_LORA_RANK.
-    * vLLM never checks the base model; a shape-identical wrong base loads
-      silently and returns garbage with HTTP 200 -> the base is pinned on the
-      job (catalogue id + source ref + revision) and checked on the artifact.
-    * `all-linear` on Qwen2 dense resolves to the seven projection modules
-      below and serves cleanly. Embedding / lm_head targets and
-      `modules_to_save` were not tested -> refused until they are.
-- **G2 (week 2): engine bake-off.** LLaMA-Factory 0.9.5 won (co-signed
-  2026-10-26), pinned by image digest below.
+* `r` above the server's `--max-lora-rank` stops the *whole server* from
+  starting, not just that adapter -> ranks are capped at MAX_LORA_RANK.
+* vLLM never checks the base model; a shape-identical wrong base loads
+  silently and returns garbage with HTTP 200 -> the base is pinned on the
+  job (catalogue id + source ref + revision) and checked on the artifact.
+* `all-linear` on Qwen2 dense resolves to the seven projection modules
+  below and serves cleanly. Embedding / lm_head targets and
+  `modules_to_save` are unverified on vLLM's LoRA path, so they are refused.
+
+The training engine is LLaMA-Factory 0.9.5, pinned by image digest below.
 """
 
 # ─── Job lifecycle (mirrors OpenAI's fine_tuning.job statuses) ─────────────
@@ -54,7 +53,7 @@ ENGINE_IMAGE = (
     "c5e769e047a19f9322800c9881a6270557ef0e6682f0145b50b322f8724de6b6"
 )
 
-# ─── LoRA limits that serving imposes (G1) ─────────────────────────────────
+# ─── LoRA limits that serving imposes ──────────────────────────────────────
 
 # Serving workers start vLLM with `--max-lora-rank MAX_LORA_RANK`. Every rank
 # the API accepts must be <= it, or one adapter takes the server down.
@@ -63,7 +62,7 @@ ENGINE_IMAGE = (
 ALLOWED_LORA_RANKS = (8, 16, 32, 64)
 MAX_LORA_RANK = max(ALLOWED_LORA_RANKS)
 
-# What `all-linear` resolved to for Qwen2 in G1 (and is the same set of names
+# What `all-linear` resolves to for Qwen2 dense (and the same set of names
 # for Llama-family models). The only target modules proven servable.
 SERVABLE_TARGET_MODULES = frozenset({
     "q_proj", "k_proj", "v_proj", "o_proj",
@@ -71,7 +70,7 @@ SERVABLE_TARGET_MODULES = frozenset({
 })
 ALL_LINEAR = "all-linear"
 
-# ─── Defaults (week 1's settings, which both G2 engines reproduced) ────────
+# ─── Defaults ──────────────────────────────────────────────────────────────
 
 DEFAULT_HYPERPARAMETERS = {
     "n_epochs": 3,
@@ -89,8 +88,8 @@ DEFAULT_SEED = 42
 
 
 def adapter_unservable_reasons(adapter_config: dict, *, expected_base_ref: str | None) -> list[str]:
-    """Check a trained adapter's `adapter_config.json` against what G1 proved
-    vLLM can serve. Returns human-readable reasons; empty list = servable.
+    """Check a trained adapter's `adapter_config.json` against what vLLM
+    0.31.0 is verified to serve. Returns human-readable reasons; empty list = servable.
 
     `base_model_name_or_path` is free text with no revision, so a match here
     is necessary but not sufficient — the job's pinned revision is the real

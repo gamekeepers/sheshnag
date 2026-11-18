@@ -158,7 +158,7 @@ def test_personal_api_key_works(_engine, _test_user, good_file):
 @pytest.mark.parametrize("payload, needle", [
     ({"lora": {"rank": 128}}, "max-lora-rank"),
     ({"lora": {"rank": 12}}, "rank must be one of"),
-    ({"lora": {"rnk": 16}}, "Extra inputs are not permitted"),            # G2: typos must not pass silently
+    ({"lora": {"rnk": 16}}, "Extra inputs are not permitted"),            # typos must not pass silently
     ({"hyperparameters": {"n_epoch": 3}}, "Extra inputs are not permitted"),
     ({"lora": {"target_modules": ["q_proj", "lm_head"]}}, "not servable"),
     ({"method": {"type": "dpo"}}, "supervised"),
@@ -405,7 +405,7 @@ def test_worker_full_run_produces_servable_adapter(auth_client, worker_client, g
 
 @pytest.mark.parametrize("overrides, reason", [
     ({"r": 128}, "max-lora-rank"),
-    ({"base_model_name_or_path": "Qwen/Qwen2.5-0.5B"}, "trained on"),   # G1: shape-identical wrong base
+    ({"base_model_name_or_path": "Qwen/Qwen2.5-0.5B"}, "trained on"),   # shape-identical wrong base
     ({"target_modules": ["q_proj", "lm_head"]}, "not proven servable"),
     ({"modules_to_save": ["lm_head"]}, "modules_to_save"),
 ])
@@ -507,7 +507,7 @@ def test_lost_runner_fails_job_instead_of_requeueing(_engine, auth_client, worke
 
 
 @pytest.mark.parametrize("vram_total, claims", [
-    (4.0, False),    # 4 GB laptop card: 1.5 GB x 3.2 = 4.8 GB needed (G2)
+    (4.0, False),    # 4 GB laptop card: 1.5 GB x 3.2 = 4.8 GB needed
     (48.0, True),
     (0.0, True),     # worker could not measure VRAM: unknown, not "zero"
 ])

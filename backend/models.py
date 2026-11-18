@@ -719,7 +719,7 @@ class BatchAssignment(Base):
 # Three new tables, never new columns on batches (create_all() can add a
 # table to everyone's dev DB for free; it can never add a column). The
 # contract they implement — statuses, limits, which fields serving needs —
-# lives in finetune_contract.py and docs/finetune_contract.md.
+# lives in finetune_contract.py and docs/reference/finetune-contract.md.
 
 class FinetuneJob(Base):
     """A LoRA finetuning job — the platform's own `/v1/fine_tuning/jobs`
@@ -730,8 +730,8 @@ class FinetuneJob(Base):
     (finetune_contract.VALID_TRANSITIONS).
 
     The base model is *pinned at creation*: the catalogue id plus the
-    source ref and revision it resolved to at that moment. G1 showed vLLM
-    never checks an adapter's base, so the job — not the catalogue's
+    source ref and revision it resolved to at that moment. vLLM never
+    checks an adapter's base, so the job — not the catalogue's
     current state — is the record of what the adapter must be served on.
     """
     __tablename__ = "finetune_jobs"
@@ -758,7 +758,7 @@ class FinetuneJob(Base):
     learning_rate        = Column(Float, nullable=False)
     max_seq_length       = Column(Integer, nullable=False)
 
-    # LoRA — the fields serving needs (G1). rank <= MAX_LORA_RANK is
+    # LoRA — the fields serving needs. rank <= MAX_LORA_RANK is
     # enforced at the API; target_modules is "all-linear" or a JSON list.
     lora_rank            = Column(Integer, nullable=False)
     lora_alpha           = Column(Integer, nullable=False)
@@ -774,7 +774,7 @@ class FinetuneJob(Base):
     trained_tokens       = Column(Integer, nullable=True)  # set on success
 
     # The adapter's serving name once succeeded — what a client passes as
-    # `model` to /v1/chat/completions. Mirrors OpenAI's field of the same name.
+    # `body.model` to /v1/batches. Mirrors OpenAI's field of the same name.
     fine_tuned_model     = Column(String, nullable=True, unique=True)
 
     created_at           = Column(Integer, nullable=False, default=unix_now)
@@ -816,7 +816,7 @@ class FinetuneArtifact(Base):
     """A file a job produced — the trained adapter (kind='adapter') or an
     intermediate checkpoint (kind='checkpoint', the future resume point).
 
-    The field list is what G1 proved serving needs. Everything about the
+    The field list is what serving needs. Everything about the
     adapter is read by the backend from the uploaded zip's
     adapter_config.json, not taken on the worker's word; only the engine
     fields are self-reported.
@@ -843,7 +843,7 @@ class FinetuneArtifact(Base):
     target_modules       = Column(String, nullable=True)   # JSON list, *resolved* (never "all-linear")
     modules_to_save      = Column(String, nullable=True)   # JSON list; non-null = unservable today
 
-    # Engine that produced it (self-reported by the worker, pinned per G2).
+    # Engine that produced it (self-reported by the worker; the engine is pinned in finetune_contract).
     engine               = Column(String, nullable=True)
     engine_version       = Column(String, nullable=True)
     engine_image         = Column(String, nullable=True)
@@ -855,8 +855,8 @@ class FinetuneArtifact(Base):
     unservable_reasons   = Column(Text, nullable=True)  # JSON list
 
     # Set when the adapter is registered as a catalogue entry under its
-    # base model (AC's catalogue rework). Reserved now so that step is a
-    # write, not a migration.
+    # base model. Registration is then a write to this column, not a
+    # schema change.
     catalog_entry_id     = Column(String, nullable=True)
 
     created_at           = Column(Integer, nullable=False, default=unix_now)

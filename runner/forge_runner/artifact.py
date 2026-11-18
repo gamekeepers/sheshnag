@@ -1,8 +1,8 @@
 """Engine output dir -> the adapter zip the backend accepts.
 
 The backend reads adapter_config.json from the zip itself and judges
-servability (docs/finetune_contract.md); the runner only has to ship the
-two files and make them readable. G1 found adapters written 0600, which a
+servability (docs/reference/finetune-contract.md); the runner only has to ship the
+two files and make them readable. Engines write adapters 0600, which a
 serving process under another uid cannot open.
 """
 import json

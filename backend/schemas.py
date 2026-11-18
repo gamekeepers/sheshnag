@@ -437,9 +437,9 @@ class ApiKeyUpdate(BaseModel):
 
 # ─── Finetuning schemas ─────────────────────────────────────
 #
-# Request models forbid unknown keys. G2 found Axolotl silently dropping a
-# typo'd `lora_rnk` and training with the wrong rank — the API must not
-# repeat that one layer up. Limits come from finetune_contract.py.
+# Request models forbid unknown keys: a typo'd `lora_rnk` that was silently
+# dropped would train with the default rank and report success. Limits come
+# from finetune_contract.py.
 
 def _check_rank(v: int) -> int:
     if v not in ALLOWED_LORA_RANKS:

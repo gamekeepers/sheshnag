@@ -4,7 +4,7 @@
     forge-runner run-local  run one job from a local JSON file, no backend
 
 `serve` claims a job only when the GPU has at least --min-free-vram-gb free:
-watchtower is shared, and claiming a job that then OOMs wastes an attempt.
+on a shared GPU, claiming a job that then OOMs wastes an attempt.
 """
 import argparse
 import json
@@ -20,7 +20,7 @@ from forge_runner.engine import CommandEngine, DockerEngine
 from forge_runner.job import Job
 from forge_runner.supervisor import run_job
 
-# The G2 winner, pinned (docs/forge/week2-g1-g2-findings.md).
+# The training engine, pinned by digest (matches finetune_contract.ENGINE_IMAGE).
 ENGINE_IMAGE = ("hiyouga/llamafactory@sha256:"
                 "c5e769e047a19f9322800c9881a6270557ef0e6682f0145b50b322f8724de6b6")
 ENGINE_VERSION = "0.9.5"
