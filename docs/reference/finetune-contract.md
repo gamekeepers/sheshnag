@@ -1,5 +1,8 @@
 # Finetuning job contract
 
+*Using the API rather than building on it? Start with the [user guide](../finetuning.md).*
+
+
 What a finetuning job **is** on Sheshnag, written down once so the API and the
 runner are built against the same thing. Code: `backend/finetune_contract.py`
 (constants and limits), `backend/models.py` (tables),

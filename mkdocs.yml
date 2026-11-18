@@ -67,6 +67,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Run your prompts: using-sheshnag.md
+  - Finetune a model: finetuning.md
   # One audience, three documents: the guide, the hardware decision it defers
   # to, and the path for hosts that cannot reach the internet. The section
   # keeps the fork on the home page pointing at one door.
