@@ -35,6 +35,7 @@ API on purpose, plus one Sheshnag-specific block: `lora`.
   "model": "qwen2-5-0-5b-instruct-hf",        // catalogue id, source_type=huggingface
   "training_file": "file-…",                  // uploaded with purpose="fine-tune"
   "validation_file": null,
+  "organization_id": null,                    // org the job runs under; default: the caller's only org
   "suffix": "support-bot",                    // [a-z0-9-], ≤40; folded into fine_tuned_model
   "seed": 42,
   "method": {"type": "supervised"},
@@ -84,7 +85,12 @@ everyone a new table for free, but it can never add a column.
 
 ### `finetune_jobs`
 
-Who and what: `user_id`, `api_key_id`. The pinned base: `base_model_id`,
+Who and what: `user_id`, `api_key_id`, `org_id`. `org_id` is the org the
+caller named in `organization_id` (they must be a member, or the request is a
+403) or, when they named none, their only org; it is NULL when they belong to
+several and named none. Workers claim queued jobs from every org, so a job's
+dataset can reach any provider's runner; filtering the claim on `org_id`
+keeps it on the job's own org. The pinned base: `base_model_id`,
 `base_source_ref`, `base_source_revision`. Inputs: `training_file_id`,
 `validation_file_id`. Then `method`, `suffix`, `seed`. Hyperparameters:
 `n_epochs`, `batch_size`, `learning_rate`, `max_seq_length`. LoRA:

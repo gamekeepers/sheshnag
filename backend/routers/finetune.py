@@ -17,7 +17,10 @@ from auth import get_human_context
 from database import get_db
 from finetune_contract import ENGINE, ENGINE_VERSION, TERMINAL_STATUSES
 from finetune_picker import get_base_model_entry
-from models import FinetuneArtifact, FinetuneEvent, FinetuneJob, File as FileModel
+from models import (
+    FinetuneArtifact, FinetuneEvent, FinetuneJob, File as FileModel,
+    Organization, OrganizationMembership,
+)
 from schemas import FinetuneJobCreate
 from services.finetune_events import emit_event, transition
 from services.finetune_validator import validate_finetune_job
@@ -42,6 +45,7 @@ def job_out(db: Session, job: FinetuneJob) -> dict:
     return {
         "id": job.id,
         "object": "fine_tuning.job",
+        "organization_id": job.org_id,
         "model": job.base_model_id,
         "base_model": {"source_ref": job.base_source_ref, "revision": job.base_source_revision},
         "training_file": job.training_file_id,
@@ -124,6 +128,24 @@ def _get_owned_job(db: Session, user, job_id: str) -> FinetuneJob:
     return job
 
 
+def _job_org_id(db: Session, user, requested: Optional[str]) -> Optional[str]:
+    """The org a job runs under: the one the caller names, which they must
+    belong to, or their only org. None when they belong to several and name
+    none."""
+    member_of = [m.org_id for m in db.query(OrganizationMembership.org_id).filter(
+        OrganizationMembership.user_id == user.id,
+    )]
+    if requested is None:
+        return member_of[0] if len(member_of) == 1 else None
+    if not db.query(Organization).filter(Organization.id == requested).first():
+        raise HTTPException(status_code=400,
+                            detail=f"organization_id: organization '{requested}' not found")
+    if user.platform_role == "user" and requested not in member_of:
+        raise HTTPException(status_code=403,
+                            detail=f"organization_id: you are not a member of '{requested}'")
+    return requested
+
+
 def _check_dataset_file(db: Session, user, file_id: str, param: str) -> FileModel:
     f = db.query(FileModel).filter(FileModel.id == file_id).first()
     if not f:
@@ -170,10 +192,13 @@ def create_fine_tuning_job(
     if req.validation_file:
         _check_dataset_file(db, user, req.validation_file, "validation_file")
 
+    org_id = _job_org_id(db, user, req.organization_id)
+
     lora = req.lora
     job = FinetuneJob(
         user_id=user.id,
         api_key_id=api_key.id if api_key else None,
+        org_id=org_id,
         base_model_id=entry.id,
         base_source_ref=entry.source_ref or entry.runtime_model_id,
         base_source_revision=entry.source_revision,

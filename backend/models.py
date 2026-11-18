@@ -744,6 +744,12 @@ class FinetuneJob(Base):
     user_id              = Column(String, nullable=False, index=True)
     api_key_id           = Column(String, nullable=True)  # attribution for personal key usage
 
+    # The org the job runs under: the one the caller named, or their only org.
+    # NULL = the caller belongs to several orgs and named none. Workers claim
+    # queued jobs from every org; a claim filter on this column is what keeps
+    # a job's dataset on its own org's runners.
+    org_id               = Column(String, ForeignKey("organizations.id"), nullable=True, index=True)
+
     # Base model, pinned (see docstring).
     base_model_id        = Column(String, nullable=False)  # ModelCatalog.id (source_type='huggingface')
     base_source_ref      = Column(String, nullable=False)  # e.g. Qwen/Qwen2.5-0.5B-Instruct

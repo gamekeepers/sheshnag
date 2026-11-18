@@ -5,6 +5,7 @@ Validation runs as a FastAPI background task, which TestClient completes
 before returning; the fixtures below point it at the test DB and at a
 whitespace token counter so no tokenizer is downloaded.
 """
+import contextlib
 import io
 import json
 import uuid
@@ -15,7 +16,7 @@ from sqlalchemy.orm import sessionmaker
 
 from models import (
     ApiKey, File as FileModel, FinetuneJob, FinetuneJobAssignment, Worker,
-    OrganizationMembership,
+    Organization, OrganizationMembership,
 )
 from services import finetune_validator
 from services.finetune_validator import validate_dataset
@@ -105,6 +106,97 @@ def _create(client, file_id, **extra):
 
 
 # ─── Creating a job ────────────────────────────────────────
+
+def _own_org_id(engine, user):
+    db = sessionmaker(bind=engine)()
+    try:
+        return db.query(OrganizationMembership).filter(
+            OrganizationMembership.user_id == user.id).first().org_id
+    finally:
+        db.close()
+
+
+@contextlib.contextmanager
+def _client_for(engine, user):
+    """A client authenticated as `user` with a personal gk- key."""
+    from main import app
+    from auth import hash_api_key
+    from database import get_db
+    from fastapi.testclient import TestClient
+    from tests.conftest import _make_override
+
+    raw = f"gk-{uuid.uuid4().hex}"
+    db = sessionmaker(bind=engine)()
+    db.add(ApiKey(key_type="personal", created_by_user_id=user.id, name="t",
+                  key_prefix=raw[:8], key_hash=hash_api_key(raw)))
+    db.commit()
+    db.close()
+    app.dependency_overrides[get_db] = _make_override(engine)
+    try:
+        with TestClient(app) as client:
+            client.headers["Authorization"] = f"Bearer {raw}"
+            yield client
+    finally:
+        app.dependency_overrides.clear()
+
+
+def _fresh_user(engine):
+    from tests.conftest import _seed_user
+    return _seed_user(engine, f"ft-{uuid.uuid4().hex[:8]}@example.com", "testpassword123", "Org Test")
+
+
+def test_create_records_the_callers_only_org(_engine, make_file):
+    user = _fresh_user(_engine)
+    file_id = make_file(_jsonl([_example() for _ in range(12)]), user_id=user.id)
+    with _client_for(_engine, user) as client:
+        res = _create(client, file_id)
+    assert res.status_code == 200, res.text
+    assert res.json()["organization_id"] == _own_org_id(_engine, user)
+
+
+def test_create_records_no_org_when_the_caller_has_several_and_names_none(_engine, make_file):
+    user = _fresh_user(_engine)
+    db = sessionmaker(bind=_engine, expire_on_commit=False)()
+    second = Organization(name="Second org")
+    db.add(second)
+    db.flush()
+    db.add(OrganizationMembership(org_id=second.id, user_id=user.id, role="admin"))
+    db.commit()
+    db.close()
+    file_id = make_file(_jsonl([_example() for _ in range(12)]), user_id=user.id)
+    with _client_for(_engine, user) as client:
+        res = _create(client, file_id)
+    assert res.status_code == 200, res.text
+    assert res.json()["organization_id"] is None
+
+
+def test_create_records_a_named_org_the_caller_belongs_to(auth_client, good_file, _engine, _test_user):
+    org_id = _own_org_id(_engine, _test_user)
+    res = _create(auth_client, good_file, organization_id=org_id)
+    assert res.status_code == 200, res.text
+    assert res.json()["organization_id"] == org_id
+
+
+def test_create_refuses_an_org_the_caller_is_not_in(auth_client, good_file, _engine):
+    db = sessionmaker(bind=_engine, expire_on_commit=False)()
+    other = Organization(name="Another org")
+    db.add(other)
+    db.commit()
+    try:
+        res = _create(auth_client, good_file, organization_id=other.id)
+        assert res.status_code == 403
+        assert "not a member" in res.json()["detail"]
+    finally:
+        db.delete(other)
+        db.commit()
+        db.close()
+
+
+def test_create_refuses_an_unknown_org(auth_client, good_file):
+    res = _create(auth_client, good_file, organization_id="org-does-not-exist")
+    assert res.status_code == 400
+    assert "not found" in res.json()["detail"]
+
 
 def test_create_validates_and_queues(auth_client, good_file):
     res = _create(auth_client, good_file, suffix="support-bot")
