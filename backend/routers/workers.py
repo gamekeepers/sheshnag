@@ -637,12 +637,10 @@ def report_failure(
 
 # ─── Finetune Job Polling & Results ────────────────────────
 #
-# Deliberately separate endpoints from the batch ones above rather than
-# branching /workers/poll — training jobs have a different queue, a
-# different fit function (finetune_picker: VRAM headroom for training,
-# not "already loaded"), and a different payload shape (hyperparameters,
-# not a runtime model id). Keeping them apart means the well-exercised
-# batch poll path is untouched by this vertical. Statuses and limits are
+# Training jobs have their own queue, their own fit function (finetune_picker:
+# VRAM headroom for training) and their own payload (hyperparameters and a
+# pinned base), so they have their own endpoints; a change here cannot alter
+# what /workers/poll hands a batch worker. Statuses and limits are
 # finetune_contract.py's.
 
 class FinetunePollRequest(BaseModel):

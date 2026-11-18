@@ -1,10 +1,10 @@
 """Job -> LLaMA-Factory config.
 
 forge-runner does not write training code: it writes the engine's YAML and
-shells out (the G2 decision). The keys below are the ones the G2 bake-off run
-used on watchtower (docs/forge/week2-g1-g2-findings.md), plus model_revision
-for the pinned base. LLaMA-Factory rejects keys it does not know, so a typo
-here fails the run loudly instead of training with a default.
+shells out. The keys below are a verified LLaMA-Factory 0.9.5 run on
+Qwen2.5-0.5B-Instruct, plus model_revision for the pinned base.
+LLaMA-Factory rejects keys it does not know, so a typo here fails the run
+loudly instead of training with a default.
 """
 import json
 from pathlib import Path
@@ -26,9 +26,9 @@ CHAT_TEMPLATES = {
     "TinyLlama/TinyLlama-1.1B-Chat-v1.0": "zephyr",
 }
 
-# Micro-batch 1 x gradient accumulation = the job's effective batch. G2 found
-# micro-batch 2 OOMs a 0.5B model in the ~4.8 GB a shared watchtower leaves
-# free; the step count and the maths are the same either way.
+# Micro-batch 1 x gradient accumulation = the job's effective batch.
+# Micro-batch 2 OOMs a 0.5B model in ~4.8 GB of free VRAM; the step count
+# and the maths are the same either way.
 MICRO_BATCH = 1
 LOGGING_STEPS = 5
 
@@ -73,7 +73,7 @@ def build(job: Job, workdir: Path, *, has_validation: bool) -> tuple[dict, dict]
         "output_dir": str(workdir / "out"),
         "overwrite_output_dir": True,
         "logging_steps": LOGGING_STEPS,
-        "save_strategy": "no",          # the final adapter is always written; checkpoints come later
+        "save_strategy": "no",          # the final adapter is always written
         "report_to": "none",
         "per_device_train_batch_size": MICRO_BATCH,
         "gradient_accumulation_steps": max(1, job.batch_size // MICRO_BATCH),

@@ -56,11 +56,11 @@ import-time work breaking pytest collection, the daemon's config precedence, and
 | To change any code | [`docs/develop.md`](docs/develop.md) |
 | Every environment variable | [`docs/reference/configuration.md`](docs/reference/configuration.md) |
 | The API contract | [`docs/reference/api.md`](docs/reference/api.md) |
-| Model rules â there is **no path to run an uncatalogued model** | [`docs/reference/model-catalogue.md`](docs/reference/model-catalogue.md) |
-| The finetuning job contract â statuses, LoRA limits, runner protocol | [`docs/finetune_contract.md`](docs/finetune_contract.md) |
+| Model rules — there is **no path to run an uncatalogued model** | [`docs/reference/model-catalogue.md`](docs/reference/model-catalogue.md) |
+| The finetuning job contract — statuses, LoRA limits, runner protocol | [`docs/reference/finetune-contract.md`](docs/reference/finetune-contract.md) |
 | The database shape | [`docs/reference/data-model.md`](docs/reference/data-model.md) |
 | To deploy it | [`docs/self-host.md`](docs/self-host.md) |
-| Process â branching, review, who merges | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| Process — branching, review, who merges | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 
 Two things worth repeating here because they cost time and an agent will hit
 them before it opens the docs:

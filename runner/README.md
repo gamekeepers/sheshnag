@@ -9,7 +9,7 @@ It is deliberately **not** part of the batch daemon (`daemon/`). A six-hour
 training run is not a batch of prompts. The backend never restarts a run from
 step 0 behind the user's back: a lost runner fails its job with a reason, and
 the user resubmits. The contract it implements is
-[`docs/finetune_contract.md`](../docs/finetune_contract.md).
+[`docs/reference/finetune-contract.md`](../docs/reference/finetune-contract.md).
 
 ## Run it
 
@@ -19,19 +19,19 @@ python3 -m venv ~/venvs/forge-runner
 
 # Against Sheshnag (worker gk- key from the dashboard):
 FORGE_API_KEY=gk-... forge-runner serve \
-    --backend-url https://sheshnag.dau.ac.in \
-    --work-dir /srv/forge/runs/$USER/jobs --hf-cache /srv/forge/hf-cache
+    --backend-url https://sheshnag.example.org \
+    --work-dir /data/forge/jobs --hf-cache /data/hf-cache
 
 # One job, no backend: develop locally, run here
 forge-runner run-local --job job.json --train train.jsonl [--validation test.jsonl] \
-    --work-dir /srv/forge/runs/$USER/jobs --hf-cache /srv/forge/hf-cache
+    --work-dir /data/forge/jobs --hf-cache /data/hf-cache
 ```
 
 `job.json` takes the `/workers/finetune-poll` payload shape: `job_id`,
 `source_ref`, `source_revision`, `lora_rank`, `epochs`, and so on.
 
 `serve` claims a job only when the GPU has at least `--min-free-vram-gb` free
-(default 4.5). Watchtower is shared, and a job claimed into an OOM wastes an
+(default 4.5). On a shared GPU, a job claimed into an OOM wastes an
 attempt.
 
 `--engine-cmd "llamafactory-cli train {config}"` runs a locally installed
@@ -40,8 +40,8 @@ engine instead of the docker image.
 ## What it does with a job
 
 1. Downloads the training (and validation) file into `<work-dir>/<job_id>/data/`.
-2. Writes `train.yaml` and `dataset_info.json`. The keys are the G2 run's
-   (`forge_runner/config.py`). Bases with no chat template configured are
+2. Writes `train.yaml` and `dataset_info.json`. The keys are listed in
+   `forge_runner/config.py`. Bases with no chat template configured are
    refused rather than guessed.
 3. Runs the pinned LLaMA-Factory image (`docker run --rm --name forge-<job_id>`)
    with the job directory mounted at the same path inside the container.

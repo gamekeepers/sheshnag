@@ -1,21 +1,17 @@
 # Finetuning job contract
 
 What a finetuning job **is** on Sheshnag, written down once so the API and the
-runner are built against the same thing. **Agreed by Manan and Ved on
-2026-10-26 (G4).** Changing it needs both of them; see [`team.md`](team.md). Code: `backend/finetune_contract.py`
+runner are built against the same thing. Code: `backend/finetune_contract.py`
 (constants and limits), `backend/models.py` (tables),
 `backend/routers/finetune.py` (user API), `backend/routers/workers.py`
 (`/workers/finetune-*`, the runner side), and
 `backend/services/finetune_validator.py`.
 
-Two week-2 results shaped it. Evidence is on watchtower at
-`/srv/forge/runs/manan/week2/FINDINGS.md`.
-
-- **G1, serving the week-1 adapter on vLLM 0.31.0.** An artifact you cannot route
-  to is not a deliverable. So the job carries what serving needs, and the
-  platform enforces what vLLM itself does not check.
-- **G2, the engine bake-off.** LLaMA-Factory 0.9.5 is the engine (co-signed
-  2026-10-26), pinned by image digest in `finetune_contract.ENGINE_IMAGE`.
+- **Serving is vLLM 0.31.0.** An artifact you cannot route to is not a
+  deliverable. So the job carries what serving needs, and the platform
+  enforces what vLLM itself does not check.
+- **The engine is LLaMA-Factory 0.9.5**, pinned by image digest in
+  `finetune_contract.ENGINE_IMAGE`.
 
 ## Shape
 
@@ -47,9 +43,9 @@ API on purpose, plus one Sheshnag-specific block: `lora`.
 }
 ```
 
-**Unknown keys are rejected (422), at every level.** In G2, Axolotl silently
-dropped a typo'd `lora_rnk` and then crashed at model load with an error that
-never named the key. The API does not repeat that one layer up.
+**Unknown keys are rejected (422), at every level.** A typo'd `lora_rnk` that
+was silently dropped would train with the wrong rank, or crash at model load
+with an error that never names the key.
 
 `batch_size` is the *effective* batch. The runner chooses micro-batch ×
 gradient accumulation to fit the worker's free VRAM. On a shared GPU that is a
@@ -68,7 +64,7 @@ Every transition goes through `services/finetune_events.transition()`. It is
 checked against `VALID_TRANSITIONS`, stamps `queued_at`, `started_at` or
 `finished_at`, and writes an event.
 
-## Limits serving imposes (from G1)
+## Limits serving imposes
 
 | Constraint | Why | Enforced |
 |---|---|---|
@@ -116,19 +112,19 @@ integer id is the pagination cursor (`ftevent-<n>`).
 | `lora_alpha` | `adapter_config.json` | Scaling; recorded for reproduction |
 | `target_modules` (resolved list) | `adapter_config.json` | Must be the proven-servable set |
 | `modules_to_save` | `adapter_config.json` | Must be empty to serve as a plain LoRA |
-| `engine`, `engine_version`, `engine_image` | worker (self-reported) | Reproduction; the pinned G2 stack |
+| `engine`, `engine_version`, `engine_image` | worker (self-reported) | Reproduction; the pinned engine stack |
 | `metrics` | worker | Final train/eval loss |
 | `servable`, `unservable_reasons` | backend | The verdict, from `adapter_unservable_reasons()` |
 | `kind`, `step` | worker | `adapter` now; `checkpoint` rows are where resume will come from |
-| `catalog_entry_id` | later | Set when the adapter is registered as a catalogue entry under its base (AC's rework). Reserved now so that step is a write, not a migration. |
+| `catalog_entry_id` | later | Set when the adapter is registered as a catalogue entry under its base. Registration is a write to this column, not a schema change. |
 
 The backend reads everything adapter-related **from the uploaded zip's
 `adapter_config.json`**, not from the worker's report. If the adapter is not
 servable, the artifact row is still kept for inspection, but the job ends
 `failed` with `error.code = "unservable_adapter"`.
 
-The runner must also chmod adapter files readable before zipping. G1 found
-Axolotl writing `adapter_model.safetensors` as `0600`.
+The runner must also chmod adapter files readable before zipping. Engines
+write `adapter_model.safetensors` as `0600`.
 
 ## Dataset validator
 
@@ -169,7 +165,7 @@ The job's `error.message` is the first problem plus its fix, for example:
 
 ## Runner protocol (`/workers/finetune-*`, worker `gk-` key)
 
-The runner is forge-runner ([`runner/`](../runner/README.md)), a separate
+The runner is forge-runner ([`runner/`](https://github.com/gamekeepers/sheshnag/blob/develop/runner/README.md)), a separate
 process from the batch daemon. It registers and heartbeats like any worker
 (`/workers/register`, `/workers/{id}/heartbeat`), including while it
 supervises a run.
@@ -198,30 +194,31 @@ heartbeating for 10 minutes, the job is **failed** with `runner_lost` and a
 message telling the user to resubmit. It is never requeued from step 0
 without their knowledge.
 
-## Deliberately not here yet
+## Outside this contract
 
 - **DPO and ORPO.** The engine supports them (`stage: dpo`,
   `pref_loss: sigmoid|orpo|simpo`). Adding them means a new `method.type` and
   a preference-pair validator, not new tables.
 - **Resume from checkpoint.** A retry restarts from step 0. `kind='checkpoint'`
-  artifacts are the intended hook.
+  artifacts carry the resume point.
 - **The adapter does not record its base revision.** PEFT writes
-  `"revision": null` into `adapter_config.json` (seen on the first forge-runner
-  run, 2026-10-26). The job's pinned revision is the only record of it.
-- **Registering the adapter in the catalogue.** That waits on AC's
-  representation, and it is one write to `catalog_entry_id`.
+  `"revision": null` into `adapter_config.json`. The job's pinned revision is
+  the only record of it.
+- **Registering the adapter in the catalogue.** Until an adapter has a
+  catalogue entry, it cannot be named in `POST /v1/batches`; registration is
+  one write to `catalog_entry_id`.
 
 ## Open items
 
 - The backend needs outbound HF hub access for exact token counts. Without
   it, stats are estimates. Set `HF_TOKEN` for rate limits.
-- `finetune_picker` checks a worker's **total** VRAM, but G2 ran with only
-  about 4.8 GB free on a 49 GB shared card. Fitting against reported free
-  VRAM belongs with the runner work.
+- `finetune_picker` checks a worker's **total** VRAM. On a shared card with
+  little free memory, a job that fits by total VRAM can still OOM; the
+  runner's `--min-free-vram-gb` is the guard against that.
 
-Resolved 2026-10-26:
+## Fixed rules
 
-- Catalogue HF entries are pinned to commit SHAs. The API refuses to
+- Catalogue HF entries must be pinned to commit SHAs. The API refuses to
   finetune any base whose `source_revision` is not a 40-hex SHA.
-- The training-VRAM multiplier was re-derived from G2: 3.2× inference
-  `vram_gb`, up from the 1.3× sized for QLoRA on the old 4 GB card.
+- Training VRAM is estimated as 3.2× the catalogue's inference `vram_gb`,
+  measured for bf16 LoRA at the contract defaults.

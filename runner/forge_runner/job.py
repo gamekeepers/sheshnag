@@ -1,6 +1,6 @@
 """The job forge-runner receives from POST /workers/finetune-poll.
 
-Field names are the poll payload's (docs/finetune_contract.md, "Runner
+Field names are the poll payload's (docs/reference/finetune-contract.md, "Runner
 protocol"). Unknown fields are ignored so the backend can add to the payload
 without breaking deployed runners; missing required ones fail loudly.
 """

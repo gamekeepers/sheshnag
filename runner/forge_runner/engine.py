@@ -1,7 +1,7 @@
 """Starting and stopping the training engine as a subprocess.
 
-DockerEngine is the production path on watchtower: the pinned LLaMA-Factory
-image (G2), run rootless with the job directory mounted at the same path
+DockerEngine is the production path: the pinned LLaMA-Factory
+image, run rootless with the job directory mounted at the same path
 inside the container, so the paths in the generated config are valid on
 both sides. CommandEngine runs any command with `{config}` substituted —
 `llamafactory-cli train {config}` on a machine with the engine installed,

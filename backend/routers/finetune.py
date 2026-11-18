@@ -4,7 +4,7 @@
 Same credentials as /v1/files and /v1/batches (JWT or personal API key),
 same /v1/files upload for datasets (purpose="fine-tune"). The contract —
 statuses, limits, what serving needs — is finetune_contract.py; the prose
-version is docs/finetune_contract.md.
+version is docs/reference/finetune-contract.md.
 """
 import json
 import re
@@ -159,7 +159,7 @@ def create_fine_tuning_job(
         )
     if not _COMMIT_SHA.fullmatch(entry.source_revision or ""):
         # The job pins its base from this field; a branch name like "main"
-        # would let the base drift under a trained adapter (G1).
+        # would let the base drift under a trained adapter, and vLLM never checks it.
         raise HTTPException(
             status_code=400,
             detail=f"model: catalogue entry '{entry.id}' is pinned to "
