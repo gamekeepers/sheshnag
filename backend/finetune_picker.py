@@ -37,6 +37,17 @@ def get_base_model_entry(db, base_model_id: str):
     ).first()
 
 
+def trainable_base_entries(db):
+    """Finetune-eligible entries that also have a chat template, i.e. the
+    bases forge-runner can actually train. Used to name them in errors."""
+    return db.query(ModelCatalog).filter(
+        ModelCatalog.source_type == "huggingface",
+        ModelCatalog.enabled.is_(True),
+        ModelCatalog.status == "active",
+        ModelCatalog.chat_template.isnot(None),
+    ).all()
+
+
 def is_base_model_supported(db, base_model_id: str) -> bool:
     """True if `base_model_id` is a selectable finetune base model."""
     return get_base_model_entry(db, base_model_id) is not None
@@ -56,8 +67,8 @@ class FinetunePicker:
     """
     Matches a polling worker to the best available finetune job.
 
-    Filter: worker must fit the job's training VRAM requirement (when
-    known). Rank: oldest compatible job (FIFO) — no "already loaded"
+    Filter: worker's free VRAM must fit the job's training VRAM
+    requirement (when known). Rank: oldest compatible job (FIFO) — no "already loaded"
     preference, unlike ProviderPicker.
     """
 
@@ -65,9 +76,12 @@ class FinetunePicker:
         if not worker or not available_jobs:
             return None
 
+        # Free VRAM, not total: on a shared card the total says nothing
+        # about room for training. forge-runner heartbeats report free memory
+        # here; its --min-free-vram-gb check is a second guard, not the only one.
         # None until the first heartbeat, 0.0 when the worker could not
         # measure it (heartbeats default the field) — both mean unknown.
-        vram = worker.vram_total_gb or None
+        vram = worker.vram_available_gb or None
 
         for job in available_jobs:
             required = training_vram_required(db, job.base_model_id)

@@ -145,6 +145,9 @@ MIGRATIONS = [
                "runtime_models", "context_limit", Integer()),
     _Migration("runtime_models.context_allocated",
                "runtime_models", "context_allocated", Integer()),
+    # Finetunable bases: the chat template forge-runner trains with.
+    _Migration("model_catalog.chat_template",
+               "model_catalog", "chat_template", String()),
 ]
 
 

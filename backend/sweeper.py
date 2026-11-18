@@ -217,7 +217,9 @@ def fail_lost_finetune_jobs(db) -> int:
     )
     for job, worker in lost:
         minutes = FINETUNE_RUNNER_LOST_SECONDS // 60
-        message = (f"The training runner on {worker.hostname} stopped responding for "
+        # No hostname: job.error goes to the job's owner, and consumers only
+        # ever see an opaque worker id. The log line below has worker.id.
+        message = (f"The training runner stopped responding for "
                    f"{minutes} minutes. The job was stopped rather than restarted from "
                    "step 0; resubmit it to train again.")
         job.error = json.dumps({"code": "runner_lost", "param": None, "message": message})

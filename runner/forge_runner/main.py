@@ -13,14 +13,17 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 from forge_runner import gpu
 from forge_runner.client import BackendClient, OfflineClient
 from forge_runner.engine import CommandEngine, DockerEngine
 from forge_runner.job import Job
-from forge_runner.supervisor import run_job
+from forge_runner.supervisor import RunResult, run_job
 
-# The training engine, pinned by digest (matches finetune_contract.ENGINE_IMAGE).
+# The training engine, pinned by digest. In `serve` the backend's pin
+# (finetune_contract.ENGINE_IMAGE, sent as the poll payload's engine_image)
+# wins; this default covers `run-local` and a payload without one.
 ENGINE_IMAGE = ("hiyouga/llamafactory@sha256:"
                 "c5e769e047a19f9322800c9881a6270557ef0e6682f0145b50b322f8724de6b6")
 ENGINE_VERSION = "0.9.5"
@@ -29,10 +32,11 @@ HEARTBEAT_SECONDS = 30
 logger = logging.getLogger("forge_runner")
 
 
-def _engine(args):
+def _engine(args, job: Optional[Job] = None):
     if args.engine_cmd:
         return CommandEngine(args.engine_cmd.split(), version=ENGINE_VERSION)
-    return DockerEngine(args.image, Path(args.hf_cache), version=ENGINE_VERSION)
+    image = (job.engine_image if job else None) or args.image
+    return DockerEngine(image, Path(args.hf_cache), version=ENGINE_VERSION)
 
 
 def _throttled(fn, every: float):
@@ -52,7 +56,6 @@ def serve(args) -> int:
         print("forge-runner: a worker API key is required (--api-key or FORGE_API_KEY)", file=sys.stderr)
         return 2
     client = BackendClient(args.backend_url, api_key)
-    engine = _engine(args)
     work_root = Path(args.work_dir)
     work_root.mkdir(parents=True, exist_ok=True)
 
@@ -82,16 +85,39 @@ def serve(args) -> int:
             if not payload:
                 time.sleep(args.poll_interval)
                 continue
-            job = Job.from_payload(payload)
-            logger.info("Claimed job %s (base %s)", job.job_id, job.source_ref)
-            busy_beat = _throttled(lambda: beat(True, job.job_id), HEARTBEAT_SECONDS)
-            result = run_job(job, client, engine, work_root, worker_id, heartbeat=busy_beat)
-            logger.info("Job %s finished: %s %s", job.job_id, result.status, result.detail)
+            run_claimed(payload, client, lambda job: _engine(args, job), work_root, worker_id,
+                        heartbeat_for=lambda job_id: _throttled(
+                            lambda: beat(True, job_id), HEARTBEAT_SECONDS))
     except KeyboardInterrupt:
         logger.info("Stopping")
     finally:
         client.close()
     return 0
+
+
+def run_claimed(payload: dict, client, make_engine, work_root: Path, worker_id: str,
+                heartbeat_for=lambda job_id: None) -> Optional[RunResult]:
+    """Run one claimed job so that one bad job costs one job, not the runner.
+
+    run_job reports the failures it anticipates; anything else that escapes
+    (a bad payload, a client bug) is reported here as runner_error, and the
+    serve loop goes back to polling instead of leaving the job in `running`
+    until the 10-minute runner_lost sweep.
+    """
+    job_id = payload.get("job_id")
+    try:
+        job = Job.from_payload(payload)
+        logger.info("Claimed job %s (base %s)", job.job_id, job.source_ref)
+        result = run_job(job, client, make_engine(job), work_root, worker_id,
+                         heartbeat=heartbeat_for(job.job_id))
+        logger.info("Job %s finished: %s %s", job.job_id, result.status, result.detail)
+        return result
+    except Exception as exc:
+        logger.exception("Job %s crashed the supervisor", job_id)
+        if job_id:
+            client.report_failure(job_id, worker_id, error=f"forge-runner error: {exc}",
+                                  code="runner_error", retryable=True)
+        return None
 
 
 def run_local(args) -> int:

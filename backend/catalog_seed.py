@@ -50,6 +50,7 @@ _MANAGED_FIELDS = (
     "size_gb", "task_type",
     "capabilities", "lineage",
     "source_type", "source_ref", "source_revision", "homepage_url",
+    "chat_template",
 )
 
 _ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")

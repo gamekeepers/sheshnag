@@ -28,7 +28,7 @@ forge-runner run-local --job job.json --train train.jsonl [--validation test.jso
 ```
 
 `job.json` takes the `/workers/finetune-poll` payload shape: `job_id`,
-`source_ref`, `source_revision`, `lora_rank`, `epochs`, and so on.
+`source_ref`, `source_revision`, `chat_template`, `lora_rank`, `epochs`, and so on.
 
 `serve` claims a job only when the GPU has at least `--min-free-vram-gb` free
 (default 4.5). On a shared GPU, a job claimed into an OOM wastes an
@@ -41,9 +41,11 @@ engine instead of the docker image.
 
 1. Downloads the training (and validation) file into `<work-dir>/<job_id>/data/`.
 2. Writes `train.yaml` and `dataset_info.json`. The keys are listed in
-   `forge_runner/config.py`. Bases with no chat template configured are
-   refused rather than guessed.
-3. Runs the pinned LLaMA-Factory image (`docker run --rm --name forge-<job_id>`)
+   `forge_runner/config.py`. The chat template comes from the poll payload
+   (the base's catalogue entry); a job without one is refused rather than
+   guessed. For `run-local`, put `chat_template` in `job.json`.
+3. Runs the LLaMA-Factory image the backend pinned in the payload's
+   `engine_image` (`--image` only covers `run-local`; `docker run --rm --name forge-<job_id>`)
    with the job directory mounted at the same path inside the container.
 4. Every 2 s it forwards new `trainer_log.jsonl` lines to
    `/workers/finetune-progress`, and heartbeats every 30 s. If the backend
@@ -61,6 +63,8 @@ engine instead of the docker image.
 | `no_trainable_examples` | no | nothing survived the chat template / cutoff |
 | `base_revision_missing`, `base_model_unavailable` | no | catalogue pin or HF access |
 | `network_error`, `worker_disk_full`, `engine_not_started`, `engine_killed` | yes | the worker, not the job |
+| `adapter_upload_failed` | yes | trained, but the upload failed; the zip stays in the job dir |
+| `runner_error` | yes | an unexpected error in forge-runner itself; the runner keeps serving |
 | `training_failed` | yes | anything else; the message quotes the engine's last error line |
 
 ## Tests

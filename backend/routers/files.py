@@ -43,29 +43,26 @@ def upload_file(
     return db_file
 
 
-def _file_assigned_worker_org(db, file_id):
-    """org_id of the worker currently assigned the batch that uses this file
-    as input — or the finetune job that uses it as training/validation
-    data — or None."""
-    assignment = None
-    batch = db.query(Batch).filter(Batch.input_file_id == file_id).first()
-    if batch:
-        assignment = db.query(BatchAssignment).filter(
-            BatchAssignment.batch_id == batch.id
-        ).first()
-    if not assignment:
-        job_ids = [j.id for j in db.query(FinetuneJob).filter(
-            (FinetuneJob.training_file_id == file_id)
-            | (FinetuneJob.validation_file_id == file_id)
-        )]
-        if job_ids:
-            assignment = db.query(FinetuneJobAssignment).filter(
-                FinetuneJobAssignment.job_id.in_(job_ids)
-            ).first()
-    if not assignment:
-        return None
-    worker = db.query(Worker).filter(Worker.id == assignment.worker_id).first()
-    return worker.org_id if worker else None
+def _file_assigned_worker_orgs(db, file_id) -> set:
+    """org_ids of every worker currently assigned a batch that uses this
+    file as input, or a finetune job that uses it as training/validation
+    data. Every assignment counts, not the first one found: users rerun the
+    same dataset with different hyperparameters, and each of those jobs may
+    sit on a worker from a different org."""
+    batch_orgs = (
+        db.query(Worker.org_id)
+        .join(BatchAssignment, BatchAssignment.worker_id == Worker.id)
+        .join(Batch, Batch.id == BatchAssignment.batch_id)
+        .filter(Batch.input_file_id == file_id)
+    )
+    finetune_orgs = (
+        db.query(Worker.org_id)
+        .join(FinetuneJobAssignment, FinetuneJobAssignment.worker_id == Worker.id)
+        .join(FinetuneJob, FinetuneJob.id == FinetuneJobAssignment.job_id)
+        .filter((FinetuneJob.training_file_id == file_id)
+                | (FinetuneJob.validation_file_id == file_id))
+    )
+    return {org_id for (org_id,) in batch_orgs.union(finetune_orgs) if org_id}
 
 
 @router.get("/files")
@@ -135,9 +132,9 @@ def download_file_content(
 
     if kind == "worker":
         # A daemon downloading job input: the file must be the input of a
-        # batch assigned to a worker in this key's org.
+        # batch or finetune job assigned to a worker in this key's org.
         org = principal
-        if _file_assigned_worker_org(db, file_id) != org.id:
+        if org.id not in _file_assigned_worker_orgs(db, file_id):
             raise HTTPException(status_code=403, detail="Access denied")
     else:
         user = principal
@@ -146,9 +143,9 @@ def download_file_content(
         if user.platform_role == "superadmin" or db_file.user_id == user.id:
             pass
         else:
-            worker_org_id = _file_assigned_worker_org(db, file_id)
-            member = worker_org_id and db.query(OrganizationMembership).filter(
-                OrganizationMembership.org_id == worker_org_id,
+            worker_org_ids = _file_assigned_worker_orgs(db, file_id)
+            member = worker_org_ids and db.query(OrganizationMembership).filter(
+                OrganizationMembership.org_id.in_(worker_org_ids),
                 OrganizationMembership.user_id == user.id,
             ).first()
             if not member:

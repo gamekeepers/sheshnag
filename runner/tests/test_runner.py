@@ -6,6 +6,7 @@ import sys
 import zipfile
 from pathlib import Path
 
+import httpx
 import pytest
 import yaml
 
@@ -24,6 +25,7 @@ def _job(**overrides) -> Job:
     payload = {
         "job_id": "ftjob-test", "source_ref": "Qwen/Qwen2.5-0.5B-Instruct",
         "source_revision": QWEN_SHA, "dataset_path": "/v1/files/file-1/content",
+        "chat_template": "qwen",
         "lora_rank": 16, "lora_alpha": 32, "target_modules": "all-linear",
         "epochs": 1, "batch_size": 16, "max_seq_length": 1024,
         "some_future_field": "ignored",
@@ -52,9 +54,17 @@ def test_config_with_validation_and_module_list(tmp_path):
     assert info["validation"]["file_name"] == "validation.jsonl"
 
 
-def test_config_refuses_unknown_base(tmp_path):
+def test_config_refuses_base_without_template(tmp_path):
     with pytest.raises(config.UnsupportedJob, match="no chat template"):
-        config.build(_job(source_ref="someone/unknown-7b"), tmp_path, has_validation=False)
+        config.build(_job(source_ref="someone/unknown-7b", chat_template=None),
+                     tmp_path, has_validation=False)
+
+
+def test_config_takes_template_from_the_payload(tmp_path):
+    """The catalogue's template, not a list in the runner, decides."""
+    cfg, _ = config.build(_job(source_ref="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+                               chat_template="zephyr"), tmp_path, has_validation=False)
+    assert cfg["template"] == "zephyr"
 
 
 def test_config_written_as_yaml(tmp_path):
@@ -195,8 +205,102 @@ def test_unsupported_base_fails_before_starting_engine(tmp_path, dataset, monkey
         def start(self, *a, **k):
             raise AssertionError("engine must not start")
     client = FakeClient(dataset)
-    result = run_job(_job(source_ref="someone/unknown-7b"), client, ExplodingEngine(),
+    result = run_job(_job(source_ref="someone/unknown-7b", chat_template=None), client, ExplodingEngine(),
                      tmp_path / "jobs", "worker-1")
     assert result.status == "failed"
     assert client.failures[0]["code"] == "unsupported_job"
     assert client.failures[0]["retryable"] is False
+
+
+# ─── One bad job costs one job, not the runner (review [1]) ───
+
+def _http_error(status: int) -> httpx.HTTPStatusError:
+    req = httpx.Request("POST", "http://backend/workers/finetune-upload-adapter")
+    return httpx.HTTPStatusError("boom", request=req, response=httpx.Response(status, request=req))
+
+
+class UploadFailsClient(FakeClient):
+    def __init__(self, dataset, exc):
+        super().__init__(dataset)
+        self.exc = exc
+
+    def upload_adapter(self, job_id, worker_id, zip_path, **meta):
+        raise self.exc
+
+
+def test_engine_that_cannot_start_is_reported(tmp_path, dataset):
+    """No docker on PATH: nothing reaches engine.log, so report it directly."""
+    missing = CommandEngine(["definitely-not-a-real-binary-xyz", "{config}"])
+    client = FakeClient(dataset)
+    result = run_job(_job(), client, missing, tmp_path / "jobs", "worker-1")
+    assert result.status == "failed"
+    assert client.failures[0]["code"] == "engine_not_started"
+    assert client.failures[0]["retryable"] is True
+
+
+def test_upload_409_means_cancelled_and_keeps_the_adapter(tmp_path, dataset, engine, monkeypatch):
+    monkeypatch.setenv("FAKE_ENGINE_MODE", "ok")
+    client = UploadFailsClient(dataset, _http_error(409))
+    result = run_job(_job(), client, engine, tmp_path / "jobs", "worker-1", poll_interval=0.05)
+    assert result.status == "cancelled"
+    assert not client.failures
+    assert Path(result.detail).is_file()
+
+
+@pytest.mark.parametrize("exc", [_http_error(500), httpx.ConnectError("connection refused")])
+def test_upload_error_is_reported_retryable(tmp_path, dataset, engine, monkeypatch, exc):
+    monkeypatch.setenv("FAKE_ENGINE_MODE", "ok")
+    client = UploadFailsClient(dataset, exc)
+    result = run_job(_job(), client, engine, tmp_path / "jobs", "worker-1", poll_interval=0.05)
+    assert result.status == "failed"
+    assert client.failures[0]["code"] == "adapter_upload_failed"
+    assert client.failures[0]["retryable"] is True
+    assert (tmp_path / "jobs" / "ftjob-test" / "ftjob-test_adapter.zip").is_file()
+
+
+def test_crash_mid_run_stops_the_engine(tmp_path, dataset, monkeypatch):
+    """An exception while supervising must not leave training on the GPU."""
+    class Proc:
+        stopped = False
+        def poll(self):
+            return None
+        def stop(self):
+            Proc.stopped = True
+
+    class Engine:
+        name, version, image = "llamafactory", "0.9.5", None
+        def start(self, *a, **k):
+            return Proc()
+
+    def bad_heartbeat():
+        raise RuntimeError("heartbeat bug")
+
+    with pytest.raises(RuntimeError):
+        run_job(_job(), FakeClient(dataset), Engine(), tmp_path / "jobs", "worker-1",
+                heartbeat=bad_heartbeat)
+    assert Proc.stopped
+
+
+def test_run_claimed_survives_a_crashing_job(tmp_path, dataset, monkeypatch):
+    from forge_runner import main
+
+    def explode(*a, **k):
+        raise RuntimeError("supervisor bug")
+    monkeypatch.setattr(main, "run_job", explode)
+    client = FakeClient(dataset)
+    payload = {"job_id": "ftjob-x", "source_ref": "Qwen/Qwen2.5-0.5B-Instruct",
+               "dataset_path": "/v1/files/f/content"}
+    assert main.run_claimed(payload, client, lambda job: None, tmp_path, "worker-1") is None
+    assert client.failures == [{"error": "forge-runner error: supervisor bug",
+                                "code": "runner_error", "retryable": True}]
+
+
+# ─── The backend's engine pin is the one used (review [7]) ───
+
+def test_engine_image_comes_from_the_payload(tmp_path):
+    from forge_runner import main
+    args = main.argparse.Namespace(engine_cmd=None, image=main.ENGINE_IMAGE, hf_cache=str(tmp_path))
+    pinned = "hiyouga/llamafactory@sha256:" + "0" * 64
+    assert main._engine(args, _job(engine_image=pinned)).image == pinned
+    assert main._engine(args, _job()).image == main.ENGINE_IMAGE     # payload without one
+    assert main._engine(args).image == main.ENGINE_IMAGE             # run-local

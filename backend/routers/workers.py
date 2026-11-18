@@ -4,7 +4,7 @@ from database import get_db
 from models import (
     Batch, BatchAssignment, File as FileModel, Worker,
     WorkerGpu, WorkerRuntime, RuntimeModel, unix_now,
-    FinetuneJob, FinetuneJobAssignment, FinetuneArtifact,
+    FinetuneJob, FinetuneJobAssignment, FinetuneArtifact, ModelCatalog,
 )
 from schemas import (
     ModelDownloadReport, ProgressReport,
@@ -695,6 +695,9 @@ def poll_finetune_job(
     db.refresh(job)
 
     target_modules = job.target_modules
+    # The template is a property of the pinned base weights, so read it from
+    # the catalogue entry even if that entry was disabled after the job queued.
+    base_entry = db.query(ModelCatalog).filter(ModelCatalog.id == job.base_model_id).first()
     return {
         "job": {
             "job_id":                    job.id,
@@ -705,6 +708,7 @@ def poll_finetune_job(
             "base_model_id":             job.base_model_id,
             "source_ref":                job.base_source_ref,
             "source_revision":           job.base_source_revision,
+            "chat_template":             base_entry.chat_template if base_entry else None,
             "lora_rank":                 job.lora_rank,
             "lora_alpha":                job.lora_alpha,
             "lora_dropout":              job.lora_dropout,

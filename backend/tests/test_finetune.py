@@ -291,6 +291,27 @@ def test_create_rejects_unpinned_base_model(auth_client, good_file, db_session):
         db_session.commit()
 
 
+def test_create_rejects_base_without_chat_template(auth_client, good_file, db_session):
+    """forge-runner can only train bases with a curated chat template; a job
+    on any other base must be refused here, not after queueing and a claim."""
+    from models import ModelCatalog
+    entry = db_session.query(ModelCatalog).filter(ModelCatalog.id == BASE).first()
+    template = entry.chat_template
+    assert template == "qwen"
+    entry.chat_template = None
+    db_session.commit()
+    try:
+        res = _create(auth_client, good_file)
+        assert res.status_code == 400
+        detail = res.json()["detail"]
+        assert "no chat template" in detail
+        assert "tinyllama-1-1b-chat-hf" in detail       # names what *is* trainable
+        assert BASE not in detail.split("Finetunable bases:")[1]
+    finally:
+        entry.chat_template = template
+        db_session.commit()
+
+
 def test_create_rejects_wrong_file_purpose(auth_client, make_file):
     file_id = make_file(_jsonl([_example()] * 12), purpose="batch")
     res = _create(auth_client, file_id)
@@ -416,7 +437,8 @@ def worker_client(_engine, _test_user):
     raw = f"gk-{uuid.uuid4().hex}"
     db.add(ApiKey(key_type="worker", org_id=org_id, created_by_user_id=_test_user.id,
                   name="w", key_prefix=raw[:8], key_hash=hash_api_key(raw)))
-    worker = Worker(org_id=org_id, hostname="ft-worker", status="online", vram_total_gb=48)
+    worker = Worker(org_id=org_id, hostname="ft-worker", status="online",
+                    vram_total_gb=48, vram_available_gb=48)
     db.add(worker)
     # Isolate from jobs other tests left queued.
     db.query(FinetuneJob).filter(FinetuneJob.status == "queued").update({"status": "cancelled"})
@@ -465,6 +487,7 @@ def test_worker_full_run_produces_servable_adapter(auth_client, worker_client, g
     job = _claim(auth_client, worker_client, good_file)
     assert job["source_ref"] == "Qwen/Qwen2.5-0.5B-Instruct"
     assert job["target_modules"] == "all-linear" and job["engine"] == "llamafactory"
+    assert job["chat_template"] == "qwen"
     assert auth_client.get(f"/v1/fine_tuning/jobs/{job['job_id']}").json()["status"] == "running"
 
     # The worker can download its training file.
@@ -596,19 +619,71 @@ def test_lost_runner_fails_job_instead_of_requeueing(_engine, auth_client, worke
     assert done["status"] == "failed"
     assert done["error"]["code"] == "runner_lost"
     assert "resubmit" in done["error"]["message"]
+    assert "ft-worker" not in done["error"]["message"]          # no provider hostname
+    assert "ft-worker" not in json.dumps(
+        auth_client.get(f"/v1/fine_tuning/jobs/{job['job_id']}/events?limit=100").json())
 
 
-@pytest.mark.parametrize("vram_total, claims", [
-    (4.0, False),    # 4 GB laptop card: 1.5 GB x 3.2 = 4.8 GB needed
+@pytest.mark.parametrize("vram_free, claims", [
+    (4.0, False),    # 48 GB card with 4 GB free: 1.5 GB x 3.2 = 4.8 GB needed
     (48.0, True),
     (0.0, True),     # worker could not measure VRAM: unknown, not "zero"
+    (None, True),    # no heartbeat yet
 ])
-def test_picker_vram_fit(_engine, auth_client, worker_client, good_file, vram_total, claims):
+def test_picker_vram_fit(_engine, auth_client, worker_client, good_file, vram_free, claims):
+    """Fit is against free VRAM: the card's total says nothing about room
+    for training on a shared GPU."""
     from models import Worker
     db = sessionmaker(bind=_engine)()
-    db.query(Worker).filter(Worker.id == worker_client.worker_id).update({"vram_total_gb": vram_total})
+    db.query(Worker).filter(Worker.id == worker_client.worker_id).update(
+        {"vram_total_gb": 48.0, "vram_available_gb": vram_free})
     db.commit()
     db.close()
     _create(auth_client, good_file)
     job = worker_client.post("/workers/finetune-poll", json={"worker_id": worker_client.worker_id}).json()["job"]
     assert (job is not None) == claims
+
+
+@contextlib.contextmanager
+def _worker_in_new_org(engine):
+    """A worker client registered in a brand-new org (its own user and key)."""
+    from main import app
+    from auth import hash_api_key
+    from database import get_db
+    from fastapi.testclient import TestClient
+    from tests.conftest import _make_override
+
+    user = _fresh_user(engine)
+    org_id = _own_org_id(engine, user)
+    raw = f"gk-{uuid.uuid4().hex}"
+    db = sessionmaker(bind=engine, expire_on_commit=False)()
+    db.add(ApiKey(key_type="worker", org_id=org_id, created_by_user_id=user.id,
+                  name="w2", key_prefix=raw[:8], key_hash=hash_api_key(raw)))
+    worker = Worker(org_id=org_id, hostname="other-worker", status="online",
+                    vram_total_gb=48, vram_available_gb=48)
+    db.add(worker)
+    db.commit()
+    db.close()
+    app.dependency_overrides[get_db] = _make_override(engine)
+    with TestClient(app) as client:
+        client.headers["Authorization"] = f"Bearer {raw}"
+        client.worker_id = worker.id
+        yield client
+
+
+def test_shared_training_file_readable_by_each_assigned_worker(_engine, auth_client, worker_client, good_file):
+    """Two jobs on the same dataset (a hyperparameter rerun), claimed by
+    workers from different orgs: each worker can read its own job's data,
+    and a worker with no assignment cannot."""
+    first = _claim(auth_client, worker_client, good_file)
+    second_id = _create(auth_client, good_file, seed=7).json()["id"]
+
+    with _worker_in_new_org(_engine) as other:
+        second = other.post("/workers/finetune-poll", json={"worker_id": other.worker_id}).json()["job"]
+        assert second["job_id"] == second_id
+        assert second["dataset_path"] == first["dataset_path"]
+        assert other.get(second["dataset_path"]).status_code == 200
+    assert worker_client.get(first["dataset_path"]).status_code == 200
+
+    with _worker_in_new_org(_engine) as stranger:
+        assert stranger.get(first["dataset_path"]).status_code == 403

@@ -510,6 +510,11 @@ class ModelCatalog(Base):
     source_ref       = Column(String, nullable=True)    # HF repo id / ollama library path
     source_revision  = Column(String, nullable=True)    # HF commit/tag; NULL for ollama
     homepage_url     = Column(String, nullable=True)    # model-card link for the dashboard
+    # LLaMA-Factory chat template the base was trained with (e.g. 'qwen').
+    # Set = the entry is finetunable. The API refuses a job on a base without
+    # one, and forge-runner reads it from the poll payload. A wrong template
+    # trains fine and serves garbage, so it is curated, never guessed.
+    chat_template    = Column(String, nullable=True)
     org_id           = Column(String, ForeignKey("organizations.id"), nullable=True)  # NULL = public
     # active | requested | deprecated | unverified. `unverified` = adopted
     # from a worker's quarantined hash: selectable and schedulable like

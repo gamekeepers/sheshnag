@@ -398,6 +398,9 @@
 # above). vram_gb here is the *inference* figure per the ModelCatalog
 # convention; finetune_picker.py applies its own training multiplier on
 # top rather than duplicating a second number here.
+# chat_template (LLaMA-Factory's name for the template the base was trained
+# with) is what makes an entry finetunable: the API refuses bases without
+# one, and forge-runner trains with the value it gets in the poll payload.
 # source_revision is a commit SHA, never a branch: a finetune job pins the
 # base it trained on from this field, and vLLM never checks that an
 # adapter is served on the same base (docs/reference/finetune-contract.md).
@@ -416,6 +419,7 @@
   source_ref: Qwen/Qwen2.5-0.5B-Instruct
   source_revision: 7ae557604adf67be50417f59c2c2f167def9a775
   homepage_url: https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct
+  chat_template: qwen
   enabled: true
 - id: tinyllama-1-1b-chat-hf
   display_name: TinyLlama-1.1B-Chat
@@ -432,4 +436,5 @@
   source_ref: TinyLlama/TinyLlama-1.1B-Chat-v1.0
   source_revision: fe8a4ea1ffedaf415f4da2f062534de366a451e6
   homepage_url: https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0
+  chat_template: zephyr
   enabled: true

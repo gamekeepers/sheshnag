@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from auth import get_human_context
 from database import get_db
 from finetune_contract import ENGINE, ENGINE_VERSION, TERMINAL_STATUSES
-from finetune_picker import get_base_model_entry
+from finetune_picker import get_base_model_entry, trainable_base_entries
 from models import (
     FinetuneArtifact, FinetuneEvent, FinetuneJob, File as FileModel,
     Organization, OrganizationMembership,
@@ -187,6 +187,16 @@ def create_fine_tuning_job(
             detail=f"model: catalogue entry '{entry.id}' is pinned to "
                    f"'{entry.source_revision}', not a commit SHA, so it cannot be "
                    "finetuned yet. A platform admin must pin source_revision in the catalogue.",
+        )
+    if not entry.chat_template:
+        # Without a curated chat template forge-runner refuses the job, but
+        # only after it has queued and been claimed. Refuse it here instead.
+        trainable = sorted(e.id for e in trainable_base_entries(db))
+        raise HTTPException(
+            status_code=400,
+            detail=f"model: catalogue entry '{entry.id}' has no chat template configured, "
+                   "so it cannot be finetuned yet. Finetunable bases: "
+                   f"{', '.join(trainable) or 'none'}.",
         )
     _check_dataset_file(db, user, req.training_file, "training_file")
     if req.validation_file:

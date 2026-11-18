@@ -78,6 +78,13 @@ match is necessary but not sufficient. **The job's pinned revision is the
 identity serving must load.** The catalogue stores it as a commit SHA,
 and the API refuses to finetune a base whose revision is not a SHA.
 
+**A base is trainable only if its catalogue entry has a `chat_template`**
+(LLaMA-Factory's name for the template the base was trained with, e.g.
+`qwen`). A wrong template trains without error and serves garbage, so it is
+curated, never guessed. The API refuses a job on a base without one (400,
+naming the bases that are trainable), and the runner trains with the value
+from the poll payload, so there is one list.
+
 ## Tables
 
 All three are new tables; `batches` gets no new columns. `create_all()` gives
@@ -176,11 +183,15 @@ process from the batch daemon. It registers and heartbeats like any worker
 (`/workers/register`, `/workers/{id}/heartbeat`), including while it
 supervises a run.
 
-1. `POST /workers/finetune-poll`: claims the oldest `queued` job that fits the
-   worker's VRAM, moves it to `running`, and returns the hyperparameters, the
-   pinned base, `dataset_path`, `engine` and `engine_image`.
+1. `POST /workers/finetune-poll`: claims the oldest `queued` job whose
+   training VRAM fits the worker's **free** VRAM (from its last heartbeat),
+   moves it to `running`, and returns the hyperparameters, the pinned base,
+   its `chat_template`, `dataset_path`, `engine` and `engine_image`. The
+   runner runs the `engine_image` it is sent, so the backend's pin is the one
+   used.
 2. `GET <dataset_path>`: workers may read files belonging to a job assigned to
-   their org.
+   their org. A file shared by several jobs (a hyperparameter rerun) is
+   readable by every org that has one of those jobs assigned.
 3. `POST /workers/finetune-progress`: send one per trainer log step
    (`current_step`, `total_steps`, `current_epoch`, `loss`, `learning_rate`,
    `eval_loss`). The response's `stop: true` means the job was cancelled, so
@@ -192,13 +203,18 @@ supervises a run.
    `code`, and `retryable`. A retryable failure requeues the job, which
    restarts from step 0, and the event log says so. It fails for good after 3
    attempts. A non-retryable failure (bad config, nothing to train on, base
-   unavailable) fails at once.
+   unavailable) fails at once. The runner reports failures outside the
+   engine too: `engine_not_started` (e.g. no docker), `adapter_upload_failed`,
+   and `runner_error` for anything unexpected, so one bad job never takes the
+   runner down. A 409 on upload means the job was cancelled after training;
+   the runner keeps the adapter on disk and reports nothing.
 
 **Training is never restarted silently.** The worker sweep that requeues
 batches leaves finetune jobs alone. If a running job's runner stops
 heartbeating for 10 minutes, the job is **failed** with `runner_lost` and a
 message telling the user to resubmit. It is never requeued from step 0
-without their knowledge.
+without their knowledge. The message does not name the worker: consumers
+never see a provider's hostname.
 
 ## Outside this contract
 
@@ -218,9 +234,10 @@ without their knowledge.
 
 - The backend needs outbound HF hub access for exact token counts. Without
   it, stats are estimates. Set `HF_TOKEN` for rate limits.
-- `finetune_picker` checks a worker's **total** VRAM. On a shared card with
-  little free memory, a job that fits by total VRAM can still OOM; the
-  runner's `--min-free-vram-gb` is the guard against that.
+- Free VRAM is as fresh as the last heartbeat (30 s). The runner's
+  `--min-free-vram-gb` check just before it polls is the second guard.
+- Any provider's runner may claim any org's job (#193). Tighten by filtering
+  the claim on `finetune_jobs.org_id` before users outside the team get access.
 
 ## Fixed rules
 

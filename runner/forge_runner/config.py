@@ -18,14 +18,6 @@ class UnsupportedJob(ValueError):
     """The job cannot be turned into an engine config. Not retryable."""
 
 
-# Chat template per base model: it must be the one the base was trained
-# with, or the adapter learns the wrong turn markers. Refuse unknown bases
-# instead of guessing — a wrong template trains fine and serves garbage.
-CHAT_TEMPLATES = {
-    "Qwen/Qwen2.5-0.5B-Instruct": "qwen",
-    "TinyLlama/TinyLlama-1.1B-Chat-v1.0": "zephyr",
-}
-
 # Micro-batch 1 x gradient accumulation = the job's effective batch.
 # Micro-batch 2 OOMs a 0.5B model in ~4.8 GB of free VRAM; the step count
 # and the maths are the same either way.
@@ -48,11 +40,16 @@ def build(job: Job, workdir: Path, *, has_validation: bool) -> tuple[dict, dict]
     sits in workdir/data/{train,validation}.jsonl."""
     if job.method != "supervised":
         raise UnsupportedJob(f"method '{job.method}' is not supported by this runner yet")
-    template = CHAT_TEMPLATES.get(job.source_ref)
-    if template is None:
+    # The chat template must be the one the base was trained with, or the
+    # adapter learns the wrong turn markers. It comes from the base's
+    # catalogue entry (chat_template in backend/catalog/models.yaml) via the
+    # poll payload, so the API's trainable check and this one can't drift.
+    # Refuse rather than guess: a wrong template trains fine and serves garbage.
+    template = job.chat_template
+    if not template:
         raise UnsupportedJob(
             f"no chat template is configured for base model '{job.source_ref}'; "
-            "add it to forge_runner.config.CHAT_TEMPLATES before training on it")
+            "set chat_template on its catalogue entry before training on it")
 
     dataset_info = {"train": _dataset_entry("train.jsonl")}
     config = {
