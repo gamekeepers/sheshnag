@@ -1,5 +1,5 @@
 """
-Fault tolerance — requeue in-flight batches and reclaim dead workers.
+Fault tolerance — requeue in-flight batches/finetune jobs and reclaim dead workers.
 
 Two entry points:
     requeue_or_fail_batch() — shared by /workers/report-failure and the sweeper:
@@ -8,16 +8,36 @@ Two entry points:
     run_sweeper() — background loop started from main.py: workers whose
         heartbeats stopped are marked offline and their in-flight batches
         requeued, so a crashed daemon never strands a batch in "in_progress".
+
+The worker sweep leaves finetune jobs alone: requeueing a six-hour training
+run on a missed heartbeat restarts it from step 0 without the user knowing.
+fail_lost_finetune_jobs() fails a running job whose runner has been silent
+for FINETUNE_RUNNER_LOST_SECONDS, with a reason the user can see, and the
+user resubmits. A failure the runner itself reports goes through
+requeue_or_fail_finetune_job(), and only when the runner marks it retryable.
+A resume point is a kind='checkpoint' row in finetune_artifacts.
 """
 import asyncio
+import json
 import logging
 
-from models import Batch, BatchAssignment, Worker, unix_now
+from models import Batch, BatchAssignment, FinetuneJob, FinetuneJobAssignment, Worker, unix_now
+from services.finetune_events import transition
 
 logger = logging.getLogger(__name__)
 
 # Terminal failure after this many execution attempts (spec §12).
 MAX_BATCH_ATTEMPTS = 3
+
+# Separate constant from MAX_BATCH_ATTEMPTS even though it's the same value
+# today — training runs are far more expensive to retry than an inference
+# batch, so this is likely to get tuned down independently later.
+MAX_FINETUNE_ATTEMPTS = 3
+
+# forge-runner heartbeats every 30s, including while it supervises a run.
+# Ten minutes of silence = the runner is gone. A false positive costs a whole
+# training run, so the window is long.
+FINETUNE_RUNNER_LOST_SECONDS = 600
 
 # Daemon heartbeats every 30s — 4 missed beats ⇒ presumed dead.
 HEARTBEAT_TIMEOUT_SECONDS = 120
@@ -63,8 +83,34 @@ def requeue_or_fail_batch(db, batch, error: str | None = None) -> str:
     return "validated"
 
 
+def requeue_or_fail_finetune_job(db, job, error: str | None = None,
+                                 code: str | None = None, retryable: bool = True) -> str:
+    """Requeue a running finetune job, or fail it after MAX_FINETUNE_ATTEMPTS.
+
+    Mirrors requeue_or_fail_batch, but goes through
+    services.finetune_events.transition so the job's event log records
+    each requeue. Training restarts from step 0 (see module docstring).
+    """
+    job.attempts = (job.attempts or 0) + 1
+    db.query(FinetuneJobAssignment).filter(
+        FinetuneJobAssignment.job_id == job.id,
+    ).delete()
+    reason = (error or "unknown error")[:2000]
+
+    if not retryable or job.attempts >= MAX_FINETUNE_ATTEMPTS:
+        job.error = json.dumps({"code": code or "training_failed", "param": None, "message": reason})
+        transition(db, job, "failed",
+                   f"Attempt {job.attempts}/{MAX_FINETUNE_ATTEMPTS} failed: {reason}", level="error")
+        return "failed"
+
+    transition(db, job, "queued",
+               f"Attempt {job.attempts}/{MAX_FINETUNE_ATTEMPTS} failed, requeued: {reason}", level="warn")
+    return "queued"
+
+
 def sweep_stale_workers(db) -> tuple[int, int]:
     """Mark heartbeat-silent workers offline and requeue their batches.
+    Finetune jobs are left alone here — see fail_lost_finetune_jobs().
 
     Returns (workers_marked_offline, batches_requeued).
     """
@@ -97,6 +143,7 @@ def sweep_stale_workers(db) -> tuple[int, int]:
                     batch.id, worker.id, outcome,
                     batch.attempts, MAX_BATCH_ATTEMPTS,
                 )
+
         logger.warning(
             "Worker %s (%s) marked offline — no heartbeat since %s",
             worker.id, worker.hostname, worker.last_heartbeat,
@@ -152,6 +199,34 @@ def _sweep_pending_ingestions_once() -> int:
         return sweep_pending_ingestions(db)
     finally:
         db.close()
+def fail_lost_finetune_jobs(db) -> int:
+    """Fail running finetune jobs whose runner stopped heartbeating.
+
+    Fails rather than requeues: restarting from step 0 without telling
+    anyone is exactly what the batch path would do, and it is wrong for
+    training. Returns the number of jobs failed.
+    """
+    cutoff = unix_now() - FINETUNE_RUNNER_LOST_SECONDS
+    lost = (
+        db.query(FinetuneJob, Worker)
+        .join(FinetuneJobAssignment, FinetuneJobAssignment.job_id == FinetuneJob.id)
+        .join(Worker, Worker.id == FinetuneJobAssignment.worker_id)
+        .filter(FinetuneJob.status == "running")
+        .filter((Worker.last_heartbeat < cutoff) | (Worker.last_heartbeat.is_(None)))
+        .all()
+    )
+    for job, worker in lost:
+        minutes = FINETUNE_RUNNER_LOST_SECONDS // 60
+        message = (f"The training runner on {worker.hostname} stopped responding for "
+                   f"{minutes} minutes. The job was stopped rather than restarted from "
+                   "step 0; resubmit it to train again.")
+        job.error = json.dumps({"code": "runner_lost", "param": None, "message": message})
+        db.query(FinetuneJobAssignment).filter(FinetuneJobAssignment.job_id == job.id).delete()
+        transition(db, job, "failed", message, level="error")
+        logger.warning("Failed finetune job %s: runner on worker %s lost", job.id, worker.id)
+    if lost:
+        db.commit()
+    return len(lost)
 
 
 async def run_sweeper() -> None:
@@ -163,6 +238,7 @@ async def run_sweeper() -> None:
         db = SessionLocal()
         try:
             sweep_stale_workers(db)
+            fail_lost_finetune_jobs(db)
         except Exception:
             logger.exception("Worker sweep failed — retrying next interval")
         finally:

@@ -87,6 +87,10 @@ from models import (
     Batch,
     BatchAssignment,
     UsageRecord,
+    FinetuneJob,
+    FinetuneJobAssignment,
+    FinetuneEvent,
+    FinetuneArtifact,
     PasswordResetToken,
 )
 
