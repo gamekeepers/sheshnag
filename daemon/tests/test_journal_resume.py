@@ -57,14 +57,22 @@ class UploadFailsClient(MockClient):
 
 
 class ReclaimClient(MockClient):
-    def __init__(self, *args, delivered=True, job=None, **kwargs):
+    def __init__(self, *args, delivered=True, job=None, upload_fails=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.delivered = delivered
         self.job = job
+        self.upload_fails = upload_fails
+        self.journalled_reports: list = []
 
-    async def report_failure(self, job_id, error):
+    async def report_failure(self, job_id, error, journalled=None):
         self.failure_calls.append((job_id, error))
+        self.journalled_reports.append(journalled)
         return self.delivered
+
+    async def upload_results(self, job_id, output_path, completed, failed):
+        if self.upload_fails:
+            raise OSError("backend down during upload")
+        await super().upload_results(job_id, output_path, completed, failed)
 
     async def poll_job(self):
         job, self.job = self.job, None
@@ -150,6 +158,13 @@ def test_missing_journal_is_empty(tmp_path):
     ("INTERNAL_ERROR: ConnectError: connection refused", False),
     ("Unexpected error for prompt p: All connection attempts failed", False),
     ("EMBEDDING_FAILED: [Errno 111] Connection refused", False),
+    # Ollama's embedding path wraps httpx's text in its own tag. The status
+    # inside decides, not the tag.
+    ("EMBEDDING_FAILED: Client error '400 Bad Request' for url 'http://x/api/embed'", True),
+    ("EMBEDDING_FAILED: Client error '422 Unprocessable Entity' for url 'http://x'", True),
+    ("EMBEDDING_FAILED: Client error '429 Too Many Requests' for url 'http://x'", False),
+    ("EMBEDDING_FAILED: Server error '500 Internal Server Error' for url 'http://x'", False),
+    ("OLLAMA_UNREACHABLE: connection refused", False),
 ])
 def test_only_deterministic_failures_are_final(error, final):
     assert is_final(CompletionResult(custom_id="p", error=error)) is final
@@ -325,8 +340,114 @@ async def test_leftover_marker_is_reported_once_then_cleared(tmp_path):
     await worker._poll_and_execute()
 
     assert [job_id for job_id, _ in client.failure_calls] == ["batch-a"]
-    assert "worker restarted mid-job" in client.failure_calls[0][1]
+    assert "handed the batch back mid-job" in client.failure_calls[0][1]
+    assert client.journalled_reports == [0]
     assert not (tmp_path / "batch-a" / IN_FLIGHT_MARKER).exists()
+
+
+@pytest.mark.asyncio
+async def test_hand_back_carries_the_journalled_count(tmp_path):
+    (tmp_path / "batch-a").mkdir()
+    (tmp_path / "batch-a" / IN_FLIGHT_MARKER).touch()
+    (tmp_path / "batch-a" / JOURNAL_FILENAME).write_text(
+        _ok("p1").model_dump_json() + "\n" + _ok("p2").model_dump_json() + "\n",
+        encoding="utf-8",
+    )
+    client = ReclaimClient()
+    await _worker(tmp_path, SlowExecutor(delay=0), client)._poll_and_execute()
+    assert client.journalled_reports == [2]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_journal_does_not_block_recovery_or_polling(tmp_path, monkeypatch):
+    """F3: an OSError reading the journal must not stop the hand-back, or the
+    worker never reaches poll_job() again."""
+    (tmp_path / "batch-a").mkdir()
+    (tmp_path / "batch-a" / IN_FLIGHT_MARKER).touch()
+    (tmp_path / "batch-a" / JOURNAL_FILENAME).write_text("x\n", encoding="utf-8")
+
+    def unreadable(path):
+        raise PermissionError(13, "Permission denied", str(path))
+    monkeypatch.setattr("daemon.worker.load_journal", unreadable)
+
+    prompts = make_prompts(2)
+    client = ReclaimClient(input_prompts=prompts, job=make_job())
+    await _worker(tmp_path, SlowExecutor(delay=0), client)._poll_and_execute()
+
+    assert client.failure_calls[0][0] == "batch-a"
+    assert client.journalled_reports[0] == 0
+    assert not (tmp_path / "batch-a" / IN_FLIGHT_MARKER).exists()
+    assert len(client.upload_calls) == 1          # it went on to poll and run work
+
+
+@pytest.mark.asyncio
+async def test_unacknowledged_job_keeps_marker_and_is_handed_back(tmp_path):
+    """F2: upload and failure report both fail during an outage. The marker
+    must survive, and the batch is handed back before the next poll."""
+    prompts = make_prompts(3)
+    client = ReclaimClient(input_prompts=prompts, job=make_job(),
+                           delivered=False, upload_fails=True)
+    worker = _worker(tmp_path, SlowExecutor(delay=0), client)
+    await worker._poll_and_execute()
+
+    marker = tmp_path / "test-job" / IN_FLIGHT_MARKER
+    assert marker.exists()
+    assert worker._interrupted_jobs == ["test-job"]
+    assert len(load(_journal_path(tmp_path))) == 3   # journal kept to resume from
+
+    # Backend back: the next iteration hands the batch back with its progress.
+    client.delivered = True
+    await worker._poll_and_execute()
+    assert client.failure_calls[-1][0] == "test-job"
+    assert client.journalled_reports[-1] == 3
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_early_failure_paths_keep_marker_when_report_undelivered(tmp_path):
+    """F2 also covers _execute_job's early returns, e.g. an empty input."""
+    client = ReclaimClient(input_prompts=[], job=make_job(), delivered=False)
+    worker = _worker(tmp_path, SlowExecutor(delay=0), client)
+    await worker._poll_and_execute()
+    assert (tmp_path / "test-job" / IN_FLIGHT_MARKER).exists()
+    assert worker._interrupted_jobs == ["test-job"]
+
+
+@pytest.mark.asyncio
+async def test_stale_job_dirs_are_swept_live_ones_kept(tmp_path):
+    """F6: job dirs nothing will read again are removed; marked, fresh, and
+    unrelated files are left alone."""
+    import os
+    from daemon.worker import STALE_JOB_DIR_SECONDS
+
+    old = time.time() - STALE_JOB_DIR_SECONDS - 60
+
+    def make(name, marker=False, age=None):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "input.jsonl").write_text("{}\n", encoding="utf-8")
+        (d / JOURNAL_FILENAME).write_text("", encoding="utf-8")
+        if marker:
+            (d / IN_FLIGHT_MARKER).touch()
+        if age is not None:
+            for f in list(d.iterdir()) + [d]:
+                os.utime(f, (age, age))
+        return d
+
+    stale = make("batch-stale", age=old)
+    stale_marked = make("batch-marked", marker=True, age=old)
+    fresh = make("batch-fresh")
+    (tmp_path / "loose-file.txt").write_text("keep", encoding="utf-8")
+    os.utime(stale_marked, (old, old))
+
+    client = ReclaimClient(delivered=False)       # keep batch-marked queued
+    worker = _worker(tmp_path, SlowExecutor(delay=0), client)
+    await worker._poll_and_execute()
+
+    assert not stale.exists()
+    assert stale_marked.exists()
+    assert fresh.exists()
+    assert (tmp_path / "loose-file.txt").exists()
 
 
 @pytest.mark.asyncio
@@ -438,7 +559,11 @@ async def test_hard_kill_mid_batch_then_resume(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status,delivered", [(200, True), (403, True), (409, True), (503, False)])
+@pytest.mark.parametrize("status,delivered", [
+    (200, True), (403, True), (404, True), (409, True),
+    # F1: none of these say anything about the batch, so the report is kept.
+    (401, False), (408, False), (429, False), (500, False), (503, False),
+])
 async def test_report_failure_tells_delivered_from_undelivered(status, delivered):
     import httpx
     from daemon.client import BackendClient

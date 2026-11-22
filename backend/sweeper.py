@@ -29,13 +29,17 @@ SWEEP_INTERVAL_SECONDS = 60
 MAX_INGESTIONS_PER_SWEEP = 5
 
 
-def requeue_or_fail_batch(db, batch, error: str | None = None) -> str:
+def requeue_or_fail_batch(
+    db, batch, error: str | None = None, count_attempt: bool = True,
+) -> str:
     """Requeue an in-flight batch, or fail it after MAX_BATCH_ATTEMPTS.
 
-    Increments attempts, voids the assignment, and returns the new status
+    Increments attempts (unless ``count_attempt`` is False, for a hand-back
+    that made progress), voids the assignment, and returns the new status
     ("validated" or "failed"). Caller commits.
     """
-    batch.attempts = (batch.attempts or 0) + 1
+    if count_attempt:
+        batch.attempts = (batch.attempts or 0) + 1
     db.query(BatchAssignment).filter(
         BatchAssignment.batch_id == batch.id,
     ).delete()

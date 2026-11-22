@@ -79,8 +79,10 @@ _DETERMINISTIC_PREFIXES = (
 # A 4xx from the runtime rejects the request itself — except the ones that mean
 # "not now": 408 timeout, 409 conflict, 425 too early, 429 rate limited.
 # Matches the vLLM / llama.cpp form ("HTTP 400 for prompt …") and httpx's own
-# message, which Ollama passes through ("Client error '400 Bad Request' …").
-_CLIENT_ERROR = re.compile(r"^(?:HTTP |Client error ')4(?!08|09|25|29)\d\d\b")
+# message, which Ollama passes through ("Client error '400 Bad Request' …"),
+# with or without an executor's tag in front ("EMBEDDING_FAILED: Client error
+# '400 …'"). The tag must not decide the classification; the status does.
+_CLIENT_ERROR = re.compile(r"^(?:[A-Z_]+: )?(?:HTTP |Client error ')4(?!08|09|25|29)\d\d\b")
 
 
 def is_final(result: CompletionResult) -> bool:

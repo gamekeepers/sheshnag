@@ -9,7 +9,7 @@ from schemas import (
     ModelDownloadReport, ProgressReport,
     WorkerHeartbeatRequest, WorkerRegisterRequest,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from auth import get_worker_context
 from scheduler import scheduler, fitted_context, get_catalog_entry, resolve_runtime_model_id
@@ -55,6 +55,9 @@ class FailureReport(BaseModel):
     job_id: str
     worker_id: str
     error: Optional[str] = None
+    # Prompts the worker has journalled for this batch, when it hands the
+    # batch back to resume it later (#167). Omitted on ordinary failures.
+    journalled: Optional[int] = Field(default=None, ge=0)
 
 
 def _get_org_worker(db: Session, org, worker_id: str) -> Worker:
@@ -586,13 +589,28 @@ def report_failure(
     _get_org_worker(db, org, req.worker_id)
     batch = _get_assigned_batch(db, req.job_id, req.worker_id)
 
+    # A hand-back that journalled more prompts than any before it made
+    # progress, so it requeues without spending an attempt. Otherwise a daemon
+    # that OOMs three times would fail the batch and throw away a journal that
+    # was nearly done. Capped at the row count, so the free requeues a batch
+    # can get are bounded by its size. A crash loop that stops making progress
+    # spends attempts as before.
+    made_progress = False
+    if req.journalled is not None:
+        progress = min(req.journalled, batch.request_counts_total or 0)
+        if progress > (batch.resume_progress or 0):
+            batch.resume_progress = progress
+            made_progress = True
+
     target = (
         "failed"
-        if (batch.attempts or 0) + 1 >= MAX_BATCH_ATTEMPTS
+        if not made_progress and (batch.attempts or 0) + 1 >= MAX_BATCH_ATTEMPTS
         else "validated"
     )
     validate_transition(batch.status, target)
-    outcome = requeue_or_fail_batch(db, batch, error=req.error)
+    outcome = requeue_or_fail_batch(
+        db, batch, error=req.error, count_attempt=not made_progress,
+    )
 
     db.commit()
     db.refresh(batch)

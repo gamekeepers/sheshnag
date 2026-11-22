@@ -174,12 +174,34 @@ and heartbeats again within seconds, so the backend never sees it go stale and
 never requeues the batch it was holding. `/workers/poll` only hands out
 unassigned work, so that batch would otherwise sit `in_progress` forever. To
 prevent that, the daemon writes an `in_flight` marker into a job's directory
-while it runs the job and removes it on every outcome it lives to see. On
-startup, before its first poll, it reports each leftover marker's batch through
-`report-failure`. The backend requeues the batch, spending one of its three
-attempts. It keeps retrying before each poll until the backend answers, so an
-outage at startup does not strand the batch. Whichever worker the batch lands
-on next runs it, and if that is this one, the journal resumes it.
+while it runs the job. It removes the marker only once the backend has
+acknowledged the outcome, either by accepting the upload or by giving a
+definitive answer to a failure report. On startup, before its first poll, it
+reports each leftover marker's batch through `report-failure`, along with how
+many prompts it has journalled. The backend requeues the batch. It keeps
+retrying before each poll until the backend answers, so an outage at startup
+does not strand the batch. Whichever worker the batch lands on next runs it,
+and if that is this one, the journal resumes it.
+
+- **What counts as acknowledged.** A 2xx, or one of the endpoint's own answers
+  that the batch is no longer this worker's to report: 403 (assigned
+  elsewhere), 404 (gone) or 409 (already requeued or finished). Anything else
+  keeps the marker: an unreachable backend, a 5xx, a 408 or 429, and a 401. A
+  401 means the worker key was rotated or expired and says nothing about the
+  batch. The next poll gets the same 401 and the daemon shuts down with the
+  marker intact.
+- **Undelivered outcomes are handed back too.** If the upload and the failure
+  report both fail during a backend outage, the job keeps its marker and is
+  handed back before the next poll, as it would be after a crash.
+- **A hand-back that made progress keeps its attempt.** The backend records the
+  highest journalled count reported for each batch (`resume_progress`). A
+  hand-back that beats it requeues without spending one of the three attempts.
+  A daemon in a crash loop (for example, an OOM on a large batch) that keeps
+  making progress does not fail the batch. One that stops making progress
+  spends attempts as before. The count is capped at the batch's row count, so
+  the number of free requeues is bounded.
+- **An unreadable journal does not block recovery.** The batch is handed back
+  with a count of 0, and the worker carries on polling.
 
 - **Keyed by `custom_id`.** One JSON object per line, in the same shape as an
   output row, written under the input row's id. No offsets or counters: the
@@ -207,7 +229,11 @@ on next runs it, and if that is this one, the journal resumes it.
 - **A torn last line** from a kill mid-write is discarded with a warning and
   cut off before appending resumes.
 - **Cleanup.** The journal is deleted once the results upload succeeds. A
-  failed upload keeps it, because the batch is requeued and may come back.
+  failed upload keeps it, because the batch is requeued and may come back. A
+  job directory with no `in_flight` marker that has gone untouched for 24 hours
+  (the default completion window) is removed. This covers batches that another
+  worker finished after a requeue, which this worker never hears about. The
+  sweep runs at startup and then at most hourly.
 
 Resume works only on the same machine (the journal is local), and the output
 file is still written once at the end from the restored and new rows together.

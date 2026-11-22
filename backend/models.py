@@ -641,6 +641,10 @@ class Batch(Base):
     request_counts_failed    = Column(Integer, default=0)
     error_details            = Column(String, nullable=True)
     attempts                 = Column(Integer, default=0)  # execution attempts (spec §12 requeue)
+    # Most prompts a worker has reported journalled when handing this batch
+    # back (/workers/report-failure). A hand-back that beats it made progress
+    # and does not spend an attempt. NULL means no hand-back has reported any.
+    resume_progress          = Column(Integer, nullable=True)
     # Caller-supplied key/value tags (OpenAI `metadata`): how a client groups
     # batches it submitted together, e.g. the playground's grid_id. Opaque to
     # the scheduler. The attribute is not `metadata` because SQLAlchemy's

@@ -145,6 +145,10 @@ MIGRATIONS = [
                "runtime_models", "context_limit", Integer()),
     _Migration("runtime_models.context_allocated",
                "runtime_models", "context_allocated", Integer()),
+    # Journal resume (#167): a hand-back that made progress keeps its attempt.
+    # NULL on existing rows reads as "no progress reported yet".
+    _Migration("batches.resume_progress",
+               "batches", "resume_progress", Integer()),
 ]
 
 

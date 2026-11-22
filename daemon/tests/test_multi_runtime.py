@@ -163,8 +163,9 @@ class MockClient:
     async def report_progress(self, job_id, completed, failed, total):
         self.progress_calls.append((job_id, completed, failed, total))
 
-    async def report_failure(self, job_id, reason):
+    async def report_failure(self, job_id, reason, journalled=None):
         self.failure_calls.append((job_id, reason))
+        return True
 
     async def download_input(self, job_id, input_path, dest_path):
         self.download_calls.append(job_id)
