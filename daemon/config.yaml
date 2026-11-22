@@ -67,6 +67,11 @@ log_level: "INFO"
 # Inference timeout per prompt, any runtime (seconds)
 # inference_timeout: 300.0
 
+# On a stop signal, how long prompts already running may take to finish before
+# they are cancelled and left for the resume (seconds). Keep it well under
+# systemd's TimeoutStopSec (90s by default).
+# shutdown_grace_seconds: 30.0
+
 # Minimum seconds between progress reports to the control plane. Each report
 # is an HTTP round trip and a backend DB write, so a long batch on a busy
 # deployment is worth turning down. Completion is always reported regardless.

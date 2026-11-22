@@ -145,7 +145,7 @@ still written in order, and no single row can fail the job:
 | A coalesced embedding request is rejected | Its rows are retried one at a time; only the genuinely bad ones fail |
 | `stream: true` on any endpoint | That row fails with `UNSUPPORTED_PARAMETER` |
 | Repeated `custom_id` | The second and later rows fail with `DUPLICATE_CUSTOM_ID` |
-| Shutdown signal | Prompts in flight finish; unrun prompts fail with synthetic `worker_shutdown:` error |
+| Shutdown signal | Prompts in flight get `shutdown_grace_seconds` to finish; nothing is uploaded, and the batch is handed back to resume (see [Graceful shutdown](#graceful-shutdown)) |
 
 Coalescing is a throughput optimisation and never costs isolation: Ollama
 rejects an entire `/api/embed` call if any single input is invalid, so a failed
@@ -157,9 +157,8 @@ cannot get different treatment depending on which runtime it lands on. A
 repeated `custom_id` is already rejected by the backend's validator at upload,
 so that row only appears on a bypass — it fails the row rather than the job,
 which is what the pre-pool sequential loop did. Prompts left unrun when a
-shutdown signal arrives produce synthetic failure rows with error
-`worker_shutdown:prompt not executed before daemon stopped`, preserving the
-1:1 input-to-output contract and honest counts for the backend and dashboard.
+shutdown signal arrives are never reported as failures; see
+[Graceful shutdown](#graceful-shutdown).
 
 ### Resuming after a crash
 
@@ -215,8 +214,7 @@ and if that is this one, the journal resumes it.
   re-running it would fail the same way every time. Timeouts, 5xx and 429
   responses, refused connections and executor exceptions are not journalled,
   so a resume retries them. That retry is bounded by the backend's attempt
-  cap. Rejections decided before execution, and `worker_shutdown:`
-  placeholders, are never journalled.
+  cap. Rejections decided before execution are never journalled.
 - **Progress includes restored rows**, so a resumed batch does not appear to
   start over near zero.
 - **Durability.** Each unit of work's rows are flushed to the OS together, and
@@ -237,9 +235,32 @@ and if that is this one, the journal resumes it.
 
 Resume works only on the same machine (the journal is local), and the output
 file is still written once at the end from the restored and new rows together.
-A graceful shutdown currently uploads the batch with `worker_shutdown:` rows,
-which completes it, so there is nothing left to resume. Making a graceful
-shutdown leave the batch resumable is a separate change.
+
+### Graceful shutdown
+
+Stopping the daemon (`systemctl --user stop gpu-daemon`, or SIGTERM/SIGINT)
+mid-batch leaves the batch resumable, not truncated:
+
+1. **No new prompts start.** Prompts already running get
+   `shutdown_grace_seconds` (default 30) to finish, and are journalled as
+   usual. Any still running after that are cancelled. They never finished, so
+   they were never journalled, and the resume runs them again. The default
+   keeps a stop well inside systemd's 90-second `TimeoutStopSec`.
+2. **Nothing is uploaded.** The journal is closed and fsynced, and no
+   never-attempted prompt is reported as a failure.
+3. **The batch is handed back** through `report-failure` with
+   `shutdown: true`. The backend requeues it **without spending an attempt**,
+   so a provider stepping away can never push a batch toward terminal
+   failure. When the daemon starts again and the batch comes back to it, the
+   journal resumes it.
+
+If the backend cannot be reached during the stop, the `in_flight` marker is
+left containing `shutdown`. The next start hands the batch back before its
+first poll, still as a graceful stop, so still without spending an attempt.
+
+Signal-driven shutdown needs an event loop that supports signal handlers, which
+means Linux and macOS. On Windows, Ctrl+C stops the daemon without this path, and
+the batch is recovered on the next start the same way as after a crash.
 
 ## Configuration
 

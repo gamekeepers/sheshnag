@@ -62,11 +62,14 @@ _ENV_MAP: Dict[str, str] = {
     "heartbeat_interval": "DAEMON_HEARTBEAT_INTERVAL",
     "progress_interval_seconds": "DAEMON_PROGRESS_INTERVAL_SECONDS",
     "max_concurrent_prompts": "DAEMON_MAX_CONCURRENT_PROMPTS",
+    "shutdown_grace_seconds": "DAEMON_SHUTDOWN_GRACE_SECONDS",
 }
 
 # Fields that need type coercion from string env vars
 _INT_FIELDS = frozenset({"poll_interval", "heartbeat_interval", "max_concurrent_prompts"})
-_FLOAT_FIELDS = frozenset({"vram_gb", "inference_timeout", "progress_interval_seconds"})
+_FLOAT_FIELDS = frozenset({
+    "vram_gb", "inference_timeout", "progress_interval_seconds", "shutdown_grace_seconds",
+})
 
 # Inference runtimes the daemon knows how to drive.
 _KNOWN_RUNTIMES = frozenset({"ollama", "vllm", "llamacpp"})
@@ -168,6 +171,8 @@ class DaemonConfig(BaseModel):
                         (e.g. ["vllm", "ollama"]) runs both on one worker.
         inference_timeout: Per-prompt inference timeout in seconds (any runtime).
         max_concurrent_prompts: Prompts executed concurrently per job.
+        shutdown_grace_seconds: On SIGTERM/SIGINT, how long prompts already
+                        running may take to finish before they are cancelled.
     """
 
     worker_id: str = Field(default_factory=_generate_worker_id)
@@ -215,6 +220,12 @@ class DaemonConfig(BaseModel):
     max_concurrent_prompts: int = Field(
         default=8, gt=0,
         description="Prompts executed concurrently per job, must be > 0",
+    )
+    # Kept well under systemd's default TimeoutStopSec (90s): the hand-back to
+    # the backend still has to happen after this, before SIGKILL arrives.
+    shutdown_grace_seconds: float = Field(
+        default=30.0, ge=0,
+        description="Seconds in-flight prompts may run after a stop signal",
     )
 
     # ── Heartbeats & Progress ────────────────────────────────────

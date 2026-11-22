@@ -64,7 +64,7 @@ class ReclaimClient(MockClient):
         self.upload_fails = upload_fails
         self.journalled_reports: list = []
 
-    async def report_failure(self, job_id, error, journalled=None):
+    async def report_failure(self, job_id, error, journalled=None, shutdown=False):
         self.failure_calls.append((job_id, error))
         self.journalled_reports.append(journalled)
         return self.delivered
@@ -289,15 +289,14 @@ async def test_journal_write_failure_does_not_lose_executed_work(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_shutdown_placeholders_are_not_journalled(tmp_path):
+async def test_a_stop_journals_only_what_ran(tmp_path):
     prompts = make_prompts(10)
-    worker = _worker(tmp_path, SlowExecutor(delay=0.2), UploadFailsClient(input_prompts=prompts))
+    worker = _worker(tmp_path, SlowExecutor(delay=0.2), MockClient(input_prompts=prompts))
 
     task = asyncio.create_task(worker._execute_job(make_job()))
     await asyncio.sleep(0.05)
-    worker._running = False
-    with pytest.raises(OSError):
-        await task
+    worker.request_stop()
+    await task
 
     journalled = load(_journal_path(tmp_path))
     assert 0 < len(journalled) < 10
