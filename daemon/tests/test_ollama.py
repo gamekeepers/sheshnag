@@ -1,4 +1,5 @@
 import pytest
+import json
 from unittest.mock import AsyncMock, patch
 import httpx
 import jsonschema
@@ -991,3 +992,136 @@ async def test_running_footprints_reads_size_and_context_from_ps():
         assert await executor.running_footprints() == {
             "gemma4:12b": {"size_vram": 8_000_000_000, "context_length": 32768},
         }
+
+
+# ─── Busy answers and warm-up ────────────────────────────────
+
+def _scripted_executor(statuses, seen, headers=None):
+    """An executor whose POSTs answer `statuses` in turn, then 200.
+
+    Every request body lands in `seen`. Backoff sleeps are recorded on the
+    executor as `slept`; nothing waits.
+    """
+    replies = list(statuses)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.path, json.loads(request.content)))
+        status = replies.pop(0) if replies else 200
+        if status != 200:
+            return httpx.Response(status, headers=headers or {}, json={"error": "server busy"})
+        if request.url.path == "/api/embed":
+            body = json.loads(request.content)
+            n = len(body["input"]) if isinstance(body["input"], list) else 1
+            return httpx.Response(200, json={"embeddings": [[0.1]] * n, "prompt_eval_count": n})
+        return httpx.Response(200, json={
+            "message": {"role": "assistant", "content": "hi"}, "done": True,
+        })
+
+    executor = OllamaExecutor()
+    executor.version = "0.6.0"
+    executor._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://localhost:11434",
+    )
+    executor.slept = []
+
+    async def fake_sleep(seconds):
+        executor.slept.append(seconds)
+
+    return executor, fake_sleep
+
+
+def _chat_prompt(custom_id="req-1", num_ctx=None):
+    return PromptRequest(
+        custom_id=custom_id, num_ctx=num_ctx,
+        body={"model": "llama3:8b", "messages": [{"role": "user", "content": "hello"}]},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy", [503, 429])
+async def test_busy_answers_are_retried_until_the_prompt_runs(busy):
+    """A cold load fills Ollama's queue; the row waits until a slot frees and runs."""
+    seen = []
+    executor, fake_sleep = _scripted_executor([busy, busy], seen)
+    with patch("daemon.executors.ollama.asyncio.sleep", fake_sleep):
+        result = await executor.execute(_chat_prompt())
+    assert result.is_success
+    assert len(seen) == 3
+    assert executor.slept == [0.5, 1.0]
+
+
+@pytest.mark.asyncio
+async def test_busy_answers_past_the_retry_budget_fail_the_row():
+    seen = []
+    executor, fake_sleep = _scripted_executor([503] * 10, seen)
+    with patch("daemon.executors.ollama.asyncio.sleep", fake_sleep):
+        result = await executor.execute(_chat_prompt())
+    assert not result.is_success
+    assert "503" in result.error
+    assert len(seen) == executor.busy_retries + 1
+    assert sum(executor.slept) <= 15.5
+
+
+@pytest.mark.asyncio
+async def test_retry_after_sets_the_wait_within_the_cap():
+    seen = []
+    executor, fake_sleep = _scripted_executor([503, 503], seen, headers={"Retry-After": "30"})
+    with patch("daemon.executors.ollama.asyncio.sleep", fake_sleep):
+        assert (await executor.execute(_chat_prompt())).is_success
+    assert executor.slept == [executor.busy_backoff_cap_seconds] * 2
+
+
+@pytest.mark.asyncio
+async def test_other_errors_are_not_retried():
+    """A 400 is about the request; asking again gets the same answer."""
+    seen = []
+    executor, fake_sleep = _scripted_executor([400], seen)
+    with patch("daemon.executors.ollama.asyncio.sleep", fake_sleep):
+        result = await executor.execute(_chat_prompt())
+    assert not result.is_success
+    assert len(seen) == 1
+    assert executor.slept == []
+
+
+@pytest.mark.asyncio
+async def test_busy_coalesced_embedding_retries_the_chunk_not_each_row():
+    seen = []
+    executor, fake_sleep = _scripted_executor([503], seen)
+    prompts = [
+        PromptRequest(custom_id=f"e-{i}", url="/v1/embeddings",
+                      body={"model": "nomic-embed-text", "input": f"text {i}"})
+        for i in range(3)
+    ]
+    with patch("daemon.executors.ollama.asyncio.sleep", fake_sleep):
+        results = await executor.batch_execute(prompts)
+    assert all(r.is_success for r in results)
+    assert [path for path, _ in seen] == ["/api/embed", "/api/embed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("num_ctx", [4096, None])
+async def test_prepare_loads_the_model_at_the_prompts_context(num_ctx):
+    """The warm-up must load with the options execute() sends, or the first
+    prompt reloads the model."""
+    seen = []
+    executor, fake_sleep = _scripted_executor([503], seen)
+    with patch("daemon.executors.ollama.asyncio.sleep", fake_sleep):
+        await executor.prepare("llama3:8b", num_ctx)
+        await executor.execute(_chat_prompt(num_ctx=num_ctx))
+    (warm_path, warm), _, (_, chat) = seen
+    assert warm_path == "/api/chat"
+    assert warm["model"] == "llama3:8b" and warm["messages"] == []
+    assert warm.get("options", {}).get("num_ctx") == chat["options"].get("num_ctx") == num_ctx
+
+
+@pytest.mark.asyncio
+async def test_prepare_never_raises():
+    executor = OllamaExecutor()
+
+    async def handler(request):
+        raise httpx.ConnectError("connection refused")
+
+    executor._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://localhost:11434",
+    )
+    await executor.prepare("llama3:8b", 4096)

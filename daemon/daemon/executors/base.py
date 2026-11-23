@@ -146,6 +146,16 @@ class BaseExecutor(ABC):
             results.append(result)
         return results
 
+    async def prepare(self, model: str, num_ctx: Optional[int] = None) -> None:
+        """Make `model` ready to serve at `num_ctx` before prompts arrive.
+
+        The worker awaits this once per job, before the pool starts. A
+        runtime that loads on first request overrides it to load up front,
+        so the job's first wave of prompts is not refused while the load
+        runs. The default does nothing. Must never raise.
+        """
+        return None
+
     async def list_models(self) -> List[str]:
         """Every model name this runtime answers to, loaded or not.
 
