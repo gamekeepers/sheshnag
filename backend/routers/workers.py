@@ -58,6 +58,9 @@ class FailureReport(BaseModel):
     # Prompts the worker has journalled for this batch, when it hands the
     # batch back to resume it later (#167). Omitted on ordinary failures.
     journalled: Optional[int] = Field(default=None, ge=0)
+    # The provider stopped the daemon on purpose (#168). A graceful stop never
+    # spends an attempt: stepping away politely must not fail a batch.
+    shutdown: bool = False
 
 
 def _get_org_worker(db: Session, org, worker_id: str) -> Worker:
@@ -602,14 +605,16 @@ def report_failure(
             batch.resume_progress = progress
             made_progress = True
 
+    # A deliberate, graceful stop (#168) is not a failed attempt either.
+    count_attempt = not (made_progress or req.shutdown)
     target = (
         "failed"
-        if not made_progress and (batch.attempts or 0) + 1 >= MAX_BATCH_ATTEMPTS
+        if count_attempt and (batch.attempts or 0) + 1 >= MAX_BATCH_ATTEMPTS
         else "validated"
     )
     validate_transition(batch.status, target)
     outcome = requeue_or_fail_batch(
-        db, batch, error=req.error, count_attempt=not made_progress,
+        db, batch, error=req.error, count_attempt=count_attempt,
     )
 
     db.commit()

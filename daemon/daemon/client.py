@@ -390,6 +390,7 @@ class BackendClient:
 
     async def report_failure(
         self, job_id: str, error: str, journalled: Optional[int] = None,
+        shutdown: bool = False,
     ) -> bool:
         """
         Report a job failure to the backend so it can requeue the job.
@@ -407,6 +408,8 @@ class BackendClient:
             journalled: Prompts this worker has journalled for the batch, on
                 a hand-back. The backend does not spend an attempt on a
                 hand-back that made progress since the last one.
+            shutdown: The provider stopped the daemon on purpose. The backend
+                requeues without spending an attempt (#168).
 
         Returns:
             True when the backend gave a definitive answer: a 2xx, or one of
@@ -428,6 +431,8 @@ class BackendClient:
             }
             if journalled is not None:
                 payload["journalled"] = journalled
+            if shutdown:
+                payload["shutdown"] = True
             response = await client.post(
                 "/workers/report-failure",
                 json=payload,

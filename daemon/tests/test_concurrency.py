@@ -14,7 +14,7 @@ import pytest
 from daemon.config import DaemonConfig
 from daemon.executors.base import BaseExecutor
 from daemon.models import CompletionResult, PromptRequest, Job
-from daemon.worker import Worker
+from daemon.worker import JobInterrupted, Worker
 
 
 class MockExecutor(BaseExecutor):
@@ -232,11 +232,17 @@ async def test_null_usage_does_not_crash_the_worker(mock_job):
 
 @pytest.mark.asyncio
 async def test_graceful_shutdown_drains_in_flight_work(mock_job):
-    """Shutdown stops new work but lets in-flight prompts finish cleanly."""
+    """Shutdown stops new work but lets in-flight prompts finish cleanly.
+
+    The job then ends with JobInterrupted rather than a partial result: unrun
+    rows are left for the resume, never reported as failures (#168).
+    """
+    finished: list[str] = []
 
     class SlowExecutor(BaseExecutor):
         async def execute(self, prompt: PromptRequest) -> CompletionResult:
             await asyncio.sleep(0.5)
+            finished.append(prompt.custom_id)
             return CompletionResult(
                 custom_id=prompt.custom_id, response={"done": True}
             )
@@ -248,13 +254,12 @@ async def test_graceful_shutdown_drains_in_flight_work(mock_job):
 
     task = asyncio.create_task(worker._run_prompts(make_prompts(20), mock_job))
     await asyncio.sleep(0.1)
-    worker._running = False
-    results = await task
+    worker.request_stop()
+    with pytest.raises(JobInterrupted):
+        await task
 
-    completed = [r for r in results if r.is_success]
-    assert len(completed) < 20, "shutdown did not stop the pool"
-    assert len(results) == 20, "unrun prompts must be recorded as shutdown failure rows"
-    assert all(r.error and r.error.startswith("worker_shutdown:") for r in results if not r.is_success)
+    # The four prompts in flight when the stop came drained; nothing new started.
+    assert len(finished) == 4, "in-flight prompts must drain, new ones must not start"
 
 
 @pytest.mark.asyncio

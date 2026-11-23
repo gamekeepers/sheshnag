@@ -107,3 +107,40 @@ def test_journalled_count_is_capped_at_the_row_count(auth_client, db_session):
 def test_negative_journalled_count_is_rejected(auth_client, db_session):
     key, worker_id = _setup(auth_client, db_session)
     assert _report(auth_client, key, worker_id, journalled=-1).status_code == 422
+
+
+# ── Graceful shutdown (#168) ─────────────────────────────────────────
+
+
+def _report_shutdown(auth_client, key, worker_id, journalled=0):
+    return auth_client.post(
+        "/workers/report-failure",
+        json={"job_id": "batch-resume", "worker_id": worker_id,
+              "error": "worker_shutdown: provider stopped the daemon",
+              "journalled": journalled, "shutdown": True},
+        headers={"Authorization": f"Bearer {key}"},
+    )
+
+
+def test_graceful_stop_never_spends_an_attempt(auth_client, db_session):
+    """Even with no new progress, and even one attempt from the cap."""
+    key, worker_id = _setup(auth_client, db_session, attempts=MAX_BATCH_ATTEMPTS - 1)
+
+    for _ in range(5):
+        resp = _report_shutdown(auth_client, key, worker_id, journalled=0)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "validated"
+        assert resp.json()["attempts"] == MAX_BATCH_ATTEMPTS - 1
+        db_session.expire_all()
+        _reassign(db_session, worker_id)
+
+
+def test_graceful_stop_still_records_progress(auth_client, db_session):
+    """A later crash hand-back is measured against what the stop journalled."""
+    key, worker_id = _setup(auth_client, db_session)
+    _report_shutdown(auth_client, key, worker_id, journalled=400)
+    db_session.expire_all()
+    _reassign(db_session, worker_id)
+
+    resp = _report(auth_client, key, worker_id, journalled=400)   # crash, no progress
+    assert resp.json()["attempts"] == 1

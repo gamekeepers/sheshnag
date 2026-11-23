@@ -48,6 +48,17 @@ from daemon.model_manager import ModelManager
 
 # Present in a job's directory while this daemon is running that job.
 IN_FLIGHT_MARKER = "in_flight"
+# Written into the marker when a graceful stop could not hand the batch back,
+# so the restart's hand-back is still a graceful one (no attempt spent).
+SHUTDOWN_MARKER_TEXT = "shutdown"
+
+
+class JobInterrupted(Exception):
+    """A stop signal ended the job before every row ran.
+
+    Raised by the prompt runner instead of uploading a partial result as final.
+    The journal is closed by then; the caller hands the batch back.
+    """
 
 # A job directory with no in-flight marker, untouched this long, is swept: its
 # batch has finished (here or on another worker) or expired. Matches the
@@ -96,6 +107,9 @@ class Worker:
         self._client = client
         self._executors = executors
         self._running = False
+        # Set by a stop signal. _running alone stops new units from starting;
+        # this also starts the grace period for units already running.
+        self._stop_requested = asyncio.Event()
         self._current_job_id: str | None = None
         # model name → runtime name; rebuilt from each runtime's model
         # list (see _refresh_model_map).
@@ -339,7 +353,7 @@ class Worker:
 
         Safe to call multiple times.
         """
-        self._running = False
+        self.request_stop()
         logger.info("Shutting down worker...")
 
         await self._heartbeat.stop()
@@ -455,15 +469,26 @@ class Worker:
                 # worker taking any work at all.
                 logger.warning(f"[{job_id}] Could not read journal during recovery: {exc}")
                 journalled = 0
+            try:
+                marker_text = (self._work_dir / job_id / IN_FLIGHT_MARKER).read_text(
+                    encoding="utf-8"
+                ).strip()
+            except OSError:
+                marker_text = ""
+            # A graceful stop that could not reach the backend at the time:
+            # still graceful, so still free.
+            graceful = marker_text == SHUTDOWN_MARKER_TEXT
             logger.warning(
-                f"[{job_id}] Job interrupted or never acknowledged "
-                f"({journalled} prompts journalled); handing the batch back"
+                f"[{job_id}] Job {'stopped gracefully' if graceful else 'interrupted'} "
+                f"or never acknowledged ({journalled} prompts journalled); "
+                f"handing the batch back"
             )
             delivered = await self._client.report_failure(
                 job_id,
-                f"worker handed the batch back mid-job; {journalled} completed "
-                f"prompts journalled on this worker",
+                f"{'worker_shutdown: ' if graceful else ''}worker handed the batch "
+                f"back mid-job; {journalled} completed prompts journalled on this worker",
                 journalled=journalled,
+                shutdown=graceful,
             )
             if not delivered:
                 return  # not acknowledged; try again before the next poll
@@ -565,6 +590,11 @@ class Worker:
                         job.job_id, f"Failed to download model: {job.model}"
                     )
 
+        # A stop that arrived while the model was being fetched: there is
+        # nothing to run yet, so hand the batch straight back.
+        if not self._running:
+            return await self._hand_back_on_shutdown(job)
+
         # ── Step 1: Download input ───────────────────────────────
         self._heartbeat.update_status("busy", job.job_id)
         logger.info(f"[{job.job_id}] Downloading input file...")
@@ -586,9 +616,12 @@ class Worker:
         # ── Step 3: Execute each prompt ──────────────────────────
         # Each result is journalled as it completes; a rerun of this job on
         # this worker (after a crash or requeue) resumes from the journal.
-        results = await self._run_prompts(
-            prompts, job, executor, journal_path=job_dir / JOURNAL_FILENAME,
-        )
+        try:
+            results = await self._run_prompts(
+                prompts, job, executor, journal_path=job_dir / JOURNAL_FILENAME,
+            )
+        except JobInterrupted:
+            return await self._hand_back_on_shutdown(job)
 
         # ── Step 4: Write output JSONL ───────────────────────────
         self._write_output(output_path, results)
@@ -940,18 +973,25 @@ class Worker:
                 report_completed = 0
                 report_failed = 0
 
+                if journal is not None:
+                    # Keyed on the input row's id, never the executor's echo of
+                    # it, so a restored row lands where it ran. Transient
+                    # failures stay out so a resume retries them.
+                    #
+                    # Appended before the lock is taken: the append is
+                    # synchronous, so no other pool worker can interleave with
+                    # it, and acquiring the lock is a cancellation point — a
+                    # stop landing there would otherwise discard a row whose
+                    # inference had already finished.
+                    journal.append(
+                        r if r.custom_id == prompts[i].custom_id
+                        else r.model_copy(update={"custom_id": prompts[i].custom_id})
+                        for i, r in paired
+                        if is_final(r)
+                    )
+
                 # Async-safe state updates — several workers land here at once.
                 async with lock:
-                    if journal is not None:
-                        # Keyed on the input row's id, never the executor's
-                        # echo of it, so a restored row lands where it ran.
-                        # Transient failures stay out so a resume retries them.
-                        journal.append(
-                            r if r.custom_id == prompts[i].custom_id
-                            else r.model_copy(update={"custom_id": prompts[i].custom_id})
-                            for i, r in paired
-                            if is_final(r)
-                        )
                     for i, result in paired:
                         results_by_index[i] = result
                         if result.is_success:
@@ -1005,8 +1045,10 @@ class Worker:
             workers = [
                 asyncio.create_task(pool_worker()) for _ in range(pool_size)
             ]
-            outcomes = await asyncio.gather(*workers, return_exceptions=True)
+            outcomes = await self._await_pool(workers, job)
             for outcome in outcomes:
+                if isinstance(outcome, asyncio.CancelledError):
+                    continue  # cut off at the end of the shutdown grace period
                 if isinstance(outcome, BaseException):
                     # _run_unit already converts per-unit failures into rows, so
                     # reaching here means the pool loop itself broke. Log it and
@@ -1016,28 +1058,23 @@ class Worker:
                         exc_info=outcome,
                     )
 
-        if not self._running:
+        unrun = total - len(results_by_index)
+        if unrun and not self._running:
+            # A graceful stop. Uploading now would complete the batch with
+            # every unrun row counted as a failure. Instead the job ends here:
+            # what ran is in the journal (closed by _run_prompts), nothing is
+            # reported failed, and the caller hands the batch back to resume.
             logger.warning(
-                f"[{job.job_id}] Shutdown requested — stopping early "
-                f"({completed + failed}/{total} prompts done)"
+                f"[{job.job_id}] Shutdown requested — stopping with "
+                f"{total - unrun}/{total} prompts done, {unrun} left to resume"
             )
+            raise JobInterrupted(job.job_id)
 
-        # The unrun-row placeholders below are never journalled: they were not
-        # executed, and a resume must run them.
-        #
-        # Any prompt still in the queue when _running went False has no
-        # result at all. Synthesize an explicit failure per row index so:
-        #   - the output file has exactly one line per input prompt (no gaps)
-        #   - duplicate custom_ids are isolated and never collapse
-        #   - the backend receives honest completed/failed counts
-        #   - the dashboard can distinguish "never ran" from "inference error"
-        #     via the "worker_shutdown:" prefix
-        # A crashed pool worker can also strand rows; those are not a
-        # shutdown, so they must not carry the shutdown sentinel.
-        if self._running:
-            unrun_error = "INTERNAL_ERROR: prompt not executed — pool worker stopped early"
-        else:
-            unrun_error = "worker_shutdown:prompt not executed before daemon stopped"
+        # Rows stranded by a crashed pool worker (not a shutdown) have no
+        # result at all. Synthesize an explicit failure per row index so the
+        # output file has exactly one line per input prompt, duplicate
+        # custom_ids stay isolated, and the backend gets honest counts.
+        unrun_error = "INTERNAL_ERROR: prompt not executed — pool worker stopped early"
         for i, prompt in enumerate(prompts):
             if i not in results_by_index:
                 logger.warning(
@@ -1060,6 +1097,81 @@ class Worker:
 
         # Return in input order (now guaranteed to have an entry for every row).
         return [results_by_index[i] for i in range(total)]
+
+    async def _await_pool(self, workers: List[asyncio.Task], job: Job) -> list:
+        """Wait for the pool, bounding how long a stop signal waits for it.
+
+        Pool workers stop taking units once _running is False, but a unit
+        already running can take up to inference_timeout (300s by default),
+        past systemd's SIGKILL. After a stop, units in flight get
+        shutdown_grace_seconds, then they are cancelled. A cancelled unit was
+        never journalled, so the resume runs it again.
+        """
+        gathered = asyncio.gather(*workers, return_exceptions=True)
+        stop = asyncio.ensure_future(self._stop_requested.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {gathered, stop}, return_when=asyncio.FIRST_COMPLETED,
+            )
+            if gathered not in done:
+                grace = self._config.shutdown_grace_seconds
+                logger.warning(
+                    f"[{job.job_id}] Stop requested — waiting up to {grace:g}s "
+                    f"for prompts already running"
+                )
+                done, _ = await asyncio.wait({gathered}, timeout=grace)
+                if gathered not in done:
+                    logger.warning(
+                        f"[{job.job_id}] Grace period over — cancelling prompts "
+                        f"still running; the resume will run them again"
+                    )
+                    for w in workers:
+                        w.cancel()
+            return await gathered
+        except asyncio.CancelledError:
+            for w in workers:
+                w.cancel()
+            raise
+        finally:
+            stop.cancel()
+
+    async def _hand_back_on_shutdown(self, job: Job) -> bool:
+        """Give the batch back after a graceful stop, without spending an attempt.
+
+        Nothing is uploaded and nothing reported as failed: the batch is
+        requeued with shutdown=True, which the backend does not count against
+        MAX_BATCH_ATTEMPTS. A provider stepping away politely can never fail a
+        batch. The journal stays so the batch resumes if it comes back here.
+
+        Returns whether the backend acknowledged. If it did not (backend down
+        during the stop), the marker is left saying so, and the next start's
+        hand-back is still a graceful one.
+        """
+        job_dir = self._work_dir / job.job_id
+        try:
+            journalled = len(load_journal(job_dir / JOURNAL_FILENAME))
+        except OSError as exc:
+            logger.warning(f"[{job.job_id}] Could not read journal for hand-back: {exc}")
+            journalled = 0
+        try:
+            (job_dir / IN_FLIGHT_MARKER).write_text(SHUTDOWN_MARKER_TEXT, encoding="utf-8")
+        except OSError as exc:
+            logger.warning(f"[{job.job_id}] Could not record shutdown in marker: {exc}")
+
+        delivered = await self._client.report_failure(
+            job.job_id,
+            f"worker_shutdown: provider stopped the daemon mid-batch; "
+            f"{journalled} completed prompts journalled on this worker",
+            journalled=journalled,
+            shutdown=True,
+        )
+        if delivered:
+            logger.info(
+                f"[{job.job_id}] Batch handed back for resume "
+                f"({journalled} prompts journalled)"
+            )
+        self._heartbeat.update_status("idle")
+        return delivered
 
     # ── Output Writing ───────────────────────────────────────────
 
@@ -1259,8 +1371,14 @@ class Worker:
 
         if self._current_job_id:
             logger.info(
-                f"Currently processing job {self._current_job_id} — "
-                f"will stop after current prompt"
+                f"Currently processing job {self._current_job_id} — prompts "
+                f"already running get up to {self._config.shutdown_grace_seconds:g}s "
+                f"to finish, then the batch is handed back to resume later"
             )
 
+        self.request_stop()
+
+    def request_stop(self) -> None:
+        """Stop taking work; start the grace period for prompts in flight."""
         self._running = False
+        self._stop_requested.set()

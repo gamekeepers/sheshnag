@@ -263,8 +263,12 @@ systemctl --user stop gpu-daemon        # pause lending, keep everything install
 systemctl --user start gpu-daemon       # resume
 ```
 
-**Take the machine back for a while** — stop the daemon. Any batch in flight is
-requeued to another worker; nothing is lost.
+**Take the machine back for a while** — stop the daemon. Prompts already running
+get up to 30 seconds to finish, and everything completed so far is kept on disk.
+The batch is handed back to the queue without counting against it, and when you
+start the daemon again it picks up where it left off if the batch comes back to
+you. A batch that goes to a different worker starts over there, so nothing you
+finished is wasted while the batch stays with you.
 
 **Lend only at certain hours, or only small batches** — an organisation owner or
 admin can give each worker an availability window (say 18:00–08:00 in your
