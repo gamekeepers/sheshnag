@@ -973,18 +973,25 @@ class Worker:
                 report_completed = 0
                 report_failed = 0
 
+                if journal is not None:
+                    # Keyed on the input row's id, never the executor's echo of
+                    # it, so a restored row lands where it ran. Transient
+                    # failures stay out so a resume retries them.
+                    #
+                    # Appended before the lock is taken: the append is
+                    # synchronous, so no other pool worker can interleave with
+                    # it, and acquiring the lock is a cancellation point — a
+                    # stop landing there would otherwise discard a row whose
+                    # inference had already finished.
+                    journal.append(
+                        r if r.custom_id == prompts[i].custom_id
+                        else r.model_copy(update={"custom_id": prompts[i].custom_id})
+                        for i, r in paired
+                        if is_final(r)
+                    )
+
                 # Async-safe state updates — several workers land here at once.
                 async with lock:
-                    if journal is not None:
-                        # Keyed on the input row's id, never the executor's
-                        # echo of it, so a restored row lands where it ran.
-                        # Transient failures stay out so a resume retries them.
-                        journal.append(
-                            r if r.custom_id == prompts[i].custom_id
-                            else r.model_copy(update={"custom_id": prompts[i].custom_id})
-                            for i, r in paired
-                            if is_final(r)
-                        )
                     for i, result in paired:
                         results_by_index[i] = result
                         if result.is_success:
