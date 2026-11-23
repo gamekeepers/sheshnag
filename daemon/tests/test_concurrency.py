@@ -467,3 +467,65 @@ async def test_coalescable_rows_still_chunk(mock_job):
 
     assert len(results) == 50
     assert executor.batch_sizes == [50], "coalescing regressed"
+
+
+# ─── Runtime warm-up before the pool ─────────────────────────
+
+class PreparingExecutor(MockExecutor):
+    """Records the order of prepare() and execute() calls."""
+
+    def __init__(self, prepare_delay: float = 0.0, prepare_error: Exception = None):
+        super().__init__()
+        self.events: list = []
+        self._prepare_delay = prepare_delay
+        self._prepare_error = prepare_error
+
+    async def prepare(self, model, num_ctx=None):
+        self.events.append(("prepare", model, num_ctx))
+        await asyncio.sleep(self._prepare_delay)
+        if self._prepare_error:
+            raise self._prepare_error
+
+    async def execute(self, prompt):
+        self.events.append(("execute", prompt.custom_id))
+        return await super().execute(prompt)
+
+
+@pytest.mark.asyncio
+async def test_runtime_is_prepared_once_before_any_prompt(mock_job):
+    mock_job.num_ctx = 8192
+    executor = PreparingExecutor()
+    worker = _worker(executor, MockClient(), max_concurrent_prompts=4)
+
+    results = await worker._run_prompts(make_prompts(6), mock_job)
+
+    assert all(r.is_success for r in results)
+    assert executor.events[0] == ("prepare", "test-model", 8192)
+    assert [e[0] for e in executor.events].count("prepare") == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_prepare_still_runs_the_job(mock_job):
+    executor = PreparingExecutor(prepare_error=RuntimeError("load failed"))
+    worker = _worker(executor, MockClient(), max_concurrent_prompts=4)
+
+    results = await worker._run_prompts(make_prompts(3), mock_job)
+
+    assert all(r.is_success for r in results)
+
+
+@pytest.mark.asyncio
+async def test_stop_during_prepare_hands_back_without_running_prompts(mock_job):
+    """A model load can take minutes; a stop must not wait for it."""
+    executor = PreparingExecutor(prepare_delay=30)
+    worker = _worker(executor, MockClient(), max_concurrent_prompts=4)
+
+    task = asyncio.create_task(worker._run_prompts(make_prompts(5), mock_job))
+    await asyncio.sleep(0.05)
+    started = time.monotonic()
+    worker.request_stop()
+    with pytest.raises(JobInterrupted):
+        await task
+
+    assert time.monotonic() - started < 1.0
+    assert [e[0] for e in executor.events] == ["prepare"]

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import inspect
 import random
 import shutil
 import signal
@@ -1034,6 +1035,9 @@ class Worker:
                         total=total,
                     )
 
+        if chat_units:
+            await self._prepare_runtime(executor, job)
+
         # ── Run the pool ─────────────────────────────────────────
         if units:
             pool_size = max(1, min(self._config.max_concurrent_prompts, len(units)))
@@ -1097,6 +1101,38 @@ class Worker:
 
         # Return in input order (now guaranteed to have an entry for every row).
         return [results_by_index[i] for i in range(total)]
+
+    async def _prepare_runtime(self, executor: BaseExecutor, job: Job) -> None:
+        """Let the runtime load the job's model before the pool fans out.
+
+        A load can take minutes, so a stop signal ends the wait at once; the
+        pool then starts nothing and the batch is handed back. Any failure
+        is logged and the pool runs anyway, loading on its first prompt.
+        """
+        prepare = getattr(executor, "prepare", None)
+        if not callable(prepare) or not self._running:
+            return
+        try:
+            pending = prepare(job.model, job.num_ctx)
+        except Exception as exc:
+            logger.warning(f"[{job.job_id}] Runtime prepare raised {exc!r}; prompts will load the model")
+            return
+        if not inspect.isawaitable(pending):
+            return
+        task = asyncio.ensure_future(pending)
+        stop = asyncio.ensure_future(self._stop_requested.wait())
+        try:
+            await asyncio.wait({task, stop}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            stop.cancel()
+            if not task.done():
+                task.cancel()
+                logger.info(f"[{job.job_id}] Stop requested — model load abandoned")
+            elif not task.cancelled() and task.exception() is not None:
+                logger.warning(
+                    f"[{job.job_id}] Runtime prepare raised {task.exception()!r}; "
+                    f"prompts will load the model"
+                )
 
     async def _await_pool(self, workers: List[asyncio.Task], job: Job) -> list:
         """Wait for the pool, bounding how long a stop signal waits for it.

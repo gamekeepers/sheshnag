@@ -50,6 +50,21 @@ VERSION_PROBE_RETRY_SECONDS = 60.0
 # /api/chat returns per-token log-probabilities from this release on.
 LOGPROBS_MIN_VERSION = (0, 12, 11)
 
+def _retry_after_seconds(response: httpx.Response) -> Optional[float]:
+    """The delay a Retry-After header asks for, in seconds.
+
+    None when the header is absent, an HTTP date, or not positive, and the
+    caller then uses its own backoff. A zero ("retry now") gets the backoff
+    too: an immediate retry against a full queue spends an attempt before
+    any slot can free.
+    """
+    try:
+        value = float(response.headers.get("retry-after", ""))
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def parse_version(version_str: Optional[str]) -> tuple[int, ...]:
     """Semantic version parser that handles pre-releases and v prefix."""
     if not version_str:
@@ -96,6 +111,18 @@ class OllamaExecutor(BaseExecutor):
     embedding_chunk_size: int = 64
     runtime_name: str = "ollama"
 
+    #: "Busy, try again": Ollama answers 503 once OLLAMA_NUM_PARALLEL slots
+    #: and OLLAMA_MAX_QUEUE waiting requests are taken, which a model load
+    #: reaches fastest because every request queues behind it. 429 is the
+    #: same signal from a proxy in front of Ollama. A row that gives up on
+    #: these fails as transient, so the journal leaves it for a resume.
+    busy_statuses = frozenset({429, 503})
+    #: Five retries back off 0.5 + 1 + 2 + 4 + 8 = 15.5s in all, inside the
+    #: default shutdown grace, so a stop never cuts a prompt off mid-backoff.
+    busy_retries: int = 5
+    busy_backoff_seconds: float = 0.5
+    busy_backoff_cap_seconds: float = 8.0
+
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
@@ -132,15 +159,63 @@ class OllamaExecutor(BaseExecutor):
                 ),
             )
         return self._client
-    
+
+    async def _post(self, path: str, body: dict) -> httpx.Response:
+        """POST to Ollama, waiting out busy answers (see `busy_statuses`).
+
+        Retries back off exponentially, or for the server's Retry-After when
+        it sends one, capped at `busy_backoff_cap_seconds`. The last busy
+        answer raises like any other HTTP error.
+        """
+        client = self._get_client()
+        delay = self.busy_backoff_seconds
+        for attempt in range(self.busy_retries + 1):
+            response = await client.post(path, json=body)
+            if response.status_code not in self.busy_statuses or attempt == self.busy_retries:
+                response.raise_for_status()
+                return response
+            wait = min(_retry_after_seconds(response) or delay, self.busy_backoff_cap_seconds)
+            logger.debug(
+                "Ollama answered %d to %s — retry %d/%d in %.1fs",
+                response.status_code, path, attempt + 1, self.busy_retries, wait,
+            )
+            await asyncio.sleep(wait)
+            delay = min(delay * 2, self.busy_backoff_cap_seconds)
+        raise AssertionError("unreachable: the last attempt returns or raises")
+
+    async def prepare(self, model: str, num_ctx: Optional[int] = None) -> None:
+        """Load `model` at `num_ctx` before the pool sends prompts.
+
+        Ollama's API documents a chat request with an empty `messages` list
+        as "load this model": the server schedules the model with the
+        request's options, then returns with `done_reason: "load"` and
+        generates nothing. The options must match what execute() sends: a
+        different num_ctx makes the first prompt reload the model. An empty
+        `model` names nothing to load and is skipped. Must never raise.
+        """
+        if not model:
+            return
+        body: dict = {"model": model, "messages": []}
+        if num_ctx:
+            body["options"] = {"num_ctx": num_ctx}
+        started = time.monotonic()
+        try:
+            await self._post("/api/chat", body)
+        except Exception as e:
+            logger.warning(f"Ollama warm-up for {model} failed ({e}); prompts will load it")
+            return
+        logger.info(
+            f"Ollama warm-up: {model} loaded"
+            f"{f' at num_ctx {num_ctx}' if num_ctx else ''} "
+            f"in {time.monotonic() - started:.1f}s"
+        )
+
     async def execute(self, prompt: PromptRequest) -> CompletionResult:
         """
         Execute a prompt via Ollama's endpoints.
         Routes to /api/embed if prompt.url is /v1/embeddings,
         otherwise routes to /api/chat.
         """
-        client = self._get_client()
-
         # Embeddings first: the version gate below is about structured outputs,
         # which do not apply here. Probing /api/version for an embedding row
         # would cost a 5s timeout per prompt when the server is unreachable.
@@ -155,8 +230,7 @@ class OllamaExecutor(BaseExecutor):
         if prompt.url == "/v1/embeddings":
             ollama_body = self._translate_embeddings_request(prompt.body)
             try:
-                response = await client.post("/api/embed", json=ollama_body)
-                response.raise_for_status()
+                response = await self._post("/api/embed", ollama_body)
                 openai_response = self._translate_embeddings_response(response.json())
                 return CompletionResult(
                     custom_id=prompt.custom_id,
@@ -206,8 +280,7 @@ class OllamaExecutor(BaseExecutor):
                 # Without it Ollama loads at its own default, and the fit
                 # describes an allocation that never happens.
                 ollama_body["options"]["num_ctx"] = prompt.num_ctx
-            response = await client.post("/api/chat", json=ollama_body)
-            response.raise_for_status()
+            response = await self._post("/api/chat", ollama_body)
             
             openai_response = self._translate_response(response.json())
             
@@ -309,7 +382,6 @@ class OllamaExecutor(BaseExecutor):
             results_by_id[p.custom_id] = await self.execute(p)
 
         CHUNK_SIZE = self.embedding_chunk_size
-        client = self._get_client()
         for i in range(0, len(embedding_prompts), CHUNK_SIZE):
             chunk = embedding_prompts[i:i + CHUNK_SIZE]
             inputs = [p.body.get("input", "") for p in chunk]
@@ -320,8 +392,7 @@ class OllamaExecutor(BaseExecutor):
                 coalesced_body["truncate"] = chunk[0].body["truncate"]
 
             try:
-                response = await client.post("/api/embed", json=coalesced_body)
-                response.raise_for_status()
+                response = await self._post("/api/embed", coalesced_body)
 
                 openai_response = self._translate_embeddings_response(response.json())
 

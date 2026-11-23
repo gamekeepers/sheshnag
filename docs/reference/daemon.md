@@ -120,6 +120,19 @@ comes from.
 The pool is fixed for the life of the job — the daemon does not yet measure the
 runtime's real capacity and size itself to it.
 
+Before the pool starts, the worker calls the executor's `prepare(model,
+num_ctx)` once. Ollama loads the model there, at the job's `num_ctx`, so the
+first wave of prompts does not queue behind the load. A stop signal ends the
+wait at once and the batch is handed back. A failed `prepare` is logged, and the
+first prompt loads the model.
+
+A runtime that is full answers "busy": Ollama sends 503 once
+`OLLAMA_NUM_PARALLEL` slots and `OLLAMA_MAX_QUEUE` waiting requests are taken,
+and a proxy in front of it may send 429. The Ollama executor retries both up to
+5 times, backing off from 0.5s to 8s (15.5s in all) or for the `Retry-After` the
+server sends. A row still refused after that fails as transient, so a resume runs
+it again.
+
 Embedding rows go through the same pool. Where the runtime can serve several in
 one request, a chunk of them is one unit of work; where it cannot, each row is
 scheduled individually and gets the pool's concurrency rather than running
