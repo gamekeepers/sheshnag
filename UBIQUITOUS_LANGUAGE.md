@@ -35,8 +35,14 @@ lists words to stop using for that concept.
 | **Output file** | The generated JSONL holding exactly one result row per input row, in input order | Results, response file |
 | **Validation** | The asynchronous check of a batch's rows against the JSONL contract and the model catalogue, before it can be scheduled | Linting, parsing, preflight |
 | **Assignment** | The record binding one batch to the one worker currently holding it | Lease, claim record, allocation |
-| **Attempt** | One worker's execution of a batch; the third failed attempt makes the batch terminally `failed` | Retry, try, run |
-| **Requeue** | Returning an `in_progress` batch to `validated` so another worker can claim it | Retry, reschedule, re-dispatch |
+| **Attempt** | A counted execution of a batch; the third one makes the batch terminally `failed`. A hand-back that journalled more than any before it, and a graceful stop, are not counted | Retry, try, run |
+| **Requeue** | Returning an `in_progress` batch to `validated` so a worker can claim it again, which may be the worker that already holds its journal | Retry, reschedule, re-dispatch |
+| **Hand-back** | A worker returning a batch it holds, reporting how many rows it has journalled | Release, give up, abort |
+| **Journal** | The worker-local file of finished rows for one batch, keyed on each row's `custom_id` | Checkpoint, cache, partial output, log |
+| **Resume** | Re-running a batch on the worker holding its journal, executing only the rows the journal has no result for | Restart, retry, continue |
+| **Final** | A result a resume keeps rather than running the row again — a success, or a failure the row itself causes | Terminal, permanent, cached |
+| **Graceful stop** | A provider stopping their own daemon: running prompts get the grace period, the batch is handed back, and no attempt is counted | Shutdown, drain, pause |
+| **Usage record** | One row's token counts, keyed on `(batch, custom_id)` so a replayed upload cannot double-count | Token log, metering row, usage row |
 
 ## Compute
 
@@ -53,7 +59,10 @@ lists words to stop using for that concept.
 | **Heartbeat** | The daemon's periodic report of liveness, activity, VRAM and inventory | Ping, keepalive, status update |
 | **Activity** | What a worker reports it is doing — `idle`, `busy` or `downloading_model` | Worker status, state |
 | **Liveness** | A worker's server-decided `online` or `offline`, set by heartbeat recency | Worker status, health, availability |
-| **Sweeper** | The control-plane loop that marks silent workers offline and requeues what they held | Reaper, watchdog, janitor |
+| **Sweeper** | The control-plane loop that marks silent workers offline, requeues what they held, and retries unfinished usage ingestion | Reaper, watchdog, janitor |
+| **Provider policy** | The constraints a provider sets on their own worker — its availability window and its batch-size limit | Worker settings, limits, quota |
+| **Availability window** | The provider's local-time hours in which their worker may be given a new batch; one already running is not stopped when the window closes | Schedule, uptime, hours, shift |
+| **Batch-size limit** | The most rows a provider will accept in one batch on their worker | Max batch, cap, quota |
 
 ## Models
 
@@ -65,6 +74,7 @@ lists words to stop using for that concept.
 | **Runtime model id** | The raw string a runtime knows an artifact by, such as an Ollama tag or a Hugging Face repo id | Model name, tag, model id |
 | **Serving profile** | How one catalogue entry is served by one runtime, including every alternative name that entry answers to | Runtime mapping, model config |
 | **Digest** | When present, the primary weights file's content hash, serving as the reproducibility pin and join key between a catalogue entry and a worker's copy; multi-file artifacts carry additional file hashes | Hash, checksum, sha, version |
+| **Footprint line** | A catalogue entry's weights size and per-token KV cost, derived from the pinned artifact's header, from which its requirement at any context is computed | VRAM estimate, size, memory profile |
 | **Availability row** | A worker's record of holding one artifact, carrying its on-disk state and whether it is loaded | Worker model, installed model |
 | **Loaded** | Resident in VRAM right now | Available, installed, downloaded, ready, active |
 | **Present** | On the worker's disk, whether or not it is loaded | Available, downloaded, cached |
@@ -86,6 +96,8 @@ lists words to stop using for that concept.
 | **Eligibility** | Whether a worker may be offered a batch at all — it hosts the artifact and satisfies the runtime's fit rule | Suitability, ranking, scoring |
 | **Schedulable** | An availability row or runtime that may be given work — not quarantined, drifted or missing, and not on a draining or unreachable runtime | Active, enabled, ready, available |
 | **Advertised** | Everything a worker's runtimes hold, whether or not it is schedulable | Available, offered, exposed |
+| **Context** | The token window a batch is fitted and run at, taken from the p99 of its rows' needs | Window, length, size, tokens |
+| **KV alpha** | One runtime's multiplier on the KV cache estimate, calibrated from what it reports loaded | Overhead, fudge factor, margin |
 
 ## Relationships
 
@@ -95,7 +107,9 @@ lists words to stop using for that concept.
 - A **Runtime** holds zero or more **Availability rows**, each naming one **Artifact** by **Digest**.
 - A **Catalogue entry** pins exactly one **Artifact** and has one **Serving profile** per **Runtime** that can serve it.
 - A **Batch** references exactly one **Catalogue entry**, has exactly one **Input file**, and produces at most one **Output file**.
-- A **Batch** has at most one live **Assignment** and at most three **Attempts**.
+- A **Batch** has at most one live **Assignment** and at most three counted **Attempts**; a **Hand-back** that made progress and a **Graceful stop** add neither.
+- A **Journal** belongs to one **Batch** on one **Worker**, and only that worker can **Resume** from it.
+- A **Batch** carries one **Usage record** per executed **Row**.
 - A **Batch** produces exactly one output **Row** per input **Row**, in input order.
 - A **Worker** advertises every **Artifact** its **Runtimes** hold; only the **Schedulable** subset of those can be given a **Batch**.
 
@@ -128,3 +142,7 @@ lists words to stop using for that concept.
 - **"VRAM total"** — a machine sum answers how large the **Pool** is; only the largest single GPU answers what one **Batch** can have. Never compare an entry's requirement against a machine total.
 - **"picker"** — belongs to the interface, not to scheduling: the **Model picker**, the file picker, the Google account picker. The component that places a **Batch** on a **Worker** is the **Scheduler**.
 - **"runtime" vs "executor"** — **Runtime** is the inference engine a worker exposes; the executor is the daemon class that drives one. Domain conversations only need **Runtime**.
+- **"attempt"** — not every execution of a batch is one. An **Attempt** is a *counted* execution, and the count is what the cap of three applies to; a **Hand-back** carrying more journalled rows than any before it, and a **Graceful stop**, leave it untouched. Say "ran again" for the execution and **Attempt** only for the counted one.
+- **"context"** — three different numbers answer to it: a catalogue entry's maximum, the **Context** a batch is fitted and run at, and the window a runtime was launched with. Only the second is the domain term; name which one every time, because a batch can fit the first and fail the third.
+- **"shutdown"** — a **Graceful stop** is the one the provider asks for, and it costs the batch nothing. A crash, and a prompt cancelled when the grace period ends, are not graceful and are not free. `worker_shutdown:` in a wire message marks the first of these only.
+- **"journal" vs "output file"** — the **Journal** is one worker's private record of finished rows and never leaves that worker; the **Output file** is the batch's result, uploaded once, with one row per input row. A batch that is handed back has a journal and no output file.
