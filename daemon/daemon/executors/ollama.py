@@ -51,13 +51,18 @@ VERSION_PROBE_RETRY_SECONDS = 60.0
 LOGPROBS_MIN_VERSION = (0, 12, 11)
 
 def _retry_after_seconds(response: httpx.Response) -> Optional[float]:
-    """The delay a Retry-After header asks for, in seconds; None when absent
-    or given as an HTTP date."""
+    """The delay a Retry-After header asks for, in seconds.
+
+    None when the header is absent, an HTTP date, or not positive, and the
+    caller then uses its own backoff. A zero ("retry now") gets the backoff
+    too: an immediate retry against a full queue spends an attempt before
+    any slot can free.
+    """
     try:
         value = float(response.headers.get("retry-after", ""))
     except ValueError:
         return None
-    return value if value >= 0 else None
+    return value if value > 0 else None
 
 
 def parse_version(version_str: Optional[str]) -> tuple[int, ...]:
@@ -181,10 +186,15 @@ class OllamaExecutor(BaseExecutor):
     async def prepare(self, model: str, num_ctx: Optional[int] = None) -> None:
         """Load `model` at `num_ctx` before the pool sends prompts.
 
-        A chat request with no messages makes Ollama load the model and
-        return. The options must match what execute() sends: a different
-        num_ctx makes the first prompt reload the model. Must never raise.
+        Ollama's API documents a chat request with an empty `messages` list
+        as "load this model": the server schedules the model with the
+        request's options, then returns with `done_reason: "load"` and
+        generates nothing. The options must match what execute() sends: a
+        different num_ctx makes the first prompt reload the model. An empty
+        `model` names nothing to load and is skipped. Must never raise.
         """
+        if not model:
+            return
         body: dict = {"model": model, "messages": []}
         if num_ctx:
             body["options"] = {"num_ctx": num_ctx}

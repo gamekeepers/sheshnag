@@ -1125,3 +1125,24 @@ async def test_prepare_never_raises():
         transport=httpx.MockTransport(handler), base_url="http://localhost:11434",
     )
     await executor.prepare("llama3:8b", 4096)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("header,expected", [("0", 0.5), ("-1", 0.5), ("2", 2.0),
+                                             ("Wed, 21 Oct 2026 07:28:00 GMT", 0.5)])
+async def test_retry_after_that_is_not_a_positive_delay_uses_the_backoff(header, expected):
+    """A zero would retry into the same full queue; dates are not parsed."""
+    seen = []
+    executor, fake_sleep = _scripted_executor([503], seen, headers={"Retry-After": header})
+    with patch("daemon.executors.ollama.asyncio.sleep", fake_sleep):
+        assert (await executor.execute(_chat_prompt())).is_success
+    assert executor.slept == [expected]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", [None, ""])
+async def test_prepare_without_a_model_sends_nothing(model):
+    seen = []
+    executor, _ = _scripted_executor([], seen)
+    await executor.prepare(model, 4096)
+    assert seen == []
