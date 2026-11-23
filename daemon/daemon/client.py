@@ -40,6 +40,12 @@ _POLL_TIMEOUT = 10.0
 # Default timeout for non-poll requests
 _DEFAULT_TIMEOUT = 30.0
 
+# The /workers/report-failure answers that settle a report for good: the batch
+# is assigned elsewhere (403), gone (404), or past the state a report can
+# requeue (409, backend/routers/workers.py validate_transition). These are
+# this endpoint's own codes, not the generic "4xx means the request was bad".
+_REPORT_SETTLED_STATUSES = frozenset({403, 404, 409})
+
 # Proxy environment variables, most specific first, per scheme. A worker on a
 # network with no outbound route reaches the control plane through a proxy or
 # an SSH SOCKS forward, and this is the only channel that carries it. Like
@@ -382,36 +388,61 @@ class BackendClient:
 
     # ── Failure Reporting ────────────────────────────────────────
 
-    async def report_failure(self, job_id: str, error: str) -> None:
+    async def report_failure(
+        self, job_id: str, error: str, journalled: Optional[int] = None,
+    ) -> bool:
         """
         Report a job failure to the backend so it can requeue the job.
 
         This is a best-effort call — if it fails, we log a warning
         but don't crash. The backend requeues the batch (up to a max
-        attempt count, spec §12), and its heartbeat sweeper will
-        eventually reclaim the job even if this report never arrives.
+        attempt count, spec §12). If this report never arrives, its
+        heartbeat sweeper reclaims the job only once this worker stops
+        heartbeating — a daemon that restarts quickly is never swept, which
+        is why Worker reclaims its own interrupted jobs on startup.
 
         Args:
             job_id: The failed job's identifier.
             error:  Error description (truncated to 2000 chars).
+            journalled: Prompts this worker has journalled for the batch, on
+                a hand-back. The backend does not spend an attempt on a
+                hand-back that made progress since the last one.
+
+        Returns:
+            True when the backend gave a definitive answer: a 2xx, or one of
+            the endpoint's own "not yours to report" answers — 403 assigned
+            elsewhere, 404 batch or worker gone, 409 no longer in a state that
+            can be requeued (already requeued or finished). False for anything
+            else, so a caller that needs the report delivered can retry: an
+            unreachable backend, a 5xx, a 408/429, and a 401 — a rotated or
+            expired key has said nothing about the batch, and the next poll
+            hits the same 401 and shuts the daemon down with the report kept.
         """
         client = self._get_client()
 
         try:
+            payload = {
+                "job_id": job_id,
+                "worker_id": self._worker_id,
+                "error": error[:2000],  # Prevent oversized payloads
+            }
+            if journalled is not None:
+                payload["journalled"] = journalled
             response = await client.post(
                 "/workers/report-failure",
-                json={
-                    "job_id": job_id,
-                    "worker_id": self._worker_id,
-                    "error": error[:2000],  # Prevent oversized payloads
-                },
+                json=payload,
                 timeout=httpx.Timeout(_POLL_TIMEOUT),
             )
             response.raise_for_status()
             logger.info(f"Reported failure for job {job_id}")
+            return True
+        except httpx.HTTPStatusError as exc:
+            logger.warning(f"Failed to report failure for job {job_id}: {exc}")
+            return exc.response.status_code in _REPORT_SETTLED_STATUSES
         except Exception as exc:
             # Best-effort — don't crash if failure reporting itself fails
             logger.warning(f"Failed to report failure for job {job_id}: {exc}")
+            return False
 
     # ── Heartbeat and Progress ───────────────────────────────────
     

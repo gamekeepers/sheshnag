@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import shutil
 import signal
 import time
 from pathlib import Path
@@ -38,10 +39,22 @@ from daemon.config import DaemonConfig
 from daemon.executors.base import BaseExecutor
 from daemon.executor_factory import VLLM_ROCM_HINT
 from daemon.hardware import gpu_vendors_present
+from daemon.journal import JOURNAL_FILENAME, ResultJournal, is_final
+from daemon.journal import load as load_journal
 from daemon.log import get_logger
 from daemon.models import CompletionResult, Job, PromptRequest
 from daemon.heartbeat import HeartbeatManager
 from daemon.model_manager import ModelManager
+
+# Present in a job's directory while this daemon is running that job.
+IN_FLIGHT_MARKER = "in_flight"
+
+# A job directory with no in-flight marker, untouched this long, is swept: its
+# batch has finished (here or on another worker) or expired. Matches the
+# default 24h completion window, so a journal older than that has nothing left
+# to resume.
+STALE_JOB_DIR_SECONDS = 24 * 3600
+STALE_JOB_SWEEP_SECONDS = 3600
 
 logger = get_logger(__name__)
 
@@ -116,6 +129,9 @@ class Worker:
         # Ensure work directory exists
         self._work_dir = Path(config.work_dir)
         self._work_dir.mkdir(parents=True, exist_ok=True)
+        # Job ids a previous process died running; found on the first poll.
+        self._interrupted_jobs: Optional[List[str]] = None
+        self._last_job_dir_sweep = 0.0
 
     async def _get_loaded_models(self) -> List[str]:
         """Models resident in VRAM, union across runtimes, for the heartbeat.
@@ -342,6 +358,8 @@ class Worker:
 
     async def _poll_and_execute(self) -> None:
         """Single iteration of the poll-execute cycle."""
+        await self._reclaim_interrupted_jobs()
+
         logger.debug("Polling for jobs...")
         job = await self._client.poll_job()
 
@@ -354,8 +372,16 @@ class Worker:
         logger.info(f"JOB STARTED: {job.job_id}")
         logger.info(f"{'='*60}")
 
+        marker = self._work_dir / job.job_id / IN_FLIGHT_MARKER
         try:
-            await self._execute_job(job)
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+        except OSError as exc:
+            logger.warning(f"[{job.job_id}] Could not write in-flight marker: {exc}")
+
+        settled = False
+        try:
+            settled = await self._execute_job(job)
         except Exception as exc:
             logger.error(
                 f"Job {job.job_id} failed with error: {exc}",
@@ -363,14 +389,132 @@ class Worker:
             )
             # Report failure to backend so it can requeue the job
             # (spec §11: worker reports failure)
-            await self._client.report_failure(job.job_id, str(exc))
+            settled = await self._client.report_failure(job.job_id, str(exc))
         finally:
             self._current_job_id = None
 
-    async def _execute_job(self, job: Job) -> None:
+        if settled:
+            # The backend acknowledged an outcome (an upload, or a definitive
+            # answer to a failure report), so the batch is not stranded here.
+            self._clear_marker(job.job_id)
+        else:
+            # Seen through but never acknowledged: the upload and the failure
+            # report both failed. The batch is still assigned to this worker
+            # and heartbeats keep the sweeper off it. Keep the marker, so a
+            # restart finds it, and hand the batch back before the next poll.
+            logger.warning(
+                f"[{job.job_id}] Backend never acknowledged this job's outcome; "
+                f"will hand the batch back before the next poll"
+            )
+            if self._interrupted_jobs is not None and job.job_id not in self._interrupted_jobs:
+                self._interrupted_jobs.append(job.job_id)
+
+    def _clear_marker(self, job_id: str) -> None:
+        try:
+            (self._work_dir / job_id / IN_FLIGHT_MARKER).unlink(missing_ok=True)
+        except OSError as exc:
+            # If it is left behind, a restart hands the batch back again. The
+            # backend answers 403/404/409, and that answer settles it.
+            logger.warning(f"[{job_id}] Could not remove in-flight marker: {exc}")
+
+    async def _reclaim_interrupted_jobs(self) -> None:
+        """Hand back batches a previous run of this daemon died holding.
+
+        A daemon restarted after a crash keeps its worker_id and heartbeats
+        again within seconds, so the backend never sees it go stale and never
+        requeues the batch it was running — and /workers/poll only hands out
+        unassigned work. Without this the batch sits in_progress forever and
+        its journal is never read.
+
+        The same queue also carries jobs this process saw through but could
+        not get acknowledged, because the upload and the failure report both
+        failed.
+
+        Reporting the failure requeues the batch. The report carries the
+        journalled count, and the backend spends one of MAX_BATCH_ATTEMPTS
+        only when that count has not grown since the last hand-back. A daemon
+        in a crash loop that is still making progress does not burn the batch.
+        If the batch comes back to this worker, the journal resumes it. Runs
+        before each poll until every leftover marker has been delivered, so a
+        backend that is down at startup is retried rather than skipped.
+
+        Also sweeps abandoned job directories (``_sweep_stale_job_dirs``).
+        """
+        if self._interrupted_jobs is None:
+            self._interrupted_jobs = sorted(
+                m.parent.name for m in self._work_dir.glob(f"*/{IN_FLIGHT_MARKER}")
+            )
+        self._sweep_stale_job_dirs()
+        while self._interrupted_jobs:
+            job_id = self._interrupted_jobs[0]
+            try:
+                journalled = len(load_journal(self._work_dir / job_id / JOURNAL_FILENAME))
+            except OSError as exc:
+                # The count is only a log line and a progress hint. This loop
+                # runs before every poll, so raising here would stop the
+                # worker taking any work at all.
+                logger.warning(f"[{job_id}] Could not read journal during recovery: {exc}")
+                journalled = 0
+            logger.warning(
+                f"[{job_id}] Job interrupted or never acknowledged "
+                f"({journalled} prompts journalled); handing the batch back"
+            )
+            delivered = await self._client.report_failure(
+                job_id,
+                f"worker handed the batch back mid-job; {journalled} completed "
+                f"prompts journalled on this worker",
+                journalled=journalled,
+            )
+            if not delivered:
+                return  # not acknowledged; try again before the next poll
+            self._clear_marker(job_id)
+            self._interrupted_jobs.pop(0)
+
+    def _sweep_stale_job_dirs(self) -> None:
+        """Delete job directories nothing will read again.
+
+        A journal has to outlive its hand-back, because the batch may come
+        back here to resume. So a directory cannot go the moment its marker
+        does. Instead, a directory with no marker that has been untouched for
+        STALE_JOB_DIR_SECONDS is removed: by then its batch has finished or
+        expired. That also covers a requeued batch that another worker
+        finished, which this worker never hears about. Runs at most once per
+        STALE_JOB_SWEEP_SECONDS.
+        """
+        now = time.time()
+        if now - self._last_job_dir_sweep < STALE_JOB_SWEEP_SECONDS:
+            return
+        self._last_job_dir_sweep = now
+        try:
+            job_dirs = [d for d in self._work_dir.iterdir() if d.is_dir()]
+        except OSError as exc:
+            logger.warning(f"Could not list {self._work_dir} for cleanup: {exc}")
+            return
+        for job_dir in job_dirs:
+            if job_dir.name == self._current_job_id:
+                continue
+            try:
+                if (job_dir / IN_FLIGHT_MARKER).exists():
+                    continue
+                newest = max(
+                    [job_dir.stat().st_mtime]
+                    + [f.stat().st_mtime for f in job_dir.iterdir()]
+                )
+                if now - newest < STALE_JOB_DIR_SECONDS:
+                    continue
+                shutil.rmtree(job_dir)
+                logger.info(f"Removed stale job directory {job_dir}")
+            except OSError as exc:
+                logger.warning(f"Could not remove stale job directory {job_dir}: {exc}")
+
+    async def _execute_job(self, job: Job) -> bool:
         """
         Full lifecycle of a single job:
             download → parse → execute → write → upload
+
+        Returns whether the backend acknowledged the outcome: the upload went
+        through, or a failure report got a definitive answer. False means the
+        batch may still be assigned here, so the caller keeps it for hand-back.
         """
         job_dir = self._work_dir / job.job_id
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -398,10 +542,9 @@ class Worker:
                 f"[{job.job_id}] No runtime on this worker hosts model "
                 f"'{job.model}' — failing the job"
             )
-            await self._client.report_failure(
+            return await self._client.report_failure(
                 job.job_id, f"No runtime on this worker hosts model '{job.model}'"
             )
-            return
 
         # ── Step 0b: Ensure model is available (pull if needed) ────────
         # The executor identifies its runtime, and the runtime selects the
@@ -417,11 +560,10 @@ class Worker:
                 self._heartbeat.update_status("downloading_model", job.job_id)
                 available = await mm.ensure_model(job.model)
                 if not available:
-                    await self._client.report_failure(
+                    self._heartbeat.update_status("idle")
+                    return await self._client.report_failure(
                         job.job_id, f"Failed to download model: {job.model}"
                     )
-                    self._heartbeat.update_status("idle")
-                    return
 
         # ── Step 1: Download input ───────────────────────────────
         self._heartbeat.update_status("busy", job.job_id)
@@ -437,13 +579,16 @@ class Worker:
             # Don't silently return — the job would stay in "running"
             # state forever. Report failure so the backend can handle it.
             logger.warning(f"[{job.job_id}] Input file is empty — reporting failure")
-            await self._client.report_failure(
+            return await self._client.report_failure(
                 job.job_id, "Input file is empty — no prompts to process"
             )
-            return
 
         # ── Step 3: Execute each prompt ──────────────────────────
-        results = await self._run_prompts(prompts, job, executor)
+        # Each result is journalled as it completes; a rerun of this job on
+        # this worker (after a crash or requeue) resumes from the journal.
+        results = await self._run_prompts(
+            prompts, job, executor, journal_path=job_dir / JOURNAL_FILENAME,
+        )
 
         # ── Step 4: Write output JSONL ───────────────────────────
         self._write_output(output_path, results)
@@ -456,6 +601,12 @@ class Worker:
         await self._client.upload_results(
             job.job_id, output_path, completed=successes, failed=failures
         )
+        # The backend has the results; a journal kept past this point is only
+        # a second copy of output.jsonl, and a stale one to resume from.
+        try:
+            (job_dir / JOURNAL_FILENAME).unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(f"[{job.job_id}] Could not delete journal after upload: {exc}")
 
         # ── Summary ──────────────────────────────────────────────
         total_tokens = sum(
@@ -476,6 +627,7 @@ class Worker:
             )
         
         self._heartbeat.update_status("idle")
+        return True
 
     # ── Prompt Processing ────────────────────────────────────────
 
@@ -523,6 +675,7 @@ class Worker:
     async def _run_prompts(
         self, prompts: List[PromptRequest], job: Job,
         executor: Optional[BaseExecutor] = None,
+        journal_path: Optional[Path] = None,
     ) -> List[CompletionResult]:
         """
         Execute all prompts through a bounded pool of concurrent workers.
@@ -539,6 +692,13 @@ class Worker:
         `executor` is the runtime the job routed to; callers that don't
         resolve it themselves (tests, legacy paths) fall back to routing
         by job.model here.
+
+        With `journal_path`, every result the executor produces is appended
+        there as it lands, and rows an earlier run already journalled are
+        restored instead of executed (see daemon/journal.py). Restored rows
+        count toward progress, so a resumed job does not appear to restart
+        near zero. Skipping on custom_id is safe because the backend rejects
+        duplicate custom_ids at upload (batch_validator.check_custom_id).
         """
         if executor is None:
             executor = await self._executor_for(job.model)
@@ -558,6 +718,19 @@ class Worker:
                 for p in prompts
             ]
 
+        # The journal is closed (and fsynced) however the run ends.
+        journal = ResultJournal.open(journal_path) if journal_path is not None else None
+        try:
+            return await self._run_pool(prompts, job, executor, journal)
+        finally:
+            if journal is not None:
+                journal.close()
+
+    async def _run_pool(
+        self, prompts: List[PromptRequest], job: Job,
+        executor: BaseExecutor, journal: Optional[ResultJournal],
+    ) -> List[CompletionResult]:
+        """The body of _run_prompts once the runtime and journal are settled."""
         total = len(prompts)
         # Keyed by input index, not custom_id — duplicate ids still get their
         # own row, and out-of-order completion still writes in input order.
@@ -566,6 +739,11 @@ class Worker:
         completed = 0
         failed = 0
         last_progress_report = 0.0
+
+        restored: Dict[str, CompletionResult] = journal.restored if journal else {}
+        resumed_ok = 0
+        resumed_failed = 0
+        resumed_tokens = 0
 
         # ── Partition ────────────────────────────────────────────
         # Every rejection is decided here, before any path forks, so one input
@@ -592,6 +770,22 @@ class Worker:
                 failed += 1
                 continue
             seen_ids.add(p.custom_id)
+
+            # Already executed by an earlier run of this job. Errors included:
+            # a failed row was still executed, and re-running it would retry a
+            # deterministic failure forever. Placed after the duplicate check
+            # so a duplicate row never inherits its twin's journalled result.
+            prior = restored.get(p.custom_id)
+            if prior is not None:
+                results_by_index[idx] = prior
+                if prior.is_success:
+                    completed += 1
+                    resumed_ok += 1
+                    resumed_tokens += int(prior.usage.get("total_tokens", 0) or 0)
+                else:
+                    failed += 1
+                    resumed_failed += 1
+                continue
 
             if p.body.get("stream"):
                 # Applies to every endpoint — batch execution cannot honor
@@ -647,6 +841,25 @@ class Worker:
         ] + [[row] for row in solo]
 
         units = chat_units + embedding_units
+
+        if resumed_ok or resumed_failed:
+            logger.info(
+                f"[{job.job_id}] Resuming from journal: "
+                f"{resumed_ok + resumed_failed}/{total} prompts already done "
+                f"({resumed_ok} succeeded, {resumed_failed} failed, "
+                f"{resumed_tokens:,} tokens) — skipping them, "
+                f"{sum(len(u) for u in units)} left to run"
+            )
+            self._heartbeat.update_status(
+                status="busy",
+                job_id=job.job_id,
+                progress={
+                    "total_prompts": total,
+                    "completed_prompts": completed,
+                    "failed_prompts": failed,
+                },
+            )
+
         queue: asyncio.Queue = asyncio.Queue()
         for unit in units:
             queue.put_nowait(unit)
@@ -729,6 +942,16 @@ class Worker:
 
                 # Async-safe state updates — several workers land here at once.
                 async with lock:
+                    if journal is not None:
+                        # Keyed on the input row's id, never the executor's
+                        # echo of it, so a restored row lands where it ran.
+                        # Transient failures stay out so a resume retries them.
+                        journal.append(
+                            r if r.custom_id == prompts[i].custom_id
+                            else r.model_copy(update={"custom_id": prompts[i].custom_id})
+                            for i, r in paired
+                            if is_final(r)
+                        )
                     for i, result in paired:
                         results_by_index[i] = result
                         if result.is_success:
@@ -799,6 +1022,9 @@ class Worker:
                 f"({completed + failed}/{total} prompts done)"
             )
 
+        # The unrun-row placeholders below are never journalled: they were not
+        # executed, and a resume must run them.
+        #
         # Any prompt still in the queue when _running went False has no
         # result at all. Synthesize an explicit failure per row index so:
         #   - the output file has exactly one line per input prompt (no gaps)

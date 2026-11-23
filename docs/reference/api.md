@@ -337,12 +337,18 @@ so ingestion lost to a crash is retried by the sweeper (below).
 
 #### POST /workers/report-failure
 ```json
-// Request
-{"job_id": "batch-abc123", "worker_id": "worker-abc123", "error": "OOM"}
+// Request. "journalled" is optional: prompts the worker has journalled,
+// sent when it hands a batch back to resume later.
+{"job_id": "batch-abc123", "worker_id": "worker-abc123", "error": "OOM", "journalled": 900}
 
 // Response — requeued until attempts hit the max (3), then terminal
 {"status": "validated", "batch_id": "batch-abc123", "attempts": 1, "error": "OOM"}
 ```
+
+A report whose `journalled` count is higher than any earlier report for the
+batch (capped at the row count) made progress. It requeues the batch without
+spending an attempt. Errors: 403 (batch assigned to another worker), 404
+(batch or worker not found), 409 (batch not in a state that can be requeued).
 
 ---
 

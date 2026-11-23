@@ -57,8 +57,9 @@ class MockClient:
     async def report_progress(self, job_id, completed, failed, total):
         self.progress_calls.append((completed, failed, total))
 
-    async def report_failure(self, job_id, error):
+    async def report_failure(self, job_id, error, journalled=None):
         self.failure_calls.append((job_id, error))
+        return True
 
     async def upload_results(self, job_id, output_path, completed, failed):
         content = Path(output_path).read_text(encoding="utf-8")
