@@ -41,8 +41,8 @@ engine instead of the docker image.
 
 1. Downloads the training (and validation) file into `<work-dir>/<job_id>/data/`.
 2. Writes `train.yaml` and `dataset_info.json`. The keys are listed in
-   `forge_runner/config.py`. Bases with no chat template configured are
-   refused rather than guessed.
+   `forge_runner/config.py`. The chat template comes from the job's
+   `chat_template`; a job without one is refused with `unsupported_job`.
 3. Runs the pinned LLaMA-Factory image (`docker run --rm --name forge-<job_id>`)
    with the job directory mounted at the same path inside the container.
 4. Every 2 s it forwards new `trainer_log.jsonl` lines to

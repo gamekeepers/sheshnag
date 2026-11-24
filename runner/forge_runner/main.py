@@ -10,6 +10,7 @@ import argparse
 import json
 import logging
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -35,6 +36,10 @@ def _engine(args):
     return DockerEngine(args.image, Path(args.hf_cache), version=ENGINE_VERSION)
 
 
+def _raise_keyboard_interrupt(signum, frame):
+    raise KeyboardInterrupt
+
+
 def _throttled(fn, every: float):
     last = [0.0]
 
@@ -55,6 +60,13 @@ def serve(args) -> int:
     engine = _engine(args)
     work_root = Path(args.work_dir)
     work_root.mkdir(parents=True, exist_ok=True)
+    # systemd stops the runner with SIGTERM. As KeyboardInterrupt it unwinds
+    # through run_job, which stops the engine, and the job is reported.
+    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
+
+    stopped = engine.stop_leftovers(work_root)
+    if stopped:
+        logger.warning("Stopped %d training run(s) a previous runner left on the GPU", stopped)
 
     worker_id = client.register(args.hostname or gpu.hostname(), gpu.describe())
     logger.info("Registered as worker %s; polling %s", worker_id, args.backend_url)
@@ -85,7 +97,19 @@ def serve(args) -> int:
             job = Job.from_payload(payload)
             logger.info("Claimed job %s (base %s)", job.job_id, job.source_ref)
             busy_beat = _throttled(lambda: beat(True, job.job_id), HEARTBEAT_SECONDS)
-            result = run_job(job, client, engine, work_root, worker_id, heartbeat=busy_beat)
+            try:
+                result = run_job(job, client, engine, work_root, worker_id, heartbeat=busy_beat)
+            except KeyboardInterrupt:
+                client.report_failure(job.job_id, worker_id, retryable=True, code="runner_stopped",
+                                      error="The training runner was stopped during the run")
+                raise
+            except Exception as exc:
+                # One job's error never takes the runner down: the job is
+                # reported and the runner goes back to polling.
+                logger.exception("Job %s raised; reporting it and polling again", job.job_id)
+                client.report_failure(job.job_id, worker_id, retryable=True, code="runner_error",
+                                      error=f"forge-runner hit an internal error: {exc}")
+                continue
             logger.info("Job %s finished: %s %s", job.job_id, result.status, result.detail)
     except KeyboardInterrupt:
         logger.info("Stopping")

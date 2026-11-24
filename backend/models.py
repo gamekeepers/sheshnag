@@ -745,10 +745,9 @@ class FinetuneJob(Base):
     api_key_id           = Column(String, nullable=True)  # attribution for personal key usage
 
     # The org the job runs under: the one the caller named, or their only org.
-    # NULL = the caller belongs to several orgs and named none. Workers claim
-    # queued jobs from every org; a claim filter on this column is what keeps
-    # a job's dataset on its own org's runners.
-    org_id               = Column(String, ForeignKey("organizations.id"), nullable=True, index=True)
+    # /workers/finetune-poll offers a job only to workers of this org, which
+    # is what keeps a job's dataset on its own org's runners.
+    org_id               = Column(String, ForeignKey("organizations.id"), nullable=False, index=True)
 
     # Base model, pinned (see docstring).
     base_model_id        = Column(String, nullable=False)  # ModelCatalog.id (source_type='huggingface')

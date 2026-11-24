@@ -35,7 +35,7 @@ API on purpose, plus one Sheshnag-specific block: `lora`.
   "model": "qwen2-5-0-5b-instruct-hf",        // catalogue id, source_type=huggingface
   "training_file": "file-…",                  // uploaded with purpose="fine-tune"
   "validation_file": null,
-  "organization_id": null,                    // org the job runs under; default: the caller's only org
+  "organization_id": null,                    // org whose runners train the job; required if you belong to several
   "suffix": "support-bot",                    // [a-z0-9-], ≤40; folded into fine_tuned_model
   "seed": 42,
   "method": {"type": "supervised"},
@@ -87,10 +87,9 @@ everyone a new table for free, but it can never add a column.
 
 Who and what: `user_id`, `api_key_id`, `org_id`. `org_id` is the org the
 caller named in `organization_id` (they must be a member, or the request is a
-403) or, when they named none, their only org; it is NULL when they belong to
-several and named none. Workers claim queued jobs from every org, so a job's
-dataset can reach any provider's runner; filtering the claim on `org_id`
-keeps it on the job's own org. The pinned base: `base_model_id`,
+403) or, when they named none, their only org. A caller in several orgs, or in
+none, who names none gets a 400. Only that org's workers are offered the job,
+so its dataset never reaches another provider's runner. The pinned base: `base_model_id`,
 `base_source_ref`, `base_source_revision`. Inputs: `training_file_id`,
 `validation_file_id`. Then `method`, `suffix`, `seed`. Hyperparameters:
 `n_epochs`, `batch_size`, `learning_rate`, `max_seq_length`. LoRA:
@@ -176,9 +175,12 @@ process from the batch daemon. It registers and heartbeats like any worker
 (`/workers/register`, `/workers/{id}/heartbeat`), including while it
 supervises a run.
 
-1. `POST /workers/finetune-poll`: claims the oldest `queued` job that fits the
-   worker's VRAM, moves it to `running`, and returns the hyperparameters, the
-   pinned base, `dataset_path`, `engine` and `engine_image`.
+1. `POST /workers/finetune-poll`: claims the oldest `queued` job of the
+   worker's org that fits the worker's VRAM, moves it to `running`, and
+   returns the hyperparameters, the pinned base, its `chat_template`,
+   `dataset_path`, `engine` and `engine_image`. A runner polls only between
+   jobs, so a poll from a worker that still holds a `running` job settles
+   that job first (see below).
 2. `GET <dataset_path>`: workers may read files belonging to a job assigned to
    their org.
 3. `POST /workers/finetune-progress`: send one per trainer log step
@@ -198,7 +200,16 @@ supervises a run.
 batches leaves finetune jobs alone. If a running job's runner stops
 heartbeating for 10 minutes, the job is **failed** with `runner_lost` and a
 message telling the user to resubmit. It is never requeued from step 0
-without their knowledge.
+without their knowledge. Neither message names the provider's machine.
+
+A runner that restarts keeps its worker id (registration matches on hostname)
+and heartbeats again at once, so its next poll settles the job it held:
+
+| The held job | Outcome |
+| --- | --- |
+| `running`, no training step logged | requeued, spending an attempt; nothing was trained |
+| `running`, a step logged | **failed** with `runner_restarted`; the user resubmits |
+| already `cancelled` or finished | the assignment is dropped |
 
 ## Outside this contract
 
@@ -226,5 +237,9 @@ without their knowledge.
 
 - Catalogue HF entries must be pinned to commit SHAs. The API refuses to
   finetune any base whose `source_revision` is not a 40-hex SHA.
+- A base is trainable only with a chat template in
+  `finetune_contract.CHAT_TEMPLATES`. A wrong template trains without error
+  and serves garbage, so the API refuses any other base, and the runner
+  takes the template from the poll payload.
 - Training VRAM is estimated as 3.2× the catalogue's inference `vram_gb`,
   measured for bf16 LoRA at the contract defaults.

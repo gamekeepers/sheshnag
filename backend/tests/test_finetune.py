@@ -102,7 +102,19 @@ def good_file(make_file):
 
 
 def _create(client, file_id, **extra):
+    """Names the client's default org, when it has one, unless the test names
+    organization_id itself: other test modules add the shared test user to
+    more orgs, and a caller in several orgs must name one."""
+    default_org = getattr(client, "default_org", None)
+    if default_org and "organization_id" not in extra:
+        extra["organization_id"] = default_org
     return client.post("/v1/fine_tuning/jobs", json={"model": BASE, "training_file": file_id, **extra})
+
+
+@pytest.fixture
+def auth_client(auth_client, _engine, _test_user):
+    auth_client.default_org = _own_org_id(_engine, _test_user)
+    return auth_client
 
 
 # ─── Creating a job ────────────────────────────────────────
@@ -111,7 +123,8 @@ def _own_org_id(engine, user):
     db = sessionmaker(bind=engine)()
     try:
         return db.query(OrganizationMembership).filter(
-            OrganizationMembership.user_id == user.id).first().org_id
+            OrganizationMembership.user_id == user.id,
+        ).order_by(OrganizationMembership.org_id).first().org_id
     finally:
         db.close()
 
@@ -154,7 +167,8 @@ def test_create_records_the_callers_only_org(_engine, make_file):
     assert res.json()["organization_id"] == _own_org_id(_engine, user)
 
 
-def test_create_records_no_org_when_the_caller_has_several_and_names_none(_engine, make_file):
+def test_create_refuses_a_caller_in_several_orgs_who_names_none(_engine, make_file):
+    """Only the job's org's runners can claim it, so a job needs an org."""
     user = _fresh_user(_engine)
     db = sessionmaker(bind=_engine, expire_on_commit=False)()
     second = Organization(name="Second org")
@@ -166,8 +180,24 @@ def test_create_records_no_org_when_the_caller_has_several_and_names_none(_engin
     file_id = make_file(_jsonl([_example() for _ in range(12)]), user_id=user.id)
     with _client_for(_engine, user) as client:
         res = _create(client, file_id)
+        assert res.status_code == 400
+        assert "several organizations" in res.json()["detail"]
+        res = _create(client, file_id, organization_id=second.id)
     assert res.status_code == 200, res.text
-    assert res.json()["organization_id"] is None
+    assert res.json()["organization_id"] == second.id
+
+
+def test_create_refuses_a_caller_in_no_org(_engine, make_file):
+    user = _fresh_user(_engine)
+    db = sessionmaker(bind=_engine)()
+    db.query(OrganizationMembership).filter(OrganizationMembership.user_id == user.id).delete()
+    db.commit()
+    db.close()
+    file_id = make_file(_jsonl([_example() for _ in range(12)]), user_id=user.id)
+    with _client_for(_engine, user) as client:
+        res = _create(client, file_id)
+    assert res.status_code == 400
+    assert "no organization" in res.json()["detail"]
 
 
 def test_create_records_a_named_org_the_caller_belongs_to(auth_client, good_file, _engine, _test_user):
@@ -240,7 +270,7 @@ def test_personal_api_key_works(_engine, _test_user, good_file):
     try:
         with TestClient(app) as client:
             client.headers["Authorization"] = f"Bearer {raw}"
-            res = _create(client, good_file)
+            res = _create(client, good_file, organization_id=_own_org_id(_engine, _test_user))
             assert res.status_code == 200, res.text
             assert client.get("/v1/fine_tuning/jobs").status_code == 200
     finally:
@@ -272,6 +302,23 @@ def test_create_rejects_ollama_base_model(auth_client, good_file):
                            json={"model": "nuextract-3-8b-ollama", "training_file": good_file})
     assert res.status_code == 400
     assert "not a finetune-eligible" in res.json()["detail"]
+
+
+def test_create_rejects_a_base_no_runner_can_train(auth_client, good_file, db_session):
+    """A base with no chat template would queue, be claimed, and only then fail."""
+    from models import ModelCatalog
+    entry = db_session.query(ModelCatalog).filter(ModelCatalog.id == BASE).first()
+    source_ref = entry.source_ref
+    entry.source_ref = "someone/untemplated-7b"
+    db_session.commit()
+    try:
+        res = _create(auth_client, good_file)
+        assert res.status_code == 400
+        detail = res.json()["detail"]
+        assert "no chat template" in detail and "Qwen/Qwen2.5-0.5B-Instruct" in detail
+    finally:
+        entry.source_ref = source_ref
+        db_session.commit()
 
 
 def test_create_rejects_unpinned_base_model(auth_client, good_file, db_session):
@@ -410,9 +457,8 @@ def worker_client(_engine, _test_user):
     from fastapi.testclient import TestClient
     from tests.conftest import _make_override
 
+    org_id = _own_org_id(_engine, _test_user)
     db = sessionmaker(bind=_engine, expire_on_commit=False)()
-    org_id = db.query(OrganizationMembership).filter(
-        OrganizationMembership.user_id == _test_user.id).first().org_id
     raw = f"gk-{uuid.uuid4().hex}"
     db.add(ApiKey(key_type="worker", org_id=org_id, created_by_user_id=_test_user.id,
                   name="w", key_prefix=raw[:8], key_hash=hash_api_key(raw)))
@@ -465,6 +511,7 @@ def test_worker_full_run_produces_servable_adapter(auth_client, worker_client, g
     job = _claim(auth_client, worker_client, good_file)
     assert job["source_ref"] == "Qwen/Qwen2.5-0.5B-Instruct"
     assert job["target_modules"] == "all-linear" and job["engine"] == "llamafactory"
+    assert job["chat_template"] == "qwen"
     assert auth_client.get(f"/v1/fine_tuning/jobs/{job['job_id']}").json()["status"] == "running"
 
     # The worker can download its training file.
@@ -595,7 +642,8 @@ def test_lost_runner_fails_job_instead_of_requeueing(_engine, auth_client, worke
     done = auth_client.get(f"/v1/fine_tuning/jobs/{job['job_id']}").json()
     assert done["status"] == "failed"
     assert done["error"]["code"] == "runner_lost"
-    assert "resubmit" in done["error"]["message"]
+    assert "Resubmit" in done["error"]["message"]
+    assert "ft-worker" not in done["error"]["message"]   # never the provider's hostname
 
 
 @pytest.mark.parametrize("vram_total, claims", [
@@ -612,3 +660,81 @@ def test_picker_vram_fit(_engine, auth_client, worker_client, good_file, vram_to
     _create(auth_client, good_file)
     job = worker_client.post("/workers/finetune-poll", json={"worker_id": worker_client.worker_id}).json()["job"]
     assert (job is not None) == claims
+
+
+# ─── A worker only sees its own org's jobs ─────────────────
+
+def test_worker_from_another_org_is_never_offered_the_job(_engine, _test_user, auth_client, worker_client, good_file):
+    """Training data stays on the job's own org's runners (#193)."""
+    from auth import hash_api_key
+    job_id = _create(auth_client, good_file).json()["id"]
+
+    db = sessionmaker(bind=_engine, expire_on_commit=False)()
+    other = Organization(name="Provider org")
+    db.add(other)
+    db.flush()
+    raw = f"gk-{uuid.uuid4().hex}"
+    db.add(ApiKey(key_type="worker", org_id=other.id, name="other", created_by_user_id=_test_user.id,
+                  key_prefix=raw[:8], key_hash=hash_api_key(raw)))
+    outsider = Worker(org_id=other.id, hostname="other-worker", status="online", vram_total_gb=80)
+    db.add(outsider)
+    db.commit()
+    db.close()
+
+    res = worker_client.post("/workers/finetune-poll", json={"worker_id": outsider.id},
+                             headers={"Authorization": f"Bearer {raw}"})
+    assert res.status_code == 200, res.text
+    assert res.json()["job"] is None
+    assert auth_client.get(f"/v1/fine_tuning/jobs/{job_id}").json()["status"] == "queued"
+    assert _poll(worker_client)["job_id"] == job_id       # its own org's runner gets it
+
+
+# ─── A runner that restarts mid-run ────────────────────────
+
+def _poll(worker_client):
+    return worker_client.post("/workers/finetune-poll",
+                              json={"worker_id": worker_client.worker_id}).json()["job"]
+
+
+def test_restarted_runner_requeues_a_job_that_never_trained(auth_client, worker_client, good_file):
+    """Registration reuses the worker by hostname and heartbeats resume at
+    once, so only the next poll can tell the job was abandoned."""
+    job = _claim(auth_client, worker_client, good_file)
+
+    again = _poll(worker_client)
+
+    assert again["job_id"] == job["job_id"]          # requeued, then claimed afresh
+    state = auth_client.get(f"/v1/fine_tuning/jobs/{job['job_id']}").json()
+    assert state["status"] == "running"
+    events = auth_client.get(f"/v1/fine_tuning/jobs/{job['job_id']}/events?limit=100").json()["data"]
+    assert any("restarted before training began" in e["message"] for e in events)
+
+
+def test_restarted_runner_fails_a_job_that_had_trained(auth_client, worker_client, good_file):
+    job = _claim(auth_client, worker_client, good_file)
+    worker_client.post("/workers/finetune-progress", json={
+        "job_id": job["job_id"], "worker_id": worker_client.worker_id,
+        "current_step": 5, "total_steps": 29, "current_epoch": 0.17, "loss": 2.5})
+
+    assert _poll(worker_client) is None
+
+    done = auth_client.get(f"/v1/fine_tuning/jobs/{job['job_id']}").json()
+    assert done["status"] == "failed"
+    assert done["error"]["code"] == "runner_restarted"
+    assert "ft-worker" not in done["error"]["message"]
+
+
+def test_poll_drops_the_assignment_of_a_job_cancelled_while_running(
+        _engine, auth_client, worker_client, good_file):
+    from models import FinetuneJobAssignment
+    job = _claim(auth_client, worker_client, good_file)
+    auth_client.post(f"/v1/fine_tuning/jobs/{job['job_id']}/cancel")
+
+    assert _poll(worker_client) is None
+
+    db = sessionmaker(bind=_engine)()
+    left = db.query(FinetuneJobAssignment).filter(
+        FinetuneJobAssignment.job_id == job["job_id"]).count()
+    db.close()
+    assert left == 0
+    assert auth_client.get(f"/v1/fine_tuning/jobs/{job['job_id']}").json()["status"] == "cancelled"

@@ -53,23 +53,36 @@ def run_job(job: Job, client, engine, work_root: Path, worker_id: str, *,
         return RunResult("failed", message)
 
     log_path = workdir / "engine.log"
-    proc = engine.start(config_path, workdir, f"forge-{job.job_id}", log_path)
+    try:
+        proc = engine.start(config_path, workdir, f"forge-{job.job_id}", log_path)
+    except Exception as exc:  # docker missing or not running, image not pullable
+        message = f"forge-runner could not start the training engine: {exc}"
+        client.report_failure(job.job_id, worker_id, error=message,
+                              code="engine_start_failed", retryable=True)
+        return RunResult("failed", message)
     tail = TrainerLogTail(workdir / "out" / "trainer_log.jsonl")
     logger.info("Job %s: engine started, log at %s", job.job_id, log_path)
 
-    while True:
-        rc = proc.poll()
-        for entry in tail.read_new():
-            fields = to_progress(entry)
-            if fields and client.progress(job.job_id, worker_id, **fields):
-                logger.info("Job %s cancelled by the backend; stopping the engine", job.job_id)
-                proc.stop()
-                return RunResult("cancelled")
-        if heartbeat:
-            heartbeat()
-        if rc is not None:
-            break
-        time.sleep(poll_interval)
+    # Any exit from here other than the engine finishing (an error, Ctrl+C,
+    # SIGTERM) stops the engine: a container outlives its `docker run` client
+    # and would keep training on the GPU.
+    try:
+        while True:
+            rc = proc.poll()
+            for entry in tail.read_new():
+                fields = to_progress(entry)
+                if fields and client.progress(job.job_id, worker_id, **fields):
+                    logger.info("Job %s cancelled by the backend; stopping the engine", job.job_id)
+                    proc.stop()
+                    return RunResult("cancelled")
+            if heartbeat:
+                heartbeat()
+            if rc is not None:
+                break
+            time.sleep(poll_interval)
+    except BaseException:
+        proc.stop()
+        raise
 
     if rc != 0:
         failure = classify(log_path.read_text(encoding="utf-8", errors="replace"), rc)
@@ -86,8 +99,16 @@ def run_job(job: Job, client, engine, work_root: Path, worker_id: str, *,
                               code="adapter_missing", retryable=True)
         return RunResult("failed", str(exc))
 
-    client.upload_adapter(job.job_id, worker_id, zip_path,
-                          engine=engine.name, engine_version=engine.version,
-                          engine_image=engine.image, metrics=artifact.read_metrics(out_dir))
+    try:
+        client.upload_adapter(job.job_id, worker_id, zip_path,
+                              engine=engine.name, engine_version=engine.version,
+                              engine_image=engine.image, metrics=artifact.read_metrics(out_dir))
+    except Exception as exc:
+        # A job cancelled after training finished answers 409; the failure
+        # report then only releases the assignment. Anything else requeues.
+        message = f"forge-runner could not upload the trained adapter: {exc}"
+        client.report_failure(job.job_id, worker_id, error=message,
+                              code="adapter_upload_failed", retryable=True)
+        return RunResult("failed", message)
     logger.info("Job %s: adapter uploaded", job.job_id)
     return RunResult("succeeded", str(zip_path))

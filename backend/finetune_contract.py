@@ -53,6 +53,17 @@ ENGINE_IMAGE = (
     "c5e769e047a19f9322800c9881a6270557ef0e6682f0145b50b322f8724de6b6"
 )
 
+# Chat template per trainable base, keyed by the base's source_ref. It must be
+# the template the base was trained with, or the adapter learns the wrong turn
+# markers: a wrong template trains without error and serves garbage. A base
+# with no entry is refused at job creation, and the runner receives the
+# template in the poll payload, so this table is the only list of trainable
+# bases.
+CHAT_TEMPLATES = {
+    "Qwen/Qwen2.5-0.5B-Instruct": "qwen",
+    "TinyLlama/TinyLlama-1.1B-Chat-v1.0": "zephyr",
+}
+
 # ─── LoRA limits that serving imposes ──────────────────────────────────────
 
 # Serving workers start vLLM with `--max-lora-rank MAX_LORA_RANK`. Every rank

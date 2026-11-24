@@ -16,6 +16,7 @@ class Job:
     source_ref: str
     dataset_path: str
     source_revision: Optional[str] = None
+    chat_template: Optional[str] = None     # LLaMA-Factory template name for the base
     base_model_id: str = ""
     method: str = "supervised"
     validation_file_id: Optional[str] = None

@@ -495,7 +495,7 @@ class FinetuneJobCreate(BaseModel):
     model: str                              # catalogue id of an HF-sourced base model
     training_file: str                      # File.id from POST /v1/files
     validation_file: Optional[str] = None
-    organization_id: Optional[str] = None   # org the job runs under; default: the caller's only org
+    organization_id: Optional[str] = None   # org whose runners train the job; default: the caller's only org
     suffix: Optional[str] = Field(None, pattern=r"^[a-z0-9][a-z0-9-]{0,39}$")
     seed: int = DEFAULT_SEED
     method: FinetuneMethod = FinetuneMethod()

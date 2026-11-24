@@ -55,6 +55,17 @@ class CommandEngine:
         popen = subprocess.Popen(cmd, cwd=workdir, stdout=log, stderr=subprocess.STDOUT)
         return EngineProcess(popen, log)
 
+    def stop_leftovers(self, work_root: Path) -> int:
+        """Stop engine runs a previous runner process left behind. A plain
+        subprocess dies with the runner, so there is nothing to stop."""
+        return 0
+
+
+# Every container carries the work root of the runner that started it, so a
+# restarted runner stops its own leftovers and never another runner's run on
+# a shared docker daemon.
+WORK_ROOT_LABEL = "forge-runner.work-root"
+
 
 class DockerEngine(CommandEngine):
     def __init__(self, image: str, hf_cache: Path, *, version: Optional[str] = None,
@@ -66,6 +77,7 @@ class DockerEngine(CommandEngine):
     def start(self, config_path: Path, workdir: Path, run_name: str, log_path: Path) -> EngineProcess:
         cmd = [
             "docker", "run", "--rm", "--name", run_name,
+            "--label", f"{WORK_ROOT_LABEL}={workdir.parent}",
             "--device", self.device, "--shm-size", "4g",
             "--memory", self.memory, "--cpus", self.cpus,
             "-v", f"{workdir}:{workdir}", "-w", str(workdir),
@@ -77,3 +89,20 @@ class DockerEngine(CommandEngine):
         log = open(log_path, "w", encoding="utf-8")
         popen = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
         return EngineProcess(popen, log, stop_cmd=["docker", "stop", run_name])
+
+    def stop_leftovers(self, work_root: Path, timeout: float = 120) -> int:
+        """Stop containers a previous runner on `work_root` left training.
+
+        `docker run` without -d keeps the container alive after its client is
+        killed, so a runner that died mid-run leaves training on the GPU and
+        the next runner's free-VRAM check refuses every job. Returns the
+        number stopped.
+        """
+        found = subprocess.run(
+            ["docker", "ps", "-q", "--filter", f"label={WORK_ROOT_LABEL}={work_root.resolve()}"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        ids = found.stdout.split()
+        if ids:
+            subprocess.run(["docker", "stop", *ids], capture_output=True, timeout=timeout)
+        return len(ids)

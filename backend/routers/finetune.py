@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from auth import get_human_context
 from database import get_db
-from finetune_contract import ENGINE, ENGINE_VERSION, TERMINAL_STATUSES
+from finetune_contract import CHAT_TEMPLATES, ENGINE, ENGINE_VERSION, TERMINAL_STATUSES
 from finetune_picker import get_base_model_entry
 from models import (
     FinetuneArtifact, FinetuneEvent, FinetuneJob, File as FileModel,
@@ -128,15 +128,23 @@ def _get_owned_job(db: Session, user, job_id: str) -> FinetuneJob:
     return job
 
 
-def _job_org_id(db: Session, user, requested: Optional[str]) -> Optional[str]:
+def _job_org_id(db: Session, user, requested: Optional[str]) -> str:
     """The org a job runs under: the one the caller names, which they must
-    belong to, or their only org. None when they belong to several and name
-    none."""
+    belong to, or their only org. Only that org's runners can claim the job,
+    so a job with no org could never run and is refused."""
     member_of = [m.org_id for m in db.query(OrganizationMembership.org_id).filter(
         OrganizationMembership.user_id == user.id,
     )]
     if requested is None:
-        return member_of[0] if len(member_of) == 1 else None
+        if len(member_of) == 1:
+            return member_of[0]
+        raise HTTPException(
+            status_code=400,
+            detail=("organization_id: you belong to several organizations; name the one "
+                    "whose runners should train this job" if member_of else
+                    "organization_id: you belong to no organization, so no runner can "
+                    "claim this job. Join or create an organization first."),
+        )
     if not db.query(Organization).filter(Organization.id == requested).first():
         raise HTTPException(status_code=400,
                             detail=f"organization_id: organization '{requested}' not found")
@@ -187,6 +195,13 @@ def create_fine_tuning_job(
             detail=f"model: catalogue entry '{entry.id}' is pinned to "
                    f"'{entry.source_revision}', not a commit SHA, so it cannot be "
                    "finetuned yet. A platform admin must pin source_revision in the catalogue.",
+        )
+    if (entry.source_ref or entry.runtime_model_id) not in CHAT_TEMPLATES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"model: '{entry.id}' has no chat template configured for training, "
+                   "so no runner can train it. Trainable base models: "
+                   f"{', '.join(sorted(CHAT_TEMPLATES))}.",
         )
     _check_dataset_file(db, user, req.training_file, "training_file")
     if req.validation_file:

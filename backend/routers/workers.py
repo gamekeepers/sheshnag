@@ -17,10 +17,13 @@ from auth import get_worker_context
 from scheduler import scheduler, fitted_context, get_catalog_entry, resolve_runtime_model_id
 from reconciliation import AVAILABLE, MISSING, apply_inventory, classify
 from finetune_picker import finetune_picker
-from finetune_contract import ALL_LINEAR, ENGINE, ENGINE_IMAGE, adapter_unservable_reasons
+from finetune_contract import (
+    ALL_LINEAR, CHAT_TEMPLATES, ENGINE, ENGINE_IMAGE, adapter_unservable_reasons,
+)
 from services.finetune_events import InvalidTransition, emit_event, transition
 from sweeper import (
-    MAX_BATCH_ATTEMPTS, requeue_or_fail_batch, requeue_or_fail_finetune_job,
+    MAX_BATCH_ATTEMPTS, release_finetune_jobs_held_by, requeue_or_fail_batch,
+    requeue_or_fail_finetune_job,
 )
 from services.usage_ingest import ingest_usage_records
 import hashlib, json, shutil, os, logging, zipfile
@@ -692,12 +695,17 @@ def poll_finetune_job(
     _api_key, org = ctx
     worker = _get_org_worker(db, org, req.worker_id)
 
+    if release_finetune_jobs_held_by(db, worker.id):
+        db.commit()
+
     if worker.status == "draining":
         return {"job": None}
 
+    # A job's training data goes only to runners of the org it was submitted
+    # under: a worker from another org never sees it offered.
     available_jobs = (
         db.query(FinetuneJob)
-        .filter(FinetuneJob.status == "queued")
+        .filter(FinetuneJob.status == "queued", FinetuneJob.org_id == worker.org_id)
         .order_by(FinetuneJob.created_at)
         .all()
     )
@@ -728,6 +736,7 @@ def poll_finetune_job(
             "base_model_id":             job.base_model_id,
             "source_ref":                job.base_source_ref,
             "source_revision":           job.base_source_revision,
+            "chat_template":             CHAT_TEMPLATES.get(job.base_source_ref),
             "lora_rank":                 job.lora_rank,
             "lora_alpha":                job.lora_alpha,
             "lora_dropout":              job.lora_dropout,

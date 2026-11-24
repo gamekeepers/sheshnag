@@ -1,8 +1,9 @@
 # Ubiquitous Language
 
 The vocabulary for talking about Sheshnag: who owns what, what gets submitted, what
-runs it, and how a model becomes runnable. One term per concept; the aliases column
-lists words to stop using for that concept.
+runs it, how a model becomes runnable, and how a base model is trained into an
+adapter. One term per concept; the aliases column lists words to stop using for
+that concept.
 
 ## People and ownership
 
@@ -22,7 +23,7 @@ lists words to stop using for that concept.
 | Term | Definition | Aliases to avoid |
 | --- | --- | --- |
 | **Personal API key** | An organization-independent key identifying a user for programmatic batch submission | User key, API token |
-| **Org worker key** | An organization-owned key a daemon presents to register and to call every `/workers/*` endpoint | Worker token, daemon key, provider key, registration key |
+| **Org worker key** | An organization-owned key a daemon or runner presents to register and to call every `/workers/*` endpoint | Worker token, daemon key, provider key, registration key |
 | **JWT** | The dashboard's session credential, issued at login | Session token, bearer token, auth token |
 
 ## Submitted work
@@ -48,7 +49,7 @@ lists words to stop using for that concept.
 
 | Term | Definition | Aliases to avoid |
 | --- | --- | --- |
-| **Worker** | One registered GPU machine, owned by an organization, that claims and executes batches | Node, box, machine, server, agent, provider |
+| **Worker** | One registered GPU machine, owned by an organization, that claims and executes batches or finetune jobs | Node, box, machine, server, agent, provider |
 | **Daemon** | The process running on a worker that polls, executes and heartbeats | Client, agent, runner |
 | **Control plane** | The service that authenticates, validates, schedules, tracks and serves results, and owns the database | Backend, server, API, master |
 | **Runtime** | One inference engine a worker exposes, such as Ollama or vLLM | Engine, executor, backend, server |
@@ -59,7 +60,7 @@ lists words to stop using for that concept.
 | **Heartbeat** | The daemon's periodic report of liveness, activity, VRAM and inventory | Ping, keepalive, status update |
 | **Activity** | What a worker reports it is doing — `idle`, `busy` or `downloading_model` | Worker status, state |
 | **Liveness** | A worker's server-decided `online` or `offline`, set by heartbeat recency | Worker status, health, availability |
-| **Sweeper** | The control-plane loop that marks silent workers offline, requeues what they held, and retries unfinished usage ingestion | Reaper, watchdog, janitor |
+| **Sweeper** | The control-plane loop that marks silent workers offline, requeues the batches they held, fails the finetune jobs whose runner went silent, and retries unfinished usage ingestion | Reaper, watchdog, janitor |
 | **Provider policy** | The constraints a provider sets on their own worker — its availability window and its batch-size limit | Worker settings, limits, quota |
 | **Availability window** | The provider's local-time hours in which their worker may be given a new batch; one already running is not stopped when the window closes | Schedule, uptime, hours, shift |
 | **Batch-size limit** | The most rows a provider will accept in one batch on their worker | Max batch, cap, quota |
@@ -85,6 +86,26 @@ lists words to stop using for that concept.
 | **Self-heal** | Appending a name a worker uses to a catalogue entry's serving profile, once the digest has proved the artifact is the pinned one | Auto-fix, repair, rename |
 | **Lineage** | The upstream base weights that group several quantizations of the same model, for display only | Family, parent model, base model |
 | **Model picker** | The dashboard control where a user chooses a catalogue entry for a batch | Model list, model dropdown, model selector |
+
+## Finetuning
+
+| Term | Definition | Aliases to avoid |
+| --- | --- | --- |
+| **Finetune job** | One submitted request to train a LoRA adapter on one pinned base from one training file, the unit that is validated, queued, trained and finished | Batch, training run, task |
+| **Training file** | The uploaded chat JSONL (`purpose="fine-tune"`) a finetune job trains on; an optional **Validation file** is scored for eval loss | Dataset, input file, training data |
+| **Job org** | The organization a finetune job belongs to — the one the caller named, or their only one — and the only organization whose runners are offered it | Owner org, target org |
+| **Pinned base** | The catalogue entry a finetune job trains on, snapshotted at create as its source ref plus a commit-SHA revision | Base model, parent model, lineage |
+| **Trainable base** | A catalogue entry with a SHA-pinned Hugging Face revision and a chat template in `finetune_contract.CHAT_TEMPLATES`; every other base is refused at create | Supported model, finetunable model |
+| **Chat template** | The training engine's name for how a base formats a conversation, sent to the runner in the poll payload | Prompt format, template |
+| **Runner** | forge-runner: the process on a worker that claims finetune jobs, supervises the training engine and uploads the adapter | Daemon, trainer, agent |
+| **Training engine** | LLaMA-Factory, pinned by image digest, run by the runner as a supervised container | Runtime, engine, backend |
+| **Finetune event** | One append-only entry in a finetune job's log; each trainer log step becomes one `metrics` event | Log line, progress row |
+| **Adapter** | The trained LoRA weights a successful finetune job produces | Model, checkpoint, finetuned model |
+| **Finetune artifact** | The record of one uploaded adapter, read from its own `adapter_config.json`, carrying the servability verdict | Artifact, output, result |
+| **Servable** | An adapter vLLM can load under the platform's serving limits — LoRA, rank ≤ 64, the proven target modules, nothing in `modules_to_save` | Valid, deployable, ready |
+| **Fine-tuned model** | The serving name of a job's adapter, `ft:<base>:<suffix>:<id>` | Model id, adapter name |
+| **Settle** | What a poll does to a job its worker still holds: requeue it if no step was logged, fail it with `runner_restarted` if one was, drop the assignment if it already ended | Recover, clean up, reset |
+| **Runner lost** | The failure of a `running` finetune job whose runner stopped heartbeating for 10 minutes; the user resubmits | Timeout, stale job |
 
 ## Scheduling
 
@@ -112,6 +133,9 @@ lists words to stop using for that concept.
 - A **Batch** carries one **Usage record** per executed **Row**.
 - A **Batch** produces exactly one output **Row** per input **Row**, in input order.
 - A **Worker** advertises every **Artifact** its **Runtimes** hold; only the **Schedulable** subset of those can be given a **Batch**.
+- A **Finetune job** has exactly one **Job org**, one **Pinned base** (a **Trainable base**) and one **Training file**, and at most three **Attempts**.
+- A **Finetune job** is offered only to **Runners** on **Workers** of its **Job org**, and has at most one live **Assignment**.
+- A succeeded **Finetune job** produces one **Adapter**, recorded as a **Finetune artifact**; only a **Servable** one ends the job `succeeded`.
 
 ## Example dialogue
 
@@ -131,9 +155,17 @@ lists words to stop using for that concept.
 
 > **Domain expert:** "**Loaded** only means resident in VRAM. It never decides placement — **Eligibility** does, and a **Loaded** artifact is just the tie-breaker among the workers that already pass."
 
+> **Dev:** "A runner was restarted mid-training and its job still says `running`. Does the **Sweeper** pick it up?"
+
+> **Domain expert:** "Not for 10 minutes, and by then the restarted **Runner** is heartbeating under the same worker id. Its next **Poll** **Settles** the held job: requeued if no step was logged, failed with `runner_restarted` if one was. Training is never restarted from step 0 behind the user's back."
+
+> **Dev:** "Could a runner from another provider have claimed it?"
+
+> **Domain expert:** "No — a **Finetune job** is offered only to workers of its **Job org**, so its **Training file** never leaves that organization's machines."
+
 ## Flagged ambiguities
 
-- **"job" vs "batch"** — the daemon contract carries `job_id`, `current_job_id` and a `job` object, all holding a batch id. There is one scheduled unit and it is a **Batch**; keep `job` inside the wire contract's field names and say **Batch** everywhere else, including in prose about the daemon.
+- **"job" vs "batch"** — the daemon contract carries `job_id`, `current_job_id` and a `job` object, all holding a batch id; the runner contract's `job_id` holds a finetune job id. Say **Batch** for inference work and **Finetune job** for training; "job" alone is reserved for the wire contracts' field names.
 - **"provider"** — names both the person lending a GPU (**Provider**) and, in `auth_provider`, the identity source behind a login. Only the first is the domain term; note also that **Provider** is a role people play, never a record — the data model has users, organizations and workers.
 - **"model"** — collapses **Catalogue entry** (curated identity), **Artifact** (the bytes), **Catalogue id** (what a user submits), **Runtime model id** (what a runtime is told to run), and **Availability row** (one worker's copy). Name which one every time; "the model" alone is never precise enough to schedule on.
 - **"status"** — five different fields answer to it: a batch's lifecycle state, a worker's **Liveness**, a worker's **Activity**, an availability row's on-disk state, and a catalogue entry's curation state. Always qualify it.
@@ -146,3 +178,7 @@ lists words to stop using for that concept.
 - **"context"** — three different numbers answer to it: a catalogue entry's maximum, the **Context** a batch is fitted and run at, and the window a runtime was launched with. Only the second is the domain term; name which one every time, because a batch can fit the first and fail the third.
 - **"shutdown"** — a **Graceful stop** is the one the provider asks for, and it costs the batch nothing. A crash, and a prompt cancelled when the grace period ends, are not graceful and are not free. `worker_shutdown:` in a wire message marks the first of these only.
 - **"journal" vs "output file"** — the **Journal** is one worker's private record of finished rows and never leaves that worker; the **Output file** is the batch's result, uploaded once, with one row per input row. A batch that is handed back has a journal and no output file.
+- **"engine"** — LLaMA-Factory is the **Training engine**; Ollama and vLLM are **Runtimes**. The wire fields `engine`, `engine_version` and `engine_image` always mean the training engine.
+- **"daemon" vs "runner"** — the **Daemon** executes batches and the **Runner** trains finetune jobs. They are separate processes, both registering as a **Worker** with an **Org worker key**.
+- **"artifact"** — an **Artifact** is runnable weights identified by digest; a **Finetune artifact** is the record of one uploaded adapter. An adapter becomes an **Artifact** only once it is registered as a catalogue entry.
+- **"base model"** — a job's **Pinned base** is the exact catalogue entry and revision it trains on; **Lineage** groups quantizations for display. Only the **Pinned base** carries a revision.

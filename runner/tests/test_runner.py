@@ -23,7 +23,8 @@ QWEN_SHA = "7ae557604adf67be50417f59c2c2f167def9a775"
 def _job(**overrides) -> Job:
     payload = {
         "job_id": "ftjob-test", "source_ref": "Qwen/Qwen2.5-0.5B-Instruct",
-        "source_revision": QWEN_SHA, "dataset_path": "/v1/files/file-1/content",
+        "source_revision": QWEN_SHA, "chat_template": "qwen",
+        "dataset_path": "/v1/files/file-1/content",
         "lora_rank": 16, "lora_alpha": 32, "target_modules": "all-linear",
         "epochs": 1, "batch_size": 16, "max_seq_length": 1024,
         "some_future_field": "ignored",
@@ -52,9 +53,10 @@ def test_config_with_validation_and_module_list(tmp_path):
     assert info["validation"]["file_name"] == "validation.jsonl"
 
 
-def test_config_refuses_unknown_base(tmp_path):
+def test_config_refuses_a_job_without_a_chat_template(tmp_path):
     with pytest.raises(config.UnsupportedJob, match="no chat template"):
-        config.build(_job(source_ref="someone/unknown-7b"), tmp_path, has_validation=False)
+        config.build(_job(source_ref="someone/unknown-7b", chat_template=None),
+                     tmp_path, has_validation=False)
 
 
 def test_config_written_as_yaml(tmp_path):
@@ -195,8 +197,168 @@ def test_unsupported_base_fails_before_starting_engine(tmp_path, dataset, monkey
         def start(self, *a, **k):
             raise AssertionError("engine must not start")
     client = FakeClient(dataset)
-    result = run_job(_job(source_ref="someone/unknown-7b"), client, ExplodingEngine(),
+    result = run_job(_job(source_ref="someone/unknown-7b", chat_template=None), client, ExplodingEngine(),
                      tmp_path / "jobs", "worker-1")
     assert result.status == "failed"
     assert client.failures[0]["code"] == "unsupported_job"
     assert client.failures[0]["retryable"] is False
+
+
+# ─── One job's error never leaves training on the GPU ──────
+
+class RecordingEngine:
+    """Wraps an engine and keeps the process it started."""
+
+    def __init__(self, inner):
+        self.inner, self.proc = inner, None
+        self.name, self.version, self.image = inner.name, inner.version, inner.image
+
+    def start(self, *args, **kwargs):
+        self.proc = self.inner.start(*args, **kwargs)
+        return self.proc
+
+
+def test_engine_that_cannot_start_is_reported(tmp_path, dataset):
+    class NoDocker:
+        def start(self, *a, **k):
+            raise FileNotFoundError("docker")
+    client = FakeClient(dataset)
+    result = run_job(_job(), client, NoDocker(), tmp_path / "jobs", "worker-1")
+    assert result.status == "failed"
+    assert client.failures[0]["code"] == "engine_start_failed"
+    assert client.failures[0]["retryable"] is True
+
+
+def test_failed_upload_is_reported(tmp_path, dataset, engine, monkeypatch):
+    """A job cancelled after training finished answers the upload with 409."""
+    monkeypatch.setenv("FAKE_ENGINE_MODE", "ok")
+
+    class RefusingClient(FakeClient):
+        def upload_adapter(self, *a, **k):
+            raise RuntimeError("409 Conflict: Job is cancelled, not running")
+
+    client = RefusingClient(dataset)
+    result = run_job(_job(), client, engine, tmp_path / "jobs", "worker-1", poll_interval=0.05)
+    assert result.status == "failed"
+    assert client.failures[0]["code"] == "adapter_upload_failed"
+    assert "409" in client.failures[0]["error"]
+
+
+@pytest.mark.parametrize("raised", [RuntimeError("backend exploded"), KeyboardInterrupt()])
+def test_engine_is_stopped_when_the_run_is_cut_short(tmp_path, dataset, engine, monkeypatch, raised):
+    monkeypatch.setenv("FAKE_ENGINE_MODE", "slow")
+
+    class ExplodingClient(FakeClient):
+        def progress(self, *a, **k):
+            raise raised
+
+    recording = RecordingEngine(engine)
+    with pytest.raises(type(raised)):
+        run_job(_job(), ExplodingClient(dataset), recording, tmp_path / "jobs", "worker-1",
+                poll_interval=0.05)
+    assert recording.proc.poll() is not None, "the engine must not outlive the run"
+
+
+# ─── serve(): the runner outlives a job's error ────────────
+
+class ServeClient:
+    """BackendClient double for serve(): hands out `jobs`, then stops the loop."""
+
+    def __init__(self, jobs):
+        self.jobs, self.failures, self.closed = list(jobs), [], False
+
+    def register(self, hostname, gpus):
+        return "worker-1"
+
+    def heartbeat(self, *a, **k):
+        pass
+
+    def poll(self, worker_id):
+        if not self.jobs:
+            raise KeyboardInterrupt
+        return self.jobs.pop(0)
+
+    def report_failure(self, job_id, worker_id, **failure):
+        self.failures.append((job_id, failure))
+
+    def close(self):
+        self.closed = True
+
+
+def _serve(monkeypatch, tmp_path, client, run_job_fn):
+    from forge_runner import main
+    monkeypatch.setattr(main, "BackendClient", lambda url, key: client)
+    monkeypatch.setattr(main, "run_job", run_job_fn)
+    monkeypatch.setattr(main.gpu, "memory_gb", lambda: (None, None))
+    monkeypatch.setattr(main.signal, "signal", lambda *a: None)
+    return main.main(["serve", "--api-key", "gk-test", "--poll-interval", "0",
+                      "--work-dir", str(tmp_path / "jobs"), "--engine-cmd", "true {config}"])
+
+
+def _payload(job_id):
+    return {"job_id": job_id, "source_ref": "Qwen/Qwen2.5-0.5B-Instruct",
+            "chat_template": "qwen", "dataset_path": "/v1/files/f/content"}
+
+
+def test_serve_reports_a_job_that_raises_and_keeps_polling(tmp_path, monkeypatch):
+    client = ServeClient([_payload("ftjob-1"), _payload("ftjob-2")])
+    ran = []
+
+    def run_job(job, *a, **k):
+        ran.append(job.job_id)
+        if job.job_id == "ftjob-1":
+            raise RuntimeError("upload exploded")
+
+        class R:
+            status, detail = "succeeded", ""
+        return R()
+
+    assert _serve(monkeypatch, tmp_path, client, run_job) == 0
+    assert ran == ["ftjob-1", "ftjob-2"]
+    assert client.failures == [("ftjob-1", {
+        "retryable": True, "code": "runner_error",
+        "error": "forge-runner hit an internal error: upload exploded"})]
+    assert client.closed
+
+
+def test_serve_reports_the_job_it_was_running_when_stopped(tmp_path, monkeypatch):
+    client = ServeClient([_payload("ftjob-1")])
+
+    def run_job(job, *a, **k):
+        raise KeyboardInterrupt
+
+    assert _serve(monkeypatch, tmp_path, client, run_job) == 0
+    assert client.failures[0][0] == "ftjob-1"
+    assert client.failures[0][1]["code"] == "runner_stopped"
+
+
+# ─── Leftover containers ───────────────────────────────────
+
+def test_docker_runs_are_labelled_and_only_this_runners_are_stopped(tmp_path, monkeypatch):
+    from forge_runner import engine as engine_mod
+    calls = []
+
+    class Done:
+        stdout = "abc123\ndef456\n"
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        return Done()
+
+    class FakePopen:
+        def __init__(self, cmd, **k):
+            calls.append(cmd)
+
+    monkeypatch.setattr(engine_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(engine_mod.subprocess, "Popen", FakePopen)
+    docker = engine_mod.DockerEngine("img@sha256:x", tmp_path / "hf")
+    work_root = tmp_path / "jobs"
+    (work_root / "ftjob-1").mkdir(parents=True)
+
+    docker.start(work_root / "ftjob-1" / "train.yaml", work_root / "ftjob-1", "forge-ftjob-1",
+                 work_root / "ftjob-1" / "engine.log")
+    assert f"{engine_mod.WORK_ROOT_LABEL}={work_root}" in calls[0]
+
+    assert docker.stop_leftovers(work_root) == 2
+    assert calls[1][-1] == f"label={engine_mod.WORK_ROOT_LABEL}={work_root.resolve()}"
+    assert calls[2] == ["docker", "stop", "abc123", "def456"]

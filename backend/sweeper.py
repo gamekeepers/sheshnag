@@ -21,7 +21,9 @@ import asyncio
 import json
 import logging
 
-from models import Batch, BatchAssignment, FinetuneJob, FinetuneJobAssignment, Worker, unix_now
+from models import (
+    Batch, BatchAssignment, FinetuneEvent, FinetuneJob, FinetuneJobAssignment, Worker, unix_now,
+)
 from services.finetune_events import transition
 
 logger = logging.getLogger(__name__)
@@ -203,12 +205,19 @@ def _sweep_pending_ingestions_once() -> int:
         return sweep_pending_ingestions(db)
     finally:
         db.close()
+def _fail_finetune_job(db, job, code: str, message: str) -> None:
+    job.error = json.dumps({"code": code, "param": None, "message": message})
+    db.query(FinetuneJobAssignment).filter(FinetuneJobAssignment.job_id == job.id).delete()
+    transition(db, job, "failed", message, level="error")
+
+
 def fail_lost_finetune_jobs(db) -> int:
     """Fail running finetune jobs whose runner stopped heartbeating.
 
-    Fails rather than requeues: restarting from step 0 without telling
-    anyone is exactly what the batch path would do, and it is wrong for
-    training. Returns the number of jobs failed.
+    A requeue would restart the run from step 0 without the user knowing, so
+    the job fails with a reason the user can read. The message names no
+    worker: users see an opaque job, never a provider's machine. Returns the
+    number of jobs failed.
     """
     cutoff = unix_now() - FINETUNE_RUNNER_LOST_SECONDS
     lost = (
@@ -221,16 +230,58 @@ def fail_lost_finetune_jobs(db) -> int:
     )
     for job, worker in lost:
         minutes = FINETUNE_RUNNER_LOST_SECONDS // 60
-        message = (f"The training runner on {worker.hostname} stopped responding for "
-                   f"{minutes} minutes. The job was stopped rather than restarted from "
-                   "step 0; resubmit it to train again.")
-        job.error = json.dumps({"code": "runner_lost", "param": None, "message": message})
-        db.query(FinetuneJobAssignment).filter(FinetuneJobAssignment.job_id == job.id).delete()
-        transition(db, job, "failed", message, level="error")
+        _fail_finetune_job(db, job, "runner_lost", (
+            f"The training runner stopped responding for {minutes} minutes and the "
+            "training run was lost. Resubmit the job to train again."))
         logger.warning("Failed finetune job %s: runner on worker %s lost", job.id, worker.id)
     if lost:
         db.commit()
     return len(lost)
+
+
+def release_finetune_jobs_held_by(db, worker_id: str) -> int:
+    """Settle the finetune jobs still assigned to a runner that asks for work.
+
+    forge-runner polls only between jobs, so a poll from a worker that still
+    holds a running job means the runner restarted and that run is gone. The
+    runner keeps its worker id across restarts (registration matches on
+    hostname) and heartbeats again at once, so fail_lost_finetune_jobs never
+    sees it.
+
+    - No training step logged yet: nothing was trained, and the job is
+      requeued through requeue_or_fail_finetune_job, spending an attempt.
+    - A step logged: the run is lost and the job fails with
+      `runner_restarted`.
+    - Not running (cancelled or finished while assigned): the assignment
+      is dropped.
+
+    Returns the number of assignments settled. Does not commit.
+    """
+    held = (
+        db.query(FinetuneJob)
+        .join(FinetuneJobAssignment, FinetuneJobAssignment.job_id == FinetuneJob.id)
+        .filter(FinetuneJobAssignment.worker_id == worker_id)
+        .all()
+    )
+    for job in held:
+        if job.status != "running":
+            db.query(FinetuneJobAssignment).filter(
+                FinetuneJobAssignment.job_id == job.id).delete()
+            continue
+        trained = db.query(FinetuneEvent.id).filter(
+            FinetuneEvent.job_id == job.id, FinetuneEvent.type == "metrics",
+        ).first() is not None
+        if trained:
+            _fail_finetune_job(db, job, "runner_restarted", (
+                "The training runner restarted during the run and the training "
+                "progress was lost. Resubmit the job to train again."))
+        else:
+            requeue_or_fail_finetune_job(
+                db, job, error="The training runner restarted before training began",
+                code="runner_restarted")
+        logger.warning("Released finetune job %s held by restarted runner %s (%s)",
+                       job.id, worker_id, "failed" if trained else "requeued")
+    return len(held)
 
 
 async def run_sweeper() -> None:
