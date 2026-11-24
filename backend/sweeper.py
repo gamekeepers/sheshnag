@@ -53,15 +53,26 @@ MAX_INGESTIONS_PER_SWEEP = 5
 
 def requeue_or_fail_batch(
     db, batch, error: str | None = None, count_attempt: bool = True,
+    worker_id: str | None = None,
 ) -> str:
     """Requeue an in-flight batch, or fail it after MAX_BATCH_ATTEMPTS.
 
     Increments attempts (unless ``count_attempt`` is False, for a hand-back
     that made progress), voids the assignment, and returns the new status
     ("validated" or "failed"). Caller commits.
+
+    ``worker_id`` is the worker the batch is being taken from. An attempt
+    counted against the batch's affinity worker ends the affinity (#166):
+    that worker holds the best journal, but it just failed the batch without
+    adding to it, and sending the batch straight back would turn affinity
+    into a retry loop on one machine. The journal stays on its disk; the
+    batch simply competes for any worker again.
     """
     if count_attempt:
         batch.attempts = (batch.attempts or 0) + 1
+        if worker_id is not None and batch.resume_worker_id == worker_id:
+            batch.resume_worker_id = None
+            batch.resume_hold_until = None
     db.query(BatchAssignment).filter(
         BatchAssignment.batch_id == batch.id,
     ).delete()
@@ -141,6 +152,7 @@ def sweep_stale_workers(db) -> tuple[int, int]:
                 outcome = requeue_or_fail_batch(
                     db, batch,
                     error=f"Worker {worker.id} went offline mid-job",
+                    worker_id=worker.id,
                 )
                 requeued += 1
                 logger.warning(

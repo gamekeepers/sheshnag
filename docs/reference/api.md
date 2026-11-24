@@ -303,8 +303,9 @@ listed it. Limiting what a box offers is the provider-control work in #104.
 
 > **Matching:** the scheduler offers a batch only to a worker that hosts the
 > artifact *and* satisfies the fit rule of the runtime hosting it
-> (`scheduler.FIT_RULES`), then prefers workers that already have the
-> model loaded.
+> (`scheduler.FIT_RULES`). Among those batches it prefers one this worker
+> holds the journal for (see [Requeue affinity](#requeue-affinity)), then one
+> whose model is already loaded, then the oldest.
 >
 > Fit is per-card, not per-machine: a single-device runtime needs one GPU
 > large enough on its own, so a 2 × 12 GB worker is never offered a 20 GB
@@ -353,13 +354,41 @@ count: a provider stopping the daemon must not move a batch toward terminal
 failure. Errors: 403 (batch assigned to another worker), 404
 (batch or worker not found), 409 (batch not in a state that can be requeued).
 
+#### Requeue affinity
+
+A journal lives on the worker that wrote it, and only a rerun there resumes
+the batch. The worker whose report made progress — the one now holding the
+furthest-along journal — becomes the batch's `resume_worker_id`, and:
+
+- **It ranks the batch first** when it polls, ahead of a loaded model and of
+  older batches.
+- **Other workers leave the batch for it for 30 s** (`AFFINITY_HOLD_SECONDS`),
+  because dispatch is pull and ranking alone cannot stop another worker that
+  polls first. The hold applies only while that worker can take the batch at
+  once: online and heartbeating, holding no other batch, and eligible for this
+  one. A gone, busy, draining, off-hours or since-capped worker holds nothing,
+  so the batch goes elsewhere without waiting — affinity is a preference,
+  never a constraint. A graceful stop (`"shutdown": true`) sets no hold either:
+  that worker is leaving.
+- **It ends when an attempt is spent on that worker** — a report with no new
+  progress, or the sweeper reclaiming the batch from it. Otherwise a worker
+  that keeps failing the batch would keep getting it back. An attempt spent on
+  another worker leaves it in place: the journal is still there.
+
+The rank lives as long as the affinity does; it costs nothing when the worker
+is gone, since only that worker's own polls read it. A journal is swept from
+the worker after 24 h untouched, after which a resume there starts from row
+one like anywhere else.
+
 ---
 
 ## Fault Tolerance (spec §12)
 
 - `report-failure` requeues the batch (`status` back to `validated`,
   `attempts += 1`, assignment voided); after **3** attempts it is marked
-  `failed` terminally.
+  `failed` terminally. A report that made progress, or a graceful stop, spends
+  no attempt; one that made progress also routes the batch back to the worker
+  holding its journal ([requeue affinity](#requeue-affinity)).
 - A background **sweeper** (started at app startup, 60s interval) marks
   workers `offline` after **120s** without a heartbeat and requeues their
   in-flight batches — a crashed daemon never strands a batch.
@@ -390,7 +419,7 @@ Postgres with SQLAlchemy ORM. Tables (see `models.py`):
 | `worker_gpus` | Physical GPUs per worker (spec §8.4): vendor, name, vram_gb, driver, cuda |
 | `model_catalog` | Curated, pinned models users select for a batch (identity). See [Model catalogue](#model-catalogue-v1models). |
 | `files` | Uploaded inputs and generated outputs |
-| `batches` | Lifecycle status, request counts, `attempts` (requeue counter), `context_tokens` (the context its rows need) |
+| `batches` | Lifecycle status, request counts, `attempts` (requeue counter), `context_tokens` (the context its rows need), `resume_progress` / `resume_worker_id` / `resume_hold_until` ([requeue affinity](#requeue-affinity)) |
 | `batch_assignments` | Which worker holds which batch (FK → `workers.id`, `ON DELETE SET NULL` — history survives worker removal) |
 | `password_reset_tokens` | Forgot-password flow |
 
@@ -420,7 +449,8 @@ the full design, scheduling, and curation runbook.
 then matches a worker that fits the entry at the batch's context (see
 [Context and VRAM fit](#context-and-vram-fit)) **and** hosts `runtime_model_id`,
 enforcing digest equality when both sides carry a digest (same tag +
-different digest ⇒ not matched); prefers a worker already serving it.
+different digest ⇒ not matched); prefers a batch the worker holds the journal
+for, then a worker already serving it.
 
 **Curation:** entries are seeded from `backend/catalog/models.yaml` at startup
 (upserted). Fill real digests + metadata from a live Ollama with

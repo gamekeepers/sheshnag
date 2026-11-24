@@ -192,8 +192,11 @@ definitive answer to a failure report. On startup, before its first poll, it
 reports each leftover marker's batch through `report-failure`, along with how
 many prompts it has journalled. The backend requeues the batch. It keeps
 retrying before each poll until the backend answers, so an outage at startup
-does not strand the batch. Whichever worker the batch lands on next runs it,
-and if that is this one, the journal resumes it.
+does not strand the batch. The batch is routed back to this worker if it can
+take it — its report made progress, so it holds the furthest-along journal
+([requeue affinity](api.md#requeue-affinity)) — and the journal resumes it.
+If this worker is gone, busy or no longer eligible, the batch runs elsewhere
+from the first row.
 
 - **What counts as acknowledged.** A 2xx, or one of the endpoint's own answers
   that the batch is no longer this worker's to report: 403 (assigned

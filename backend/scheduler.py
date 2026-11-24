@@ -27,7 +27,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from identity_resolver import bare_digest
-from models import ModelCatalog
+from models import BatchAssignment, ModelCatalog, Worker, unix_now
 
 logger = logging.getLogger(__name__)
 
@@ -523,15 +523,63 @@ def can_serve(entry, worker, needs=None, prompts=None, window=True, context=None
     return rule(required_vram_gb(entry, cells, runtime.kv_alpha), Capacity.of(worker))
 
 
+# ─── Requeue affinity (#166) ────────────────────────────────
+#
+# A requeued batch's journal lives on the worker that wrote it, and only a
+# rerun there resumes it (`Batch.resume_worker_id`). Dispatch is pull, so
+# ranking alone cannot route the batch back: another worker that polls first
+# would take it and start from row one. Hence a hold, as well as a rank.
+
+# How long other workers leave a handed-back batch for its affinity worker.
+# That worker polls again within one poll interval (5 s by default, with
+# jitter; at once after a restart's hand-back), so 30 s is several polls of
+# slack — and the most a batch can wait on a worker that has stalled.
+AFFINITY_HOLD_SECONDS = 30
+
+
+def _resume_args(batch):
+    return dict(needs=batch.required_capabilities or None,
+                prompts=batch.request_counts_total, context=batch.context_tokens)
+
+
+def held_for_another(db, batch, entry, worker) -> bool:
+    """Should `worker` leave `batch` for the worker holding its journal?
+
+    Only while the hold is fresh AND that worker can take the batch right
+    now: online and heartbeating, holding no other batch (a daemon runs one
+    at a time, so a busy one will not poll until it is done), and eligible
+    for this batch as dispatch would judge it. A gone, busy, draining,
+    off-hours or since-shrunk worker gets no hold, so the batch goes
+    elsewhere without waiting. Affinity is a preference, never a constraint.
+    """
+    holder_id = batch.resume_worker_id
+    if not holder_id or holder_id == worker.id:
+        return False
+    if not batch.resume_hold_until or batch.resume_hold_until <= unix_now():
+        return False
+    from sweeper import HEARTBEAT_TIMEOUT_SECONDS
+
+    holder = db.get(Worker, holder_id)
+    if holder is None or holder.status != "online":
+        return False
+    if (holder.last_heartbeat or 0) < unix_now() - HEARTBEAT_TIMEOUT_SECONDS:
+        return False
+    if db.query(BatchAssignment.batch_id).filter(BatchAssignment.worker_id == holder_id).first():
+        return False
+    return can_serve(entry, holder, **_resume_args(batch))
+
+
 class Scheduler:
     """
     Matches a polling worker to the best available batch.
 
     Filter: `can_serve` — the worker must host the model's runtime artifact,
     satisfy that runtime's fit rule, and be allowed it by the provider's policy.
+    A batch held for the worker with its journal is skipped (`held_for_another`).
     Rank:
-      1. Prefer batches whose model is already loaded (in VRAM) here.
-      2. Fall back to oldest compatible batch (FIFO).
+      1. Prefer a batch this worker holds the journal for: it resumes there.
+      2. Prefer batches whose model is already loaded (in VRAM) here.
+      3. Fall back to oldest compatible batch (FIFO).
     """
 
     def find_best_batch(self, db, worker, available_batches):
@@ -540,6 +588,7 @@ class Scheduler:
 
         loaded = worker.loaded_models()          # (name, digest) in VRAM
 
+        resumes = []
         loaded_matches = []
         other_matches = []
         for batch in available_batches:
@@ -547,20 +596,21 @@ class Scheduler:
             if entry is None:
                 continue  # unschedulable — should have failed validation
 
-            if not can_serve(entry, worker, batch.required_capabilities or None,
-                             prompts=batch.request_counts_total,
-                             context=batch.context_tokens):
+            if not can_serve(entry, worker, **_resume_args(batch)):
                 continue  # doesn't host or fit it, lacks a capability, or the provider's policy says no
 
-            if _hosts(loaded, _target_ids(entry), entry.digest):
+            if batch.resume_worker_id == worker.id:
+                resumes.append(batch)
+            elif held_for_another(db, batch, entry, worker):
+                continue  # its journal's worker is about to poll for it
+            elif _hosts(loaded, _target_ids(entry), entry.digest):
                 loaded_matches.append(batch)
             else:
                 other_matches.append(batch)
 
-        if loaded_matches:
-            return loaded_matches[0]
-        if other_matches:
-            return other_matches[0]
+        for ranked in (resumes, loaded_matches, other_matches):
+            if ranked:
+                return ranked[0]
         return None
 
 

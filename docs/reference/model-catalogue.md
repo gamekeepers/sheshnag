@@ -99,7 +99,9 @@ At `POST /workers/poll`, for each `validated` batch the scheduler:
    ⇒ not matched*; falls back to name match when either digest is absent. A
    name the entry does not profile still matches when its digest **equals**
    the entry's (digest-join: same artifact, different served alias);
-4. prefers a worker already serving the model (loaded in VRAM).
+4. prefers a batch the worker holds the journal for (requeue affinity, see
+   [the API reference](api.md#requeue-affinity)), then a worker already
+   serving the model (loaded in VRAM).
 
 Poll returns `runtime_model_id` (not the slug) as the job's `model`, so the
 daemon runs the exact runtime string. Batch validation rejects a `body.model`

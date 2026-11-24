@@ -149,6 +149,12 @@ MIGRATIONS = [
     # NULL on existing rows reads as "no progress reported yet".
     _Migration("batches.resume_progress",
                "batches", "resume_progress", Integer()),
+    # Requeue affinity (#166). NULL on existing rows reads as "no worker holds
+    # a journal for this batch", which is what scheduling did before.
+    _Migration("batches.resume_worker_id",
+               "batches", "resume_worker_id", String()),
+    _Migration("batches.resume_hold_until",
+               "batches", "resume_hold_until", Integer()),
 ]
 
 
