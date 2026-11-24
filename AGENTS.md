@@ -57,6 +57,7 @@ import-time work breaking pytest collection, the daemon's config precedence, and
 | Every environment variable | [`docs/reference/configuration.md`](docs/reference/configuration.md) |
 | The API contract | [`docs/reference/api.md`](docs/reference/api.md) |
 | Model rules — there is **no path to run an uncatalogued model** | [`docs/reference/model-catalogue.md`](docs/reference/model-catalogue.md) |
+| The finetuning job contract — statuses, LoRA limits, runner protocol | [`docs/reference/finetune-contract.md`](docs/reference/finetune-contract.md) |
 | The database shape | [`docs/reference/data-model.md`](docs/reference/data-model.md) |
 | To deploy it | [`docs/self-host.md`](docs/self-host.md) |
 | Process — branching, review, who merges | [`CONTRIBUTING.md`](CONTRIBUTING.md) |

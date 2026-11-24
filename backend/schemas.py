@@ -1,5 +1,10 @@
-from pydantic import AfterValidator, Field, BaseModel, field_validator
-from typing import Annotated, Dict, Literal, Optional, List
+from pydantic import AfterValidator, ConfigDict, Field, BaseModel, field_validator
+from typing import Annotated, Dict, Literal, Optional, List, Union
+
+from finetune_contract import (
+    ALL_LINEAR, ALLOWED_LORA_RANKS, DEFAULT_HYPERPARAMETERS, DEFAULT_LORA,
+    DEFAULT_SEED, SERVABLE_TARGET_MODULES,
+)
 
 
 # bcrypt only hashes the first 72 bytes of a password. Storing the hash of a
@@ -426,6 +431,91 @@ class ApiKeyUpdate(BaseModel):
         description="Unix timestamp. Must be in the future, max 1 year out.",
     )
     status: Optional[Literal["active", "revoked"]] = None  # validated at schema level
+
+
+
+
+# ─── Finetuning schemas ─────────────────────────────────────
+#
+# Request models forbid unknown keys: a typo'd `lora_rnk` that was silently
+# dropped would train with the default rank and report success. Limits come
+# from finetune_contract.py.
+
+def _check_rank(v: int) -> int:
+    if v not in ALLOWED_LORA_RANKS:
+        raise ValueError(
+            f"rank must be one of {list(ALLOWED_LORA_RANKS)} — serving starts vLLM with "
+            f"--max-lora-rank {max(ALLOWED_LORA_RANKS)}, and a larger adapter stops the server from starting"
+        )
+    return v
+
+
+def _check_target_modules(v):
+    if v == ALL_LINEAR:
+        return v
+    if isinstance(v, list) and v:
+        unknown = sorted(set(v) - SERVABLE_TARGET_MODULES)
+        if unknown:
+            raise ValueError(
+                f"target_modules {unknown} are not servable; use \"{ALL_LINEAR}\" or a subset of "
+                f"{sorted(SERVABLE_TARGET_MODULES)}"
+            )
+        return sorted(set(v))
+    raise ValueError(f"target_modules must be \"{ALL_LINEAR}\" or a non-empty list of module names")
+
+
+class FinetuneHyperparameters(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    n_epochs: int = Field(DEFAULT_HYPERPARAMETERS["n_epochs"], ge=1, le=20)
+    batch_size: int = Field(DEFAULT_HYPERPARAMETERS["batch_size"], ge=1, le=256)
+    learning_rate: float = Field(DEFAULT_HYPERPARAMETERS["learning_rate"], gt=0, le=1e-2)
+    max_seq_length: int = Field(DEFAULT_HYPERPARAMETERS["max_seq_length"], ge=128, le=8192)
+
+
+class FinetuneLora(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rank: Annotated[int, AfterValidator(_check_rank)] = DEFAULT_LORA["rank"]
+    alpha: int = Field(DEFAULT_LORA["alpha"], ge=1, le=512)
+    dropout: float = Field(DEFAULT_LORA["dropout"], ge=0, lt=1)
+    target_modules: Annotated[Union[str, List[str]], AfterValidator(_check_target_modules)] = DEFAULT_LORA["target_modules"]
+
+
+class FinetuneMethod(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["supervised"] = "supervised"
+
+
+class FinetuneJobCreate(BaseModel):
+    """POST /v1/fine_tuning/jobs — OpenAI's request shape, plus `lora`."""
+    model_config = ConfigDict(extra="forbid")
+
+    model: str                              # catalogue id of an HF-sourced base model
+    training_file: str                      # File.id from POST /v1/files
+    validation_file: Optional[str] = None
+    organization_id: Optional[str] = None   # org whose runners train the job; default: the caller's only org
+    suffix: Optional[str] = Field(None, pattern=r"^[a-z0-9][a-z0-9-]{0,39}$")
+    seed: int = DEFAULT_SEED
+    method: FinetuneMethod = FinetuneMethod()
+    hyperparameters: FinetuneHyperparameters = FinetuneHyperparameters()
+    lora: FinetuneLora = FinetuneLora()
+
+
+class FinetuneProgressReport(BaseModel):
+    """Live training progress from a worker — one per trainer log step.
+    Becomes one `metrics` event. Field names follow LLaMA-Factory's
+    trainer_log.jsonl (current_steps/total_steps/loss/lr/epoch)."""
+    job_id: str
+    worker_id: str
+    current_step: int
+    total_steps: int
+    current_epoch: float
+    loss: Optional[float] = None
+    learning_rate: Optional[float] = None
+    eval_loss: Optional[float] = None
+    checkpoint_step: Optional[int] = None
 
 
 class ApiKeyOut(BaseModel):
