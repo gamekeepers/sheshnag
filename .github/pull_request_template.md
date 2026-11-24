@@ -1,24 +1,18 @@
 > **Base branch must be `develop`.** PRs into `main` are release merges from `develop` only.
 
-## Description
+## What changes for someone using it
 
-<!-- Brief description of the changes in this PR -->
+<!-- One line. A screen, a command's output, an API response. -->
 
-## Type of Change
+## How I ran it
 
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Documentation update
-- [ ] Refactoring
-- [ ] Other:
+<!-- Paste the command and what it printed. A description is not evidence. -->
 
-## Checklist
+```
+```
 
-- [ ] **Local testing done** — I have verified the changes work correctly on my local machine.
-- [ ] **DB changes** — I have noted any database schema changes (migrations, new models, etc.) or confirmed there are none.
-- [ ] **Environment changes** — I have noted any environment variable additions/changes or confirmed there are none.
-- [ ] **Docs updated** — if this changes behaviour a guide describes, I updated it in this PR and ran `mkdocs build --strict`. If it changes nothing a reader would notice, I have said so.
+## What a reviewer must do to run this
 
-## Notes
+<!-- Migrations, env vars, new dependencies — or "nothing". -->
 
-<!-- Describe any DB migrations, `.env` changes, dependency updates, or other setup steps a reviewer may need -->
+<!-- Optional: `Closes #123` links this to the issue it finishes. -->

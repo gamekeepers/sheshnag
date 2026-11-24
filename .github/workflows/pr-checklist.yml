@@ -1,0 +1,43 @@
+# Fails a pull request into `develop` whose description does not carry the
+# three things a reviewer needs: what changes for a user, the command that was
+# run and what it printed, and what the reviewer must do to run it.
+#
+# The template's sections are prompts, and "How I ran it" wants the output.
+# A record of what a command printed is what makes local verification
+# reviewable: this job can tell a pasted record from an empty block, which is
+# the difference between a claim and evidence. It cannot tell a true record
+# from an invented one, and does not try.
+#
+# Draft pull requests and bot authors are skipped — work in progress is not
+# ready to describe, and a dependency bump has no local run to report. A
+# `no-checklist` label bypasses the job for a change too small to describe.
+#
+# To make this binding, add the `description-is-usable` job as a required
+# status check in a ruleset scoped to `refs/heads/develop` alone, beside
+# `no-base-merges` (see branch-hygiene.yml for why it cannot go in
+# `key-branches-protection`).
+
+name: PR checklist
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, ready_for_review, synchronize, unlabeled]
+    branches: [develop]
+
+jobs:
+  description-is-usable:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.pull_request.draft == false
+      && github.event.pull_request.user.type != 'Bot'
+      && !contains(github.event.pull_request.labels.*.name, 'no-checklist')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/pull_request_template.md
+          sparse-checkout-cone-mode: false
+
+      - name: Check the description answers the template
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: python3 .github/scripts/check_pr_body.py
