@@ -620,7 +620,8 @@ def report_failure(
             # journal, so it is where the batch should resume. Ranking, plus
             # a short hold while this worker is about to poll again.
             batch.resume_worker_id = req.worker_id
-            batch.resume_hold_until = unix_now() + AFFINITY_HOLD_SECONDS
+            batch.resume_reported_at = unix_now()
+            batch.resume_hold_until = batch.resume_reported_at + AFFINITY_HOLD_SECONDS
 
     # A worker stopping gracefully is leaving: whatever hold it had on the
     # batch goes, though it keeps its journal and so its rank (#166).

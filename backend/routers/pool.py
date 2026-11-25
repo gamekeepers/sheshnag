@@ -30,7 +30,7 @@ from models import (
     unix_now,
 )
 from scheduler import can_serve, serving_runtimes, _hosts, _target_ids
-from sweeper import HEARTBEAT_TIMEOUT_SECONDS
+from liveness import HEARTBEAT_TIMEOUT_SECONDS
 
 router = APIRouter()
 

@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 
+from liveness import HEARTBEAT_TIMEOUT_SECONDS  # noqa: F401 — also re-exported for older imports
 from models import (
     Batch, BatchAssignment, FinetuneEvent, FinetuneJob, FinetuneJobAssignment, Worker, unix_now,
 )
@@ -40,9 +41,6 @@ MAX_FINETUNE_ATTEMPTS = 3
 # Ten minutes of silence = the runner is gone. A false positive costs a whole
 # training run, so the window is long.
 FINETUNE_RUNNER_LOST_SECONDS = 600
-
-# Daemon heartbeats every 30s — 4 missed beats ⇒ presumed dead.
-HEARTBEAT_TIMEOUT_SECONDS = 120
 
 SWEEP_INTERVAL_SECONDS = 60
 
