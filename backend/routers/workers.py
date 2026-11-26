@@ -14,7 +14,9 @@ from schemas import (
 from pydantic import BaseModel, Field
 from typing import Optional
 from auth import get_worker_context
-from scheduler import scheduler, fitted_context, get_catalog_entry, resolve_runtime_model_id
+from scheduler import (
+    AFFINITY_HOLD_SECONDS, scheduler, fitted_context, get_catalog_entry, resolve_runtime_model_id,
+)
 from reconciliation import AVAILABLE, MISSING, apply_inventory, classify
 from finetune_picker import finetune_picker
 from finetune_contract import (
@@ -614,6 +616,16 @@ def report_failure(
         if progress > (batch.resume_progress or 0):
             batch.resume_progress = progress
             made_progress = True
+            # Affinity (#166): this worker now holds the furthest-along
+            # journal, so it is where the batch should resume. Ranking, plus
+            # a short hold while this worker is about to poll again.
+            batch.resume_worker_id = req.worker_id
+            batch.resume_hold_until = unix_now() + AFFINITY_HOLD_SECONDS
+
+    # A worker stopping gracefully is leaving: whatever hold it had on the
+    # batch goes, though it keeps its journal and so its rank (#166).
+    if req.shutdown and batch.resume_worker_id == req.worker_id:
+        batch.resume_hold_until = None
 
     # A deliberate, graceful stop (#168) is not a failed attempt either.
     count_attempt = not (made_progress or req.shutdown)
@@ -625,6 +637,7 @@ def report_failure(
     validate_transition(batch.status, target)
     outcome = requeue_or_fail_batch(
         db, batch, error=req.error, count_attempt=count_attempt,
+        worker_id=req.worker_id,
     )
 
     db.commit()

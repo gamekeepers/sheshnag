@@ -653,6 +653,16 @@ class Batch(Base):
     # back (/workers/report-failure). A hand-back that beats it made progress
     # and does not spend an attempt. NULL means no hand-back has reported any.
     resume_progress          = Column(Integer, nullable=True)
+    # Affinity (#166): the worker whose hand-back set resume_progress, i.e.
+    # the one holding the furthest-along journal for this batch. It ranks the
+    # batch first when it polls. Ended by an attempt spent on that worker, so
+    # a worker that keeps failing the batch does not keep getting it back.
+    resume_worker_id         = Column(String, nullable=True)
+    # Until when other workers leave the batch for its affinity worker: a
+    # short hold, set by a hand-back from a worker about to poll again, and
+    # honoured only while that worker is online, free and eligible. NULL = no
+    # hold (a graceful stop: that worker is leaving).
+    resume_hold_until        = Column(Integer, nullable=True)
     # Caller-supplied key/value tags (OpenAI `metadata`): how a client groups
     # batches it submitted together, e.g. the playground's grid_id. Opaque to
     # the scheduler. The attribute is not `metadata` because SQLAlchemy's

@@ -41,6 +41,7 @@ that concept.
 | **Hand-back** | A worker returning a batch it holds, reporting how many rows it has journalled | Release, give up, abort |
 | **Journal** | The worker-local file of finished rows for one batch, keyed on each row's `custom_id` | Checkpoint, cache, partial output, log |
 | **Resume** | Re-running a batch on the worker holding its journal, executing only the rows the journal has no result for | Restart, retry, continue |
+| **Affinity** | A batch's preference for the worker holding its furthest-along journal: that worker ranks it first, and others leave it for a short hold while that worker can take it. Ended by an attempt spent on that worker | Pinning, stickiness, ownership, lock |
 | **Final** | A result a resume keeps rather than running the row again — a success, or a failure the row itself causes | Terminal, permanent, cached |
 | **Graceful stop** | A provider stopping their own daemon: running prompts get the grace period, the batch is handed back, and no attempt is counted | Shutdown, drain, pause |
 | **Usage record** | One row's token counts, keyed on `(batch, custom_id)` so a replayed upload cannot double-count | Token log, metering row, usage row |
@@ -130,6 +131,7 @@ that concept.
 - A **Batch** references exactly one **Catalogue entry**, has exactly one **Input file**, and produces at most one **Output file**.
 - A **Batch** has at most one live **Assignment** and at most three counted **Attempts**; a **Hand-back** that made progress and a **Graceful stop** add neither.
 - A **Journal** belongs to one **Batch** on one **Worker**, and only that worker can **Resume** from it.
+- A **Batch** has **Affinity** for at most one **Worker**: the one whose **Hand-back** last made progress.
 - A **Batch** carries one **Usage record** per executed **Row**.
 - A **Batch** produces exactly one output **Row** per input **Row**, in input order.
 - A **Worker** advertises every **Artifact** its **Runtimes** hold; only the **Schedulable** subset of those can be given a **Batch**.
