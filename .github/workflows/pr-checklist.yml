@@ -32,9 +32,13 @@ jobs:
       && github.event.pull_request.user.type != 'Bot'
       && !contains(github.event.pull_request.labels.*.name, 'no-checklist')
     steps:
+      # The step below runs the script from the checkout, so the script's
+      # directory comes down with the template it reads.
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: .github/pull_request_template.md
+          sparse-checkout: |
+            .github/pull_request_template.md
+            .github/scripts/
           sparse-checkout-cone-mode: false
 
       - name: Check the description answers the template
