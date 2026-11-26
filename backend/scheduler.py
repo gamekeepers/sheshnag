@@ -27,7 +27,8 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from identity_resolver import bare_digest
-from models import BatchAssignment, ModelCatalog, Worker, unix_now
+from liveness import worker_is_live
+from models import Batch, BatchAssignment, ModelCatalog, Worker, unix_now
 
 logger = logging.getLogger(__name__)
 
@@ -536,37 +537,61 @@ def can_serve(entry, worker, needs=None, prompts=None, window=True, context=None
 # slack — and the most a batch can wait on a worker that has stalled.
 AFFINITY_HOLD_SECONDS = 30
 
+# How long a journal outlives its hand-back: the daemon deletes a job
+# directory left untouched this long (daemon/worker.py STALE_JOB_DIR_SECONDS).
+# Past it the affinity worker would start from row one like any other, so
+# the batch no longer ranks first there.
+JOURNAL_TTL_SECONDS = 24 * 3600
 
-def _resume_args(batch):
+
+def _fit_args(batch):
+    """The `can_serve` arguments a batch implies, for any worker."""
     return dict(needs=batch.required_capabilities or None,
                 prompts=batch.request_counts_total, context=batch.context_tokens)
 
 
-def held_for_another(db, batch, entry, worker) -> bool:
+def resumes_here(batch, worker) -> bool:
+    """Does `worker` hold a journal for `batch` that it can still resume from?"""
+    return (batch.resume_worker_id == worker.id
+            and (batch.resume_reported_at or 0) > unix_now() - JOURNAL_TTL_SECONDS)
+
+
+def _free_holder(db, holder_id):
+    """The worker if it could take a batch right now, else None: live, and
+    running no batch (a daemon runs one at a time, so a busy one will not
+    poll until it is done). Assignments outlive their batch as history, so
+    only one whose batch is still in progress makes a worker busy."""
+    holder = db.get(Worker, holder_id)
+    if holder is None or not worker_is_live(holder):
+        return None
+    busy = (db.query(BatchAssignment.batch_id)
+            .join(Batch, Batch.id == BatchAssignment.batch_id)
+            .filter(BatchAssignment.worker_id == holder_id, Batch.status == "in_progress")
+            .first())
+    return None if busy else holder
+
+
+def held_for_another(db, batch, entry, worker, holders) -> bool:
     """Should `worker` leave `batch` for the worker holding its journal?
 
     Only while the hold is fresh AND that worker can take the batch right
-    now: online and heartbeating, holding no other batch (a daemon runs one
-    at a time, so a busy one will not poll until it is done), and eligible
-    for this batch as dispatch would judge it. A gone, busy, draining,
-    off-hours or since-shrunk worker gets no hold, so the batch goes
-    elsewhere without waiting. Affinity is a preference, never a constraint.
+    now: live, running no other batch, and eligible for this batch as
+    dispatch would judge it. A gone, busy, draining, off-hours or
+    since-shrunk worker gets no hold, so the batch goes elsewhere without
+    waiting. Affinity is a preference, never a constraint.
+
+    `holders` memoises `_free_holder` for one poll: a restart that hands
+    back several batches would otherwise repeat the same lookups per batch.
     """
     holder_id = batch.resume_worker_id
     if not holder_id or holder_id == worker.id:
         return False
     if not batch.resume_hold_until or batch.resume_hold_until <= unix_now():
         return False
-    from sweeper import HEARTBEAT_TIMEOUT_SECONDS
-
-    holder = db.get(Worker, holder_id)
-    if holder is None or holder.status != "online":
-        return False
-    if (holder.last_heartbeat or 0) < unix_now() - HEARTBEAT_TIMEOUT_SECONDS:
-        return False
-    if db.query(BatchAssignment.batch_id).filter(BatchAssignment.worker_id == holder_id).first():
-        return False
-    return can_serve(entry, holder, **_resume_args(batch))
+    if holder_id not in holders:
+        holders[holder_id] = _free_holder(db, holder_id)
+    holder = holders[holder_id]
+    return holder is not None and can_serve(entry, holder, **_fit_args(batch))
 
 
 class Scheduler:
@@ -577,7 +602,7 @@ class Scheduler:
     satisfy that runtime's fit rule, and be allowed it by the provider's policy.
     A batch held for the worker with its journal is skipped (`held_for_another`).
     Rank:
-      1. Prefer a batch this worker holds the journal for: it resumes there.
+      1. Prefer a batch this worker holds a live journal for: it resumes there.
       2. Prefer batches whose model is already loaded (in VRAM) here.
       3. Fall back to oldest compatible batch (FIFO).
     """
@@ -588,6 +613,7 @@ class Scheduler:
 
         loaded = worker.loaded_models()          # (name, digest) in VRAM
 
+        holders = {}                             # see held_for_another
         resumes = []
         loaded_matches = []
         other_matches = []
@@ -596,12 +622,12 @@ class Scheduler:
             if entry is None:
                 continue  # unschedulable — should have failed validation
 
-            if not can_serve(entry, worker, **_resume_args(batch)):
+            if not can_serve(entry, worker, **_fit_args(batch)):
                 continue  # doesn't host or fit it, lacks a capability, or the provider's policy says no
 
-            if batch.resume_worker_id == worker.id:
+            if resumes_here(batch, worker):
                 resumes.append(batch)
-            elif held_for_another(db, batch, entry, worker):
+            elif held_for_another(db, batch, entry, worker, holders):
                 continue  # its journal's worker is about to poll for it
             elif _hosts(loaded, _target_ids(entry), entry.digest):
                 loaded_matches.append(batch)

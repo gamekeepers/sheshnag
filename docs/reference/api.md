@@ -365,8 +365,8 @@ furthest-along journal — becomes the batch's `resume_worker_id`, and:
 - **Other workers leave the batch for it for 30 s** (`AFFINITY_HOLD_SECONDS`),
   because dispatch is pull and ranking alone cannot stop another worker that
   polls first. The hold applies only while that worker can take the batch at
-  once: online and heartbeating, holding no other batch, and eligible for this
-  one. A gone, busy, draining, off-hours or since-capped worker holds nothing,
+  once: online and heartbeating, running no other batch (a finished one does
+  not count), and eligible for this one. A gone, busy, draining, off-hours or since-capped worker holds nothing,
   so the batch goes elsewhere without waiting — affinity is a preference,
   never a constraint. A graceful stop (`"shutdown": true`) sets no hold either:
   that worker is leaving.
@@ -375,10 +375,11 @@ furthest-along journal — becomes the batch's `resume_worker_id`, and:
   that keeps failing the batch would keep getting it back. An attempt spent on
   another worker leaves it in place: the journal is still there.
 
-The rank lives as long as the affinity does; it costs nothing when the worker
-is gone, since only that worker's own polls read it. A journal is swept from
-the worker after 24 h untouched, after which a resume there starts from row
-one like anywhere else.
+The rank lasts as long as the journal does. The daemon deletes a journal left
+untouched for 24 h, so the rank stops 24 h after the hand-back
+(`JOURNAL_TTL_SECONDS`, from `resume_reported_at`): past that, a rerun there
+would start from row one like anywhere else. While it lasts it costs nothing
+when the worker is gone, since only that worker's own polls read it.
 
 ---
 
@@ -419,7 +420,7 @@ Postgres with SQLAlchemy ORM. Tables (see `models.py`):
 | `worker_gpus` | Physical GPUs per worker (spec §8.4): vendor, name, vram_gb, driver, cuda |
 | `model_catalog` | Curated, pinned models users select for a batch (identity). See [Model catalogue](#model-catalogue-v1models). |
 | `files` | Uploaded inputs and generated outputs |
-| `batches` | Lifecycle status, request counts, `attempts` (requeue counter), `context_tokens` (the context its rows need), `resume_progress` / `resume_worker_id` / `resume_hold_until` ([requeue affinity](#requeue-affinity)) |
+| `batches` | Lifecycle status, request counts, `attempts` (requeue counter), `context_tokens` (the context its rows need), `resume_progress` / `resume_worker_id` / `resume_hold_until` / `resume_reported_at` ([requeue affinity](#requeue-affinity)) |
 | `batch_assignments` | Which worker holds which batch (FK → `workers.id`, `ON DELETE SET NULL` — history survives worker removal) |
 | `password_reset_tokens` | Forgot-password flow |
 

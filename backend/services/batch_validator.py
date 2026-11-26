@@ -475,7 +475,7 @@ def _online_hosts(db, entry):
     from sqlalchemy.orm import joinedload
     from models import Worker, WorkerRuntime
     from scheduler import can_serve
-    from sweeper import HEARTBEAT_TIMEOUT_SECONDS
+    from liveness import HEARTBEAT_TIMEOUT_SECONDS
 
     cutoff = unix_now() - HEARTBEAT_TIMEOUT_SECONDS
     workers = (

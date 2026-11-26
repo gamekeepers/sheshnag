@@ -8,7 +8,10 @@ waiting for a machine that is gone, busy or ineligible, and a worker that
 keeps failing the batch does not keep getting it back.
 """
 
+from datetime import datetime, timezone
+
 from models import Batch, BatchAssignment, Worker, unix_now
+from scheduler import JOURNAL_TTL_SECONDS
 from sweeper import sweep_stale_workers
 from tests.test_capability_gate import _register
 from tests.test_worker_poll import _catalog, _poll, _reset, _worker_key
@@ -75,6 +78,18 @@ def test_the_worker_holding_the_journal_gets_the_batch_back(auth_client, db_sess
     _reset(db_session)
 
 
+def test_a_swept_journal_no_longer_ranks(auth_client, db_session):
+    """The daemon deletes a journal untouched for a day: past that, the
+    holder would start from row one, so the batch is not preferred there."""
+    key, holder, _ = _two_workers(auth_client, db_session)
+    _hand_back(auth_client, key, holder, journalled=900)
+    _fresh(db_session).resume_reported_at = unix_now() - JOURNAL_TTL_SECONDS - 1
+    db_session.commit()
+    _queue(db_session, "batch-older", created_at=1)
+    assert _job(auth_client, key, holder) == "batch-older"
+    _reset(db_session)
+
+
 # ─── Hold: only while the holder can take it ─────────────────
 
 def test_another_worker_leaves_it_while_the_holder_is_about_to_poll(auth_client, db_session):
@@ -104,6 +119,30 @@ def test_a_busy_holder_holds_nothing(auth_client, db_session):
     key, holder, other = _two_workers(auth_client, db_session)
     _hand_back(auth_client, key, holder, journalled=900)
     _assign(db_session, holder, batch_id="batch-busy")
+    assert _job(auth_client, key, other) == "batch-held"
+    _reset(db_session)
+
+
+def test_a_holder_with_finished_batches_still_holds(auth_client, db_session):
+    """Assignments outlive their batch as history; only an in-progress one
+    makes a holder busy."""
+    key, holder, other = _two_workers(auth_client, db_session)
+    _hand_back(auth_client, key, holder, journalled=900)
+    _assign(db_session, holder, batch_id="batch-done")
+    db_session.get(Batch, "batch-done").status = "completed"
+    db_session.commit()
+    assert _job(auth_client, key, other) is None
+    _reset(db_session)
+
+
+def test_an_off_hours_holder_holds_nothing(auth_client, db_session):
+    key, holder, other = _two_workers(auth_client, db_session)
+    _hand_back(auth_client, key, holder, journalled=900)
+    now = datetime.now(timezone.utc)
+    start = min((now.hour * 60 + now.minute + 120) % 1440, 1438)   # a minute, two hours away
+    w = db_session.get(Worker, holder)
+    w.window_start_min, w.window_end_min, w.window_tz = start, start + 1, "UTC"
+    db_session.commit()
     assert _job(auth_client, key, other) == "batch-held"
     _reset(db_session)
 

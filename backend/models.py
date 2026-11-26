@@ -663,6 +663,10 @@ class Batch(Base):
     # honoured only while that worker is online, free and eligible. NULL = no
     # hold (a graceful stop: that worker is leaving).
     resume_hold_until        = Column(Integer, nullable=True)
+    # When that hand-back happened. The daemon deletes a journal left
+    # untouched for a day, so after that the affinity worker holds nothing
+    # worth resuming and the batch stops ranking first there.
+    resume_reported_at       = Column(Integer, nullable=True)
     # Caller-supplied key/value tags (OpenAI `metadata`): how a client groups
     # batches it submitted together, e.g. the playground's grid_id. Opaque to
     # the scheduler. The attribute is not `metadata` because SQLAlchemy's
